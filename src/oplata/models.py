@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import uuid
 from dataclasses import asdict, dataclass, field
+from decimal import Decimal, InvalidOperation
 
 
 def new_id() -> str:
@@ -124,3 +125,67 @@ def seed_data() -> AppData:
         operations=[],
         day_overrides={},
     )
+
+
+# ---------------------------------------------------------------------------
+# Ввод сумм в недельной таблице (Приход / Оплата)
+#
+# Запрос пользователя 27.10.2026: «сделать возможность ввода в поле приход
+# и оплата». Введённая в ячейку сумма хранится как Operation за этот день,
+# поэтому она видна в «Журнале операций» и будет исходными данными для
+# будущих формул Долга (сам Долг по-прежнему НЕ считается).
+# Ячейка показывает ИТОГ дня; правка ячейки заменяет все операции этого
+# типа/контрагента/даты одной операцией на новую сумму (других источников
+# операций пока нет; когда появится диалог операций с документами —
+# пересмотреть, см. ROADMAP этап 2).
+# ---------------------------------------------------------------------------
+
+KIND_INCOME = "Приход"
+KIND_PAYMENT = "Оплата"
+
+
+def _op_amount(op: Operation) -> Decimal:
+    try:
+        return Decimal(op.amount or "0")
+    except InvalidOperation:
+        return Decimal("0")
+
+
+def daily_operation_total(
+    operations: list[Operation], counterparty_id: str, date_iso: str, kind: str
+) -> Decimal:
+    """Сумма операций контрагента за день по типу (Приход/Оплата)."""
+    total = Decimal("0")
+    for op in operations:
+        if op.counterparty_id == counterparty_id and op.date == date_iso and op.kind == kind:
+            total += _op_amount(op)
+    return total
+
+
+def set_daily_operation(
+    data: AppData,
+    counterparty_id: str,
+    date_iso: str,
+    kind: str,
+    amount: Decimal | None,
+) -> None:
+    """Задать итог дня из ячейки таблицы. ``None`` или 0 — очистить день."""
+    data.operations = [
+        op
+        for op in data.operations
+        if not (
+            op.counterparty_id == counterparty_id
+            and op.date == date_iso
+            and op.kind == kind
+        )
+    ]
+    if amount is not None and amount != 0:
+        quantized = amount.quantize(Decimal("0.01"))
+        data.operations.append(
+            Operation(
+                kind=kind,
+                counterparty_id=counterparty_id,
+                date=date_iso,
+                amount=f"{quantized:.2f}",
+            )
+        )

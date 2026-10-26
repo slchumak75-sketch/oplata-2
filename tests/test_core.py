@@ -3,9 +3,19 @@
 from datetime import date
 from decimal import Decimal
 
+import pytest
+
 from oplata import calc
-from oplata.dates import fmt_date, fmt_money, month_title, week_days, week_monday
-from oplata.models import AppData, Counterparty, seed_data
+from oplata.dates import fmt_date, fmt_money, month_title, parse_money, week_days, week_monday
+from oplata.models import (
+    KIND_INCOME,
+    KIND_PAYMENT,
+    AppData,
+    Counterparty,
+    daily_operation_total,
+    seed_data,
+    set_daily_operation,
+)
 from oplata.storage import DataStore
 
 
@@ -65,9 +75,10 @@ def test_storage_creates_and_reloads(tmp_path):
 
 
 def test_calc_is_stub_zeros():
-    """Этап оболочки: формулы НЕ реализованы, calc обязан давать нули.
+    """Формулы ДОЛГА не реализованы: KPI/долг/просрочка обязаны давать нули.
 
     Когда пользователь даст формулы, этот тест заменяется тестами формул.
+    (Отображение введённых Приход/Оплата — не формула, см. тест ниже.)
     """
     today = date(2026, 10, 26)
     totals = calc.summary_totals(today)
@@ -77,3 +88,42 @@ def test_calc_is_stub_zeros():
     assert calc.overdue_payments(today) == []
     assert calc.week_debt(today) == Decimal("0")
     assert calc.week_cell_value("any", today, "income") == ""
+    assert calc.week_cell_value("any", today, "debt") == ""
+
+
+def test_parse_money_user_input():
+    assert parse_money("") is None
+    assert parse_money("  ") is None
+    assert parse_money("1500") == Decimal("1500.00")
+    assert parse_money("1 500,75") == Decimal("1500.75")
+    assert parse_money("1500.5") == Decimal("1500.50")
+    assert parse_money("1 500,75 руб.") == Decimal("1500.75")
+    with pytest.raises(ValueError):
+        parse_money("привет")
+
+
+def test_daily_operation_input_roundtrip():
+    data = seed_data()
+    supplier = data.suppliers[0]
+    day = date(2026, 10, 26)
+    iso = day.isoformat()
+
+    # Ввод Приход/Оплата в ячейки -> операции дня
+    set_daily_operation(data, supplier.id, iso, KIND_INCOME, Decimal("1000"))
+    set_daily_operation(data, supplier.id, iso, KIND_PAYMENT, Decimal("250.5"))
+    assert daily_operation_total(data.operations, supplier.id, iso, KIND_INCOME) == Decimal("1000.00")
+    assert calc.week_cell_value(supplier.id, day, "income", data.operations) == "1 000,00"
+    assert calc.week_cell_value(supplier.id, day, "payment", data.operations) == "250,50"
+    # Долг — заглушка даже при наличии операций
+    assert calc.week_cell_value(supplier.id, day, "debt", data.operations) == ""
+    # ВСЕГО по колонке
+    ids = [s.id for s in data.suppliers]
+    assert calc.week_column_total(ids, day, "income", data.operations) == "1 000,00"
+
+    # Повторный ввод заменяет, а не суммирует; пусто/0 — удаляет
+    set_daily_operation(data, supplier.id, iso, KIND_INCOME, Decimal("300"))
+    assert daily_operation_total(data.operations, supplier.id, iso, KIND_INCOME) == Decimal("300.00")
+    set_daily_operation(data, supplier.id, iso, KIND_INCOME, None)
+    assert daily_operation_total(data.operations, supplier.id, iso, KIND_INCOME) == Decimal("0")
+    set_daily_operation(data, supplier.id, iso, KIND_PAYMENT, Decimal("0"))
+    assert data.operations == []

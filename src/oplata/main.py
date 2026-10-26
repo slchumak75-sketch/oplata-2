@@ -30,7 +30,9 @@ def main(argv: list[str] | None = None) -> int:
 
     store = DataStore()
     window = MainWindow(store)
-    window.show()
+    # Программа открывается развёрнутой на весь экран, чтобы недельные
+    # таблицы сразу были во всю ширину (запрос пользователя, v0.2.0).
+    window.showMaximized()
 
     if "--self-test" in argv:
         QTimer.singleShot(400, app.quit)

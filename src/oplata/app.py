@@ -52,10 +52,16 @@ class MainWindow(QMainWindow):
             store, lambda sid: self.open_counterparty_card("supplier", sid)
         )
         self.suppliers_view = WeekView(
-            store, "supplier", lambda sid: self.open_counterparty_card("supplier", sid)
+            store,
+            "supplier",
+            lambda sid: self.open_counterparty_card("supplier", sid),
+            on_data_changed=self.refresh_after_week_edit,
         )
         self.customers_view = WeekView(
-            store, "customer", lambda cid: self.open_counterparty_card("customer", cid)
+            store,
+            "customer",
+            lambda cid: self.open_counterparty_card("customer", cid),
+            on_data_changed=self.refresh_after_week_edit,
         )
         self.operations_view = OperationsView(store)
         self.data_view = DataView(store)
@@ -156,6 +162,15 @@ class MainWindow(QMainWindow):
         self.show_page(IDX_OPERATIONS)
         if kind == "supplier" and counterparty_id:
             self.operations_view.set_supplier_filter(counterparty_id)
+
+    def refresh_after_week_edit(self) -> None:
+        """После ввода суммы в недельной таблице обновить зависимые экраны.
+
+        Саму недельную таблицу не трогаем — она уже показала введённое
+        и пересчитала свою строку «ВСЕГО».
+        """
+        self.operations_view.refresh()
+        self.summary_view.refresh()
 
     def refresh_all(self) -> None:
         """Перечитать все экраны после изменения списков контрагентов."""

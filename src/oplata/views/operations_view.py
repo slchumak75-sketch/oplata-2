@@ -1,11 +1,15 @@
 """Экран «Операции» — журнал операций с фильтрами (макет 04-operations.png).
 
-Этап оболочки: операций пока нет (вводить их негде — это следующий этап),
-поэтому журнал показывает «Ничего не найдено.», а фильтры уже работают
-по списку операций из хранилища (он пуст). Суммы не считаются.
+С v0.2.0 сюда попадают суммы, введённые в ячейках «Приход»/«Оплата»
+недельных таблиц (каждая ячейка = операция дня, без документа и
+комментария). Отдельный диалог ввода операций с документами — этап 2
+в ``docs/ROADMAP.md``. Долги здесь по-прежнему не считаются.
 """
 
 from __future__ import annotations
+
+from datetime import date
+from decimal import Decimal, InvalidOperation
 
 from PySide6.QtCore import Qt
 from PySide6.QtWidgets import (
@@ -21,11 +25,26 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from ..dates import fmt_date, fmt_money_plain
 from ..storage import DataStore
 from ..widgets import make_panel
 
 ALL_SUPPLIERS = "— все поставщики —"
 ALL_OPERATIONS = "Все операции"
+
+
+def _display_date(iso: str) -> str:
+    try:
+        return fmt_date(date.fromisoformat(iso))
+    except ValueError:
+        return iso
+
+
+def _display_amount(amount: str) -> str:
+    try:
+        return fmt_money_plain(Decimal(amount or "0"))
+    except InvalidOperation:
+        return amount
 
 
 class OperationsView(QWidget):
@@ -130,7 +149,10 @@ class OperationsView(QWidget):
         supplier_id = self.supplier_filter.currentData() or ""
         kind = self.kind_filter.currentText()
         query = self.search.text().strip().lower()
-        supplier_names = {s.id: s.name for s in self.store.data.suppliers}
+        supplier_names = {
+            **{s.id: s.name for s in self.store.data.suppliers},
+            **{c.id: c.name for c in self.store.data.customers},
+        }  # имена и поставщиков, и покупателей (ввод есть в обеих таблицах)
         result = []
         for op in self.store.data.operations:  # на этапе оболочки список пуст
             if supplier_id and op.counterparty_id != supplier_id:
@@ -148,7 +170,10 @@ class OperationsView(QWidget):
     def refresh(self) -> None:
         operations = self._filtered_operations()
         self.found_label.setText(f"Найдено: {len(operations)}")
-        supplier_names = {s.id: s.name for s in self.store.data.suppliers}
+        supplier_names = {
+            **{s.id: s.name for s in self.store.data.suppliers},
+            **{c.id: c.name for c in self.store.data.customers},
+        }  # имена и поставщиков, и покупателей (ввод есть в обеих таблицах)
 
         if not operations:
             self.table.setRowCount(1)
@@ -164,8 +189,8 @@ class OperationsView(QWidget):
             values = [
                 op.kind,
                 supplier_names.get(op.counterparty_id, ""),
-                op.date,
-                op.amount,
+                _display_date(op.date),
+                _display_amount(op.amount),
                 op.document,
                 op.comment,
             ]

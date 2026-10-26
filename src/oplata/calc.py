@@ -1,8 +1,13 @@
-"""⚠️ ЗАГЛУШКИ РАСЧЁТОВ — ФОРМУЛ ЗДЕСЬ ПОКА НЕТ (этап «только оболочка»).
+"""Расчёты и ЗАГЛУШКИ расчётов.
 
-Пользователь прямо сказал: «формулы будем писать позже, пока делаем
-только оболочку». Поэтому каждая функция ниже возвращает нули/пустоты,
-как на макетах (``0,00 руб.``, ``—``).
+Состояние на 27.10.2026 (v0.2.0):
+* ФОРМУЛ ДОЛГА ЗДЕСЬ ПОКА НЕТ — ``summary_totals``, ``supplier_debt_row``,
+  ``overdue_payments``, ``week_debt`` и колонка «Долг» возвращают нули/пусто,
+  как на макетах. Пользователь: «формулы будем писать позже».
+* Единственное не-заглушечное — отображение ВВОДА пользователя: ячейки
+  «Приход»/«Оплата» недельной таблицы показывают суммы введённых операций
+  за день (``week_cell_value``/``week_column_total``). Это не формула долга,
+  а просто сумма того, что человек напечатал.
 
 ПРАВИЛО ДЛЯ СЛЕДУЮЩЕГО АГЕНТА:
 вся будущая расчётная логика пишется ТОЛЬКО в этом модуле (экраны уже
@@ -12,11 +17,17 @@
 
 from __future__ import annotations
 
+from collections.abc import Iterable, Sequence
 from dataclasses import dataclass
 from datetime import date
 from decimal import Decimal
 
+from .dates import fmt_money_plain
+from .models import KIND_INCOME, KIND_PAYMENT, Operation, daily_operation_total
+
 ZERO = Decimal("0")
+
+_COLUMN_KIND_TO_OP_KIND = {"income": KIND_INCOME, "payment": KIND_PAYMENT}
 
 
 @dataclass(frozen=True)
@@ -61,10 +72,42 @@ def week_debt(week_monday: date) -> Decimal:
     return ZERO
 
 
-def week_cell_value(counterparty_id: str, day: date, column_kind: str) -> str:
-    """TODO(формулы): значение ячейки Приход/Долг/Оплата недельной таблицы.
+def week_cell_value(
+    counterparty_id: str,
+    day: date,
+    column_kind: str,
+    operations: Sequence[Operation] = (),
+) -> str:
+    """Значение ячейки Приход/Долг/Оплата недельной таблицы.
 
-    ``column_kind``: ``"income"`` | ``"debt"`` | ``"payment"``.
-    Пока всегда пустая строка — как пустые ячейки на макетах.
+    ``"income"``/``"payment"`` — сумма введённых пользователем операций
+    за день (пусто, если ввода не было). ``"debt"`` — ⚠️ ЗАГЛУШКА:
+    формула долга появится на этапе формул, до тех пор всегда пусто.
     """
-    return ""
+    op_kind = _COLUMN_KIND_TO_OP_KIND.get(column_kind)
+    if op_kind is None:  # "debt" и всё неизвестное
+        return ""
+    total = daily_operation_total(
+        list(operations), counterparty_id, day.isoformat(), op_kind
+    )
+    return fmt_money_plain(total) if total != 0 else ""
+
+
+def week_column_total(
+    counterparty_ids: Iterable[str],
+    day: date,
+    column_kind: str,
+    operations: Sequence[Operation] = (),
+) -> str:
+    """Строка «ВСЕГО» для Приход/Оплата: сумма ввода по всем контрагентам за день.
+
+    Для ``"debt"`` — заглушка (пусто), как и сама колонка «Долг».
+    """
+    op_kind = _COLUMN_KIND_TO_OP_KIND.get(column_kind)
+    if op_kind is None:
+        return ""
+    ops = list(operations)
+    total = ZERO
+    for counterparty_id in counterparty_ids:
+        total += daily_operation_total(ops, counterparty_id, day.isoformat(), op_kind)
+    return fmt_money_plain(total) if total != 0 else ""

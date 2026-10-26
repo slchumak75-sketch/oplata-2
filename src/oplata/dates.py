@@ -8,7 +8,7 @@
 from __future__ import annotations
 
 from datetime import date, timedelta
-from decimal import Decimal
+from decimal import ROUND_HALF_UP, Decimal, InvalidOperation
 
 MONTHS_RU = (
     "Январь", "Февраль", "Март", "Апрель", "Май", "Июнь",
@@ -58,3 +58,26 @@ def fmt_money(value: Decimal) -> str:
 def fmt_money_plain(value: Decimal) -> str:
     """Сумма без ``руб.`` — как в ячейках таблицы «Сводка» (``0,00``)."""
     return fmt_money(value).removesuffix(" руб.")
+
+
+def parse_money(text: str) -> Decimal | None:
+    """Разбор суммы, введённой пользователем в ячейку Приход/Оплата.
+
+    Принимает ``1234``, ``1234,5``, ``1 234,50``, ``1234.50``, ``1 234,50 руб.``
+    Пустая строка -> ``None`` (ячейку очистили). Нечисло -> ``ValueError``.
+    Результат округляется до копеек. Знак не запрещается здесь —
+    неотрицательность проверяет вызывающий UI.
+    """
+    cleaned = (text or "").strip()
+    if not cleaned:
+        return None
+    cleaned = cleaned.removesuffix("руб.").removesuffix("руб").strip()
+    cleaned = cleaned.replace(" ", "").replace("\u00a0", "").replace("\u202f", "")
+    cleaned = cleaned.replace(",", ".")
+    if not cleaned:
+        return None
+    try:
+        value = Decimal(cleaned)
+    except InvalidOperation as exc:
+        raise ValueError(f"Не сумма: {text!r}") from exc
+    return value.quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)

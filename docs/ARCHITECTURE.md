@@ -86,13 +86,20 @@ data.json ──DataStore──> AppData ──> экраны (views) ──кл
 Путь: Windows `%APPDATA%\OplataStroymarket\data.json`; переопределение —
 переменная `OPLATA_DATA_DIR` (используется в тестах/отладке).
 
-## Контракт calc.py (зафиксирован на этапе 0)
+## Контракт calc.py
 
 `summary_totals(on_date)`, `supplier_debt_row(supplier_id, on_date)`,
-`overdue_payments(on_date)`, `week_debt(week_monday)`,
-`week_cell_value(counterparty_id, day, "income"|"debt"|"payment")`.
-Экраны менять при внедрении формул не придётся — только этот модуль
-и, вероятно, сигнатуры дополнятся параметром `operations`/`data`.
+`overdue_payments(on_date)`, `week_debt(week_monday)` — по-прежнему
+**заглушки формул** (нули). С v0.2.0 `week_cell_value(counterparty_id, day,
+kind, operations)` и `week_column_total(ids, day, kind, operations)`
+показывают для `income`/`payment` суммы ВВЕДЁННЫХ операций дня (это не
+формула), а для `debt` возвращают пусто.
+
+Ввод в ячейку недельной таблицы: `WeekView._on_item_changed` →
+`dates.parse_money` → `models.set_daily_operation` (ячейка = итог дня,
+ADR-006) → `DataStore.save()` → `MainWindow.refresh_after_week_edit`
+(обновляет «Операции» и «Сводку», саму таблицу не перестраивает —
+она обновляет только свою строку «ВСЕГО»).
 
 ## Принципы
 

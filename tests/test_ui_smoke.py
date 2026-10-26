@@ -44,6 +44,36 @@ def test_main_window_all_pages(qt_app, store):
     window.close()
 
 
+def test_week_table_income_payment_input(qt_app, store):
+    """Ввод в Приход/Оплата сохраняется; Долг вводить нельзя (формула позже)."""
+    from PySide6.QtCore import Qt
+
+    from oplata.app import MainWindow
+    from oplata.views.week_view import FIRST_DATA_ROW, TOTAL_ROW
+
+    window = MainWindow(store)
+    table = window.suppliers_view.table
+    income = table.item(FIRST_DATA_ROW, 3)   # пн, Приход
+    debt = table.item(FIRST_DATA_ROW, 4)     # пн, Долг
+    payment = table.item(FIRST_DATA_ROW, 5)  # пн, Оплата
+    assert income.flags() & Qt.ItemFlag.ItemIsEditable
+    assert payment.flags() & Qt.ItemFlag.ItemIsEditable
+    assert not (debt.flags() & Qt.ItemFlag.ItemIsEditable)
+
+    income.setText("1 500,75")  # программная правка = тот же сигнал, что от Enter
+    payment.setText("200")
+    kinds = sorted(op.kind for op in store.data.operations)
+    assert kinds == ["Оплата", "Приход"]
+    assert income.text() == "1 500,75"  # переформатировано после сохранения
+    assert table.item(TOTAL_ROW, 3).text() == "1 500,75"  # ВСЕГО обновилось
+    # Операции видны в журнале
+    assert window.operations_view.found_label.text() == "Найдено: 2"
+
+    payment.setText("")  # очистка ячейки удаляет операцию
+    assert [op.kind for op in store.data.operations] == ["Приход"]
+    window.close()
+
+
 def test_supplier_card_adds_counterparty(qt_app, store):
     from oplata.dialogs.counterparty_card import CounterpartyCardDialog
 
