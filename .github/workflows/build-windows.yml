@@ -1,0 +1,110 @@
+# Автосборка Windows-приложения «Оплаты — Строймаркет».
+#
+# Когда запускается:
+#   * push в main или arena/**  -> тесты + сборка Oplata.exe (артефакт);
+#   * pull request              -> тесты + сборка (артефакт);
+#   * push тега v* (напр. v0.2.0) -> + публикация GitHub Release с zip;
+#   * вручную: Actions -> Build Windows -> Run workflow.
+#
+# Где скачать exe: вкладка Actions -> нужный запуск -> Artifacts
+# (Oplata-windows-...), а для тегов — раздел Releases.
+# Подробности: docs/BUILD.md
+
+name: Build Windows
+
+on:
+  push:
+    branches:
+      - main
+      - "arena/**"
+    tags:
+      - "v*"
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: write # нужно только шагу публикации Release на тегах v*
+
+concurrency:
+  group: build-windows-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    name: Tests (Linux, headless Qt)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      # Библиотеки, без которых PySide6 не стартует даже в offscreen-режиме
+      - name: Install Qt runtime libraries
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libegl1 libgl1 libxkbcommon0 libfontconfig1
+
+      - name: Install dependencies
+        run: pip install -r requirements-dev.txt
+
+      - name: Run tests
+        env:
+          QT_QPA_PLATFORM: offscreen
+        run: pytest -q
+
+  build-windows:
+    name: Build Oplata.exe (Windows)
+    needs: test
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt "pyinstaller>=6,<7"
+
+      - name: Read app version
+        id: version
+        shell: pwsh
+        run: |
+          $v = python -c "import sys; sys.path.insert(0, 'src'); import oplata; print(oplata.__version__)"
+          "version=$v" >> $env:GITHUB_OUTPUT
+          Write-Host "Oplata version: $v"
+
+      - name: Build exe with PyInstaller
+        run: pyinstaller --noconfirm oplata.spec
+
+      - name: Smoke test (exe starts and closes cleanly)
+        shell: pwsh
+        run: |
+          $p = Start-Process -FilePath ".\dist\Oplata.exe" -ArgumentList "--self-test" -Wait -PassThru
+          if ($p.ExitCode -ne 0) { throw "Smoke test failed, exit code $($p.ExitCode)" }
+          Write-Host "Smoke test OK"
+
+      - name: Pack zip
+        shell: pwsh
+        run: |
+          $zip = "Oplata-v${{ steps.version.outputs.version }}-windows.zip"
+          Compress-Archive -Path ".\dist\Oplata.exe" -DestinationPath $zip
+          "ZIP_NAME=$zip" >> $env:GITHUB_ENV
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: Oplata-windows-v${{ steps.version.outputs.version }}
+          path: ${{ env.ZIP_NAME }}
+          if-no-files-found: error
+
+      - name: Publish GitHub Release (only on v* tags)
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: ${{ env.ZIP_NAME }}
+          generate_release_notes: true

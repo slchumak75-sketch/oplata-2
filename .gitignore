@@ -1,0 +1,21 @@
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+.pytest_cache/
+
+# PyInstaller
+build/
+dist/
+*.egg-info/
+
+# Данные программы и локальное
+data.json
+*.log
+
+# IDE / ОС
+.idea/
+.vscode/
+Thumbs.db
+desktop.ini

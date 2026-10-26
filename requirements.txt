@@ -1,0 +1,3 @@
+# Runtime-зависимости. Essentials (а не полный PySide6) — без QtWebEngine
+# и прочего лишнего: собранный exe заметно меньше.
+PySide6-Essentials>=6.7,<7

@@ -1,0 +1,105 @@
+"""Цвета и стили оболочки — подобраны по скриншотам макетов.
+
+Если пользователь пришлёт уточнённый дизайн, менять прежде всего здесь.
+"""
+
+NAVY = "#0f2a5c"        # тёмно-синяя шапка
+NAVY_TEXT = "#ffffff"
+PAGE_BG = "#eef1f6"     # фон страницы под панелями
+PANEL_BG = "#ffffff"
+BORDER = "#d5dbe7"
+TEXT = "#1c2733"
+MUTED = "#6b7686"
+HEADER_PINK = "#fdeef0"     # шапка дней Пн–Пт в недельной таблице
+HEADER_BEIGE = "#f7efdb"    # шапка дней Сб–Вс
+HEADER_MONTH = "#dfe8f5"    # строка месяцев в недельной таблице
+TODAY_YELLOW = "#ffd94d"    # подзаголовки Приход/Долг/Оплата текущего дня
+LINK_BLUE = "#1a56db"
+RED = "#e02424"
+GREEN = "#159947"
+BLUE = "#2563eb"
+WEEKEND_RED = "#e53935"     # красные ячейки выходных в календаре «Данные»
+WORKDAY_GREY = "#eceff3"    # серые ячейки рабочих дней там же
+
+APP_STYLESHEET = f"""
+* {{
+    font-family: "Segoe UI", "Arial", sans-serif;
+    font-size: 13px;
+    color: {TEXT};
+}}
+QMainWindow, QWidget#PageRoot {{
+    background: {PAGE_BG};
+}}
+QFrame#Panel {{
+    background: {PANEL_BG};
+    border: 1px solid {BORDER};
+    border-radius: 10px;
+}}
+QFrame#KpiCard {{
+    background: {PANEL_BG};
+    border: 1px solid {BORDER};
+    border-radius: 10px;
+}}
+QLabel#PanelTitle {{
+    font-size: 15px;
+    font-weight: 700;
+}}
+QLabel#KpiTitle {{
+    font-size: 11px;
+    color: {MUTED};
+    font-weight: 600;
+}}
+QLabel#KpiValue {{
+    font-size: 20px;
+    font-weight: 800;
+}}
+QLabel#Muted {{
+    color: {MUTED};
+}}
+QLineEdit, QComboBox, QDateEdit, QSpinBox {{
+    background: #ffffff;
+    border: 1px solid {BORDER};
+    border-radius: 8px;
+    padding: 5px 8px;
+    min-height: 22px;
+}}
+QLineEdit:focus, QComboBox:focus, QDateEdit:focus, QSpinBox:focus {{
+    border: 1px solid {BLUE};
+}}
+QPushButton {{
+    background: #ffffff;
+    border: 1px solid {BORDER};
+    border-radius: 8px;
+    padding: 6px 14px;
+    font-weight: 600;
+}}
+QPushButton:hover {{
+    background: #f2f5fa;
+}}
+QPushButton:disabled {{
+    color: #a3abb8;
+    background: #f3f5f8;
+}}
+QTableWidget {{
+    background: #ffffff;
+    border: 1px solid {BORDER};
+    border-radius: 8px;
+    gridline-color: #e3e8f0;
+    selection-background-color: #dbeafe;
+    selection-color: {TEXT};
+}}
+QHeaderView::section {{
+    background: #eef2f8;
+    border: none;
+    border-bottom: 1px solid {BORDER};
+    padding: 6px 8px;
+    font-weight: 700;
+}}
+QScrollArea {{
+    border: none;
+    background: transparent;
+}}
+QCheckBox {{
+    spacing: 6px;
+}}
+"""
