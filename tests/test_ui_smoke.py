@@ -208,3 +208,48 @@ def test_supplier_card_adds_counterparty(qt_app, store):
     dialog.chk_prepayment.setChecked(False)
     assert dialog.deferment_spin.isEnabled()
     dialog.close()
+
+
+def test_summary_print_snapshot_and_pdf_render(qt_app, store, tmp_path):
+    """Печать «Сводки» берёт экранный снимок и реально рисуется в PDF."""
+    from datetime import datetime
+
+    from PySide6.QtGui import QPageLayout, QPageSize
+    from PySide6.QtPrintSupport import QPrinter
+
+    from oplata.app import MainWindow
+
+    window = MainWindow(store)
+    view = window.summary_view
+    assert view.print_button.text() == "🖨  Печать"
+
+    archived = store.data.suppliers[0]
+    archived.archived = True
+    view.refresh()
+    hidden_html = view.build_print_html(datetime(2026, 10, 27, 12, 0))
+    assert view.table.rowCount() == 4
+    assert archived.name not in hidden_html
+    assert "Архивные поставщики: скрыты" in hidden_html
+
+    view.show_archived.setChecked(True)  # сигнал сам вызовет refresh()
+    shown_html = view.build_print_html(datetime(2026, 10, 27, 12, 0))
+    assert view.table.rowCount() == 5
+    assert archived.name in shown_html
+    assert "Архивные поставщики: показаны" in shown_html
+    assert "Задолженность по поставщикам" in shown_html
+
+    document = view.create_print_document(datetime(2026, 10, 27, 12, 0))
+    printer = view.configure_print_printer(
+        QPrinter(QPrinter.PrinterMode.HighResolution)
+    )
+    assert printer.pageLayout().orientation() == QPageLayout.Orientation.Landscape
+    assert printer.pageLayout().pageSize().id() == QPageSize.PageSizeId.A4
+    pdf_path = tmp_path / "summary.pdf"
+    printer.setOutputFormat(QPrinter.OutputFormat.PdfFormat)
+    printer.setOutputFileName(str(pdf_path))
+
+    view.render_print_document(printer, document)
+    assert document.pageCount() >= 1
+    assert pdf_path.read_bytes().startswith(b"%PDF")
+    assert pdf_path.stat().st_size > 1000
+    window.close()

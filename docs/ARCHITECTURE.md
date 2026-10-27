@@ -41,8 +41,9 @@ oplata-2/
     models.py      [без Qt]     # Counterparty, Operation, AppData, seed_data()
     storage.py     [без Qt]     # DataStore: JSON в %APPDATA%\OplataStroymarket\data.json
     calc.py        [без Qt]     # срок/долг поставщиков; «Сводка» пока заглушки
+    reports.py     [без Qt]     # HTML печатной формы «Сводки» из экранного снимка
     views/
-      summary_view.py           # Сводка
+      summary_view.py           # Сводка + снимок значений и QPrintPreviewDialog
       week_view.py              # Поставщики и Покупатели (kind="supplier"/"customer")
       operations_view.py        # Операции (журнал, фильтры, CRUD)
       data_view.py              # Данные (календарь выходных на год)
@@ -52,7 +53,8 @@ oplata-2/
       operation_dialog.py       # Добавление/редактирование операции журнала
   tests/
     test_core.py                # даты, модели, storage, срок и архивный долг
-    test_ui_smoke.py            # 5 экранов, поставка, ввод ячеек, CRUD журнала, карточки
+    test_ui_smoke.py            # 5 экранов, поставка, ввод ячеек, CRUD журнала, карточки, печать в PDF
+    test_reports.py             # HTML печатной «Сводки»: KPI, таблица, escaping, пустое состояние
     test_packaging.py           # Windows VS_VERSION_INFO и синхронность версий
   .github/workflows/build-windows.yml
 ```

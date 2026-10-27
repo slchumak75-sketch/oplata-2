@@ -12,13 +12,15 @@ from __future__ import annotations
 
 import sys
 import tempfile
+from datetime import datetime
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT / "src"))
 
-from PySide6.QtCore import QDate, QTimer  # noqa: E402
-from PySide6.QtGui import QFont, QFontDatabase  # noqa: E402
+from PySide6.QtCore import QDate, QRectF, QTimer  # noqa: E402
+from PySide6.QtGui import QColor, QFont, QFontDatabase, QImage, QPainter  # noqa: E402
+from PySide6.QtPrintSupport import QPrinter  # noqa: E402
 from PySide6.QtWidgets import QApplication  # noqa: E402
 
 from oplata import styles  # noqa: E402
@@ -134,6 +136,40 @@ def main() -> int:
             operation.grab().save(str(OUT / "operation-dialog.png"))
             print("saved operation-dialog")
             operation.close()
+
+            # Печатная форма «Сводки»: первая страница A4, отрисованная
+            # тем же QTextDocument и с той же настройкой принтера, что и
+            # в окне предпросмотра. Дата/время фиксированы для стабильности.
+            summary = window.summary_view
+            summary.date_edit.setDate(QDate(2026, 10, 27))
+            summary.refresh()
+            document = summary.create_print_document(
+                datetime(2026, 10, 27, 19, 5)
+            )
+            printer = summary.configure_print_printer(
+                QPrinter(QPrinter.PrinterMode.HighResolution)
+            )
+            paper_rect = printer.paperRect(QPrinter.Unit.Point)
+            page_rect = printer.pageRect(QPrinter.Unit.Point)
+            document.setPageSize(page_rect.size())
+            scale = 2.0
+            image = QImage(
+                int(paper_rect.width() * scale),
+                int(paper_rect.height() * scale),
+                QImage.Format.Format_ARGB32,
+            )
+            image.fill(QColor("white"))
+            painter = QPainter(image)
+            painter.scale(scale, scale)
+            painter.translate(page_rect.left(), page_rect.top())
+            document.drawContents(
+                painter,
+                QRectF(0, 0, page_rect.width(), page_rect.height()),
+            )
+            painter.end()
+            image.save(str(OUT / "summary-print.png"))
+            print("saved summary-print")
+
             app.quit()
 
         QTimer.singleShot(200, shoot)

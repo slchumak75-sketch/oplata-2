@@ -1,21 +1,23 @@
 """Экран «Сводка» (макет 01-summary.png).
 
-Все цифры — заглушки ``calc.py`` (``0,00 руб.``), формул пока нет.
+Все цифры по-прежнему приходят из заглушек ``calc.py``. Печать не
+добавляет формул: она оформляет ровно тот снимок значений, который уже
+показан на экране после последнего ``refresh()``.
 """
 
 from __future__ import annotations
 
 from collections.abc import Callable
-from datetime import date
+from datetime import date, datetime
 
-from PySide6.QtCore import Qt
-from PySide6.QtGui import QColor, QFont
+from PySide6.QtCore import QMarginsF, Qt
+from PySide6.QtGui import QColor, QFont, QPageLayout, QPageSize, QTextDocument
+from PySide6.QtPrintSupport import QPrinter, QPrintPreviewDialog
 from PySide6.QtWidgets import (
     QCheckBox,
     QHBoxLayout,
     QHeaderView,
     QLabel,
-    QMessageBox,
     QPushButton,
     QTableWidget,
     QTableWidgetItem,
@@ -23,8 +25,9 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from .. import calc, styles
+from .. import __app_name__, __version__, calc, styles
 from ..dates import fmt_date, fmt_money, fmt_money_plain
+from ..reports import SummaryReportRow, build_summary_report_html
 from ..storage import DataStore
 from ..widgets import date_edit_value, kpi_card, make_date_edit, make_panel
 
@@ -39,6 +42,14 @@ class SummaryView(QWidget):
         super().__init__(parent)
         self.store = store
         self.on_open_supplier = on_open_supplier
+
+        # Снимок последних показанных значений для печатной формы.
+        # Заполняется в refresh(); печать ничего не пересчитывает сама.
+        self._report_date = date.today()
+        self._report_totals = calc.SummaryTotals()
+        self._report_rows: list[SummaryReportRow] = []
+        self._report_overdue_count = 0
+        self._report_include_archived = False
 
         root = QVBoxLayout(self)
         root.setContentsMargins(10, 10, 10, 10)
@@ -56,9 +67,10 @@ class SummaryView(QWidget):
         self.show_archived.toggled.connect(lambda *_: self.refresh())
         top.addWidget(self.show_archived)
         top.addStretch(1)
-        print_btn = QPushButton("🖨  Печать")
-        print_btn.clicked.connect(self._print_stub)
-        top.addWidget(print_btn)
+        self.print_button = QPushButton("🖨  Печать")
+        self.print_button.setToolTip("Открыть предпросмотр печати сводки")
+        self.print_button.clicked.connect(self._open_print_preview)
+        top.addWidget(self.print_button)
         root.addLayout(top)
 
         # --- 6 KPI-карточек ---
@@ -115,14 +127,69 @@ class SummaryView(QWidget):
 
         self.refresh()
 
-    def _print_stub(self) -> None:
-        # TODO(этап печати): реальная печать сводки (см. ROADMAP).
-        QMessageBox.information(
-            self,
-            "Печать",
-            "Печать пока не реализована — сейчас делается только оболочка "
-            "программы (см. docs/ROADMAP.md).",
+    def build_print_html(self, generated_at: datetime | None = None) -> str:
+        """HTML печатной формы по последнему экранному снимку."""
+
+        return build_summary_report_html(
+            on_date=self._report_date,
+            totals=self._report_totals,
+            rows=self._report_rows,
+            overdue_count=self._report_overdue_count,
+            include_archived=self._report_include_archived,
+            generated_at=generated_at,
+            app_name=__app_name__,
+            app_version=__version__,
         )
+
+    def create_print_document(
+        self, generated_at: datetime | None = None
+    ) -> QTextDocument:
+        """Создать ``QTextDocument`` для предпросмотра/печати/PDF."""
+
+        document = QTextDocument()
+        font = QFont(self.font())
+        font.setPointSize(10)
+        document.setDefaultFont(font)
+        document.setDocumentMargin(0)
+        document.setHtml(self.build_print_html(generated_at))
+        return document
+
+    @staticmethod
+    def render_print_document(printer: QPrinter, document: QTextDocument) -> None:
+        """Настроить размер страницы документа и отправить его на печать."""
+
+        document.setPageSize(printer.pageRect(QPrinter.Unit.Point).size())
+        document.print_(printer)
+
+    def configure_print_printer(self, printer: QPrinter) -> QPrinter:
+        """Единая настройка страницы для предпросмотра, PDF и скриншотов."""
+
+        page_layout = printer.pageLayout()
+        page_layout.setPageSize(QPageSize(QPageSize.PageSizeId.A4))
+        page_layout.setOrientation(QPageLayout.Orientation.Landscape)
+        page_layout.setUnits(QPageLayout.Unit.Millimeter)
+        page_layout.setMargins(QMarginsF(12, 12, 12, 12))
+        printer.setPageLayout(page_layout)
+        printer.setDocName(f"Сводка на {fmt_date(self._report_date)}")
+        return printer
+
+    def _open_print_preview(self) -> None:
+        self.refresh()
+        document = self.create_print_document()
+
+        printer = self.configure_print_printer(
+            QPrinter(QPrinter.PrinterMode.HighResolution)
+        )
+
+        preview = QPrintPreviewDialog(printer, self)
+        preview.setWindowTitle("Предпросмотр печати — Сводка")
+        preview.resize(1100, 800)
+        preview.paintRequested.connect(
+            lambda target_printer: self.render_print_document(
+                target_printer, document
+            )
+        )
+        preview.exec()
 
     def _on_item_clicked(self, item: QTableWidgetItem) -> None:
         if item.column() == 0:
@@ -132,8 +199,14 @@ class SummaryView(QWidget):
 
     def refresh(self) -> None:
         on_date = date_edit_value(self.date_edit)
+        include_archived = self.show_archived.isChecked()
 
         totals = calc.summary_totals(on_date)  # заглушка: все нули
+        self._report_date = on_date
+        self._report_totals = totals
+        self._report_include_archived = include_archived
+        self._report_rows = []
+
         self.kpi_values["total_debt"].setText(fmt_money(totals.total_debt))
         self.kpi_values["overdue"].setText(fmt_money(totals.overdue))
         self.kpi_values["due_today"].setText(fmt_money(totals.due_today))
@@ -143,11 +216,20 @@ class SummaryView(QWidget):
 
         suppliers = [
             s for s in self.store.data.suppliers
-            if self.show_archived.isChecked() or not s.archived
+            if include_archived or not s.archived
         ]
         self.table.setRowCount(len(suppliers))
         for row, supplier in enumerate(suppliers):
             debt_row = calc.supplier_debt_row(supplier.id, on_date)  # заглушка
+            self._report_rows.append(
+                SummaryReportRow(
+                    supplier_name=supplier.name,
+                    debt=debt_row.debt,
+                    overdue=debt_row.overdue,
+                    next_due_date=debt_row.next_due_date,
+                    next_due_amount=debt_row.next_due_amount,
+                )
+            )
 
             name_item = QTableWidgetItem(supplier.name)
             name_item.setForeground(QColor(styles.LINK_BLUE))
@@ -177,6 +259,7 @@ class SummaryView(QWidget):
                 self.table.setItem(row, col, item)
 
         overdue = calc.overdue_payments(on_date)  # заглушка: пустой список
+        self._report_overdue_count = len(overdue)
         self.overdue_title.setText(f"🔴  Просроченные оплаты ({len(overdue)})")
         self.overdue_text.setText(
             "Просроченных оплат нет 🎉" if not overdue else f"Просрочено операций: {len(overdue)}"

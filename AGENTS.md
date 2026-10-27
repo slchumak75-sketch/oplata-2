@@ -72,6 +72,7 @@ libfontconfig1`) — в CI они ставятся шагом workflow.
 | Цвета/стили | `src/oplata/styles.py` |
 | Шапка окна, навигация | `src/oplata/app.py` |
 | Экран «Сводка» | `src/oplata/views/summary_view.py` |
+| Печатная форма «Сводки» | `src/oplata/reports.py` (HTML без Qt) + предпросмотр в `summary_view.py` (ADR-011) |
 | Экраны «Поставщики»/«Покупатели» | `src/oplata/views/week_view.py` (один класс, параметр `kind`) |
 | Экран «Операции» | `src/oplata/views/operations_view.py` |
 | Экран «Данные» (календарь) | `src/oplata/views/data_view.py` |
