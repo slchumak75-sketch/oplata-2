@@ -12,7 +12,7 @@ from __future__ import annotations
 
 import sys
 import tempfile
-from datetime import datetime
+from datetime import date, datetime
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -28,11 +28,12 @@ from oplata.app import MainWindow  # noqa: E402
 from oplata.dialogs.counterparty_card import CounterpartyCardDialog  # noqa: E402
 from oplata.dialogs.delivery_dialog import DeliveryDialog  # noqa: E402
 from oplata.dialogs.operation_dialog import OperationDialog  # noqa: E402
+from oplata.dialogs.realization_dialog import RealizationDialog  # noqa: E402
 from oplata.models import Counterparty, Operation  # noqa: E402
 from oplata.storage import DataStore  # noqa: E402
 
 OUT = ROOT / "docs" / "screenshots"
-PAGES = ["summary", "suppliers", "customers", "operations", "data"]
+PAGES = ["summary", "payments", "suppliers", "customers", "data"]
 
 
 def main() -> int:
@@ -103,19 +104,25 @@ def main() -> int:
                     comment="предоплата",
                 ),
                 Operation(
-                    kind="Приход",
+                    kind="Реализация",
                     counterparty_id=buyer.id,
                     date="2026-10-28",
                     amount="12345.67",
                     document="Реализация 3",
                 ),
             ])
-            window.operations_view.refresh()
-            window.show_page(3)
-            window.operations_view.table.selectRow(0)
+            window.payments_view.refresh()
+            window.show_page(1)
+            window.payments_view.table.selectRow(0)
             app.processEvents()
-            window.grab().save(str(OUT / "operations.png"))
-            print("saved operations")
+            window.grab().save(str(OUT / "payments.png"))
+            print("saved payments")
+            window.customers_view.refresh()
+            window.customers_view.goto_date(date(2026, 10, 28))
+            window.show_page(3)
+            app.processEvents()
+            window.grab().save(str(OUT / "customers.png"))
+            print("saved customers with realization")
             dialog = CounterpartyCardDialog(store, "supplier", selected_id=ggg.id)
             dialog.show()
             app.processEvents()
@@ -130,7 +137,16 @@ def main() -> int:
             delivery.grab().save(str(OUT / "delivery-dialog.png"))
             print("saved delivery-dialog")
             delivery.close()
-            # Окно операции журнала: тип, дата, сумма, документ и комментарий
+            realization = RealizationDialog(
+                store, buyer.id, preset_date=date(2026, 10, 28)
+            )
+            realization.amount_edit.setText("12 345,67")
+            realization.show()
+            app.processEvents()
+            realization.grab().save(str(OUT / "realization-dialog.png"))
+            print("saved realization-dialog")
+            realization.close()
+            # Окно операции: тип, дата, сумма, документ и комментарий
             operation = OperationDialog(store, initial_counterparty_id=ggg.id)
             operation.date_edit.setDate(QDate(2026, 10, 26))
             operation.amount_edit.setText("88 888,88")

@@ -45,12 +45,13 @@ oplata-2/
     views/
       summary_view.py           # Сводка + снимок значений и QPrintPreviewDialog
       week_view.py              # Поставщики и Покупатели (kind="supplier"/"customer")
-      operations_view.py        # Операции (журнал, фильтры, CRUD)
+      operations_view.py        # Оплаты (OperationsView с fixed_kind="Оплата")
       data_view.py              # Данные (черновик календаря на год + явное «Сохранить»)
     dialogs/
       counterparty_card.py      # Карточки поставщика/покупателя
       delivery_dialog.py        # Окно «Поставка» (дата, сумма с НДС, срок оплаты)
-      operation_dialog.py       # Добавление/редактирование операции журнала
+      realization_dialog.py     # Окно «Реализация» покупателя (без срока)
+      operation_dialog.py       # Добавление/редактирование операции/оплаты
   tests/
     test_core.py                # даты, модели, storage, срок и архивный долг
     test_ui_smoke.py            # 5 экранов, поставка, ввод ячеек, поле суммы, календарь, CRUD, печать PDF

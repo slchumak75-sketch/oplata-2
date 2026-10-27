@@ -4,9 +4,9 @@
 
 * Карточка поставщика: наименование*, отсрочка платежа (дней),
   режим оплаты (Предоплата / Реализация), «В архиве».
-* Карточка покупателя: макета не было — сделана симметрично поставщику
-  (ЗАФИКСИРОВАННОЕ ПРЕДПОЛОЖЕНИЕ, см. SPEC.md §8, подтвердить у пользователя).
-* Операция журнала: тип, поставщик, дата, сумма, документ, комментарий.
+* Карточка покупателя: только наименование и архив (уточнено v0.7.0).
+* Операция: тип («Приход» поставщика, «Реализация» покупателя или
+  «Оплата»), контрагент, дата, сумма, документ, комментарий.
 
 Никаких вычисляемых полей (долг, просрочка) здесь нет и быть не должно —
 они появятся в ``calc.py`` на этапе формул.
@@ -48,12 +48,12 @@ class Counterparty:
 
 @dataclass
 class Operation:
-    """Строка «Журнала операций».
+    """Операция недельных таблиц и экрана «Оплаты».
 
-    Типы пока: «Приход» (поставка) и «Оплата». У поставки ``date`` — дата
-    поставки, а ``due_date`` — срок оплаты, рассчитанный при вводе
-    (дата поставки + отсрочка, см. calc.payment_due_date); пустой
-    ``due_date`` у старых записей пересчитывается на лету.
+    Типы: «Приход» (поставка поставщика), «Реализация» (покупатель) и
+    «Оплата». Срок ``due_date`` есть только у «Прихода» и рассчитывается
+    при вводе (дата поставки + отсрочка, см. calc.payment_due_date);
+    у «Реализации» и «Оплаты» он пуст.
     """
 
     kind: str = ""
@@ -102,12 +102,25 @@ class AppData:
 
     @classmethod
     def from_dict(cls, data: dict) -> "AppData":
-        return cls(
+        result = cls(
             suppliers=[Counterparty.from_dict(x) for x in data.get("suppliers", [])],
             customers=[Counterparty.from_dict(x) for x in data.get("customers", [])],
             operations=[Operation.from_dict(x) for x in data.get("operations", [])],
-            day_overrides={str(k): str(v) for k, v in data.get("day_overrides", {}).items()},
+            day_overrides={
+                str(k): str(v) for k, v in data.get("day_overrides", {}).items()
+            },
         )
+        # Миграция v0.8.0: у покупателей прежний «Приход» теперь называется
+        # «Реализация» и не имеет срока оплаты.
+        customer_ids = {customer.id for customer in result.customers}
+        for operation in result.operations:
+            if (
+                operation.kind == KIND_INCOME
+                and operation.counterparty_id in customer_ids
+            ):
+                operation.kind = KIND_SALE
+                operation.due_date = ""
+        return result
 
 
 def seed_data() -> AppData:
@@ -144,6 +157,7 @@ def seed_data() -> AppData:
 # ---------------------------------------------------------------------------
 
 KIND_INCOME = "Приход"
+KIND_SALE = "Реализация"
 KIND_PAYMENT = "Оплата"
 
 
@@ -235,6 +249,28 @@ def add_delivery(
         date=delivery_date_iso,
         amount=f"{amount.quantize(Decimal('0.01')):.2f}",
         due_date=due_date_iso,
+    )
+    data.operations.append(op)
+    return op
+
+
+def add_realization(
+    data: AppData,
+    counterparty_id: str,
+    realization_date_iso: str,
+    amount: Decimal,
+) -> Operation:
+    """Добавить реализацию покупателя из окна «Реализация».
+
+    Как и поставка, отдельная реализация не заменяет другие операции этого
+    дня. Срока оплаты у реализации нет.
+    """
+    op = Operation(
+        kind=KIND_SALE,
+        counterparty_id=counterparty_id,
+        date=realization_date_iso,
+        amount=f"{amount.quantize(Decimal('0.01')):.2f}",
+        due_date="",
     )
     data.operations.append(op)
     return op

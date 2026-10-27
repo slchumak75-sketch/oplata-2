@@ -33,7 +33,16 @@ def test_main_window_all_pages(qt_app, store):
     from oplata.app import MainWindow
 
     window = MainWindow(store)
+    assert [button.text() for button in window.nav_buttons] == [
+        "Сводка",
+        "Оплаты",
+        "Поставщики",
+        "Покупатели",
+        "Данные",
+    ]
     assert window.stack.count() == 5
+    assert window.payments_view.fixed_kind == "Оплата"
+    assert not hasattr(window, "operations_view")
     for index in range(5):
         window.show_page(index)
         assert window.stack.currentIndex() == index
@@ -45,7 +54,7 @@ def test_main_window_all_pages(qt_app, store):
 
 
 def test_week_table_income_and_payment_input(qt_app, store):
-    """Прямой ввод, розовые выходные/праздники и салатовая текущая дата."""
+    """Прямой ввод; салатовая только ячейка даты, выходные — розовые."""
     from datetime import date
 
     from PySide6.QtCore import Qt
@@ -66,7 +75,7 @@ def test_week_table_income_and_payment_input(qt_app, store):
         {
             holiday.isoformat(): "off",
             saturday.isoformat(): "work",
-            today.isoformat(): "off",  # салатовый сегодня важнее розового
+            today.isoformat(): "off",  # даже так красим только поле «27 вт»
         }
     )
     view._rebuild_table(view._partners, view._days, today)
@@ -89,14 +98,19 @@ def test_week_table_income_and_payment_input(qt_app, store):
         brush = table.item(row, col).background()
         return None if brush.style() == Qt.BrushStyle.NoBrush else brush.color().name()
 
-    assert bg_name(1, 3 + 1 * 3) == styles.WEEK_TABLE_TODAY_GREEN
-    assert bg_name(FIRST_DATA_ROW, 3 + 1 * 3) == styles.WEEK_TABLE_TODAY_GREEN
+    assert bg_name(1, 3 + 1 * 3) == styles.WEEK_TABLE_TODAY_GREEN  # только «27 вт»
+    assert bg_name(2, 3 + 1 * 3) is None
+    assert bg_name(TOTAL_ROW, 3 + 1 * 3) is None
+    assert bg_name(FIRST_DATA_ROW, 3 + 1 * 3) is None
     assert bg_name(1, 3 + 4 * 3) == styles.WEEK_TABLE_WEEKEND_PINK  # праздник
     assert bg_name(FIRST_DATA_ROW, 3 + 4 * 3) == styles.WEEK_TABLE_WEEKEND_PINK
     assert bg_name(FIRST_DATA_ROW, 3 + 5 * 3) is None  # рабочая суббота
     assert bg_name(FIRST_DATA_ROW, 3 + 6 * 3) == styles.WEEK_TABLE_WEEKEND_PINK
     assert bg_name(FIRST_DATA_ROW, 3) is None  # обычный понедельник без заливки
     assert view.date_edit.minimumWidth() >= 138  # год не под стрелкой календаря
+    assert view.date_edit.calendarPopup()
+    # Кастомный drop-down в QSS скрывал нативную стрелку на Windows.
+    assert "QDateEdit::drop-down" not in styles.APP_STYLESHEET
 
     monday = view._days[0]
     income.setText("300")  # программная правка = тот же сигнал, что от Enter
@@ -111,7 +125,7 @@ def test_week_table_income_and_payment_input(qt_app, store):
     assert [op.kind for op in store.data.operations] == ["Приход", "Оплата"]
     assert payment.text() == "200,00"  # переформатировано после сохранения
     assert table.item(TOTAL_ROW, 5).text() == "200,00"  # ВСЕГО обновилось
-    assert window.operations_view.found_label.text() == "Найдено: 2"
+    assert window.payments_view.found_label.text() == "Найдено: 1"  # только оплата
 
     payment.setText("")  # очистка ячейки удаляет только операцию оплаты
     assert [op.kind for op in store.data.operations] == ["Приход"]
@@ -170,8 +184,8 @@ def test_delivery_dialog_saves_and_debt_shows_in_week(qt_app, store):
     window.close()
 
 
-def test_operation_dialog_and_journal_crud(qt_app, store):
-    """Журнал: добавить операцию, поправить её, отфильтровать и удалить."""
+def test_operation_dialog_and_payments_crud(qt_app, store):
+    """Редактор поставки и CRUD оплаты на экране «Оплаты»."""
     from datetime import date
 
     from PySide6.QtCore import QDate
@@ -213,11 +227,24 @@ def test_operation_dialog_and_journal_crud(qt_app, store):
     assert op.document == "Накладная 42"  # документ/комментарий пережили правки
     edit2.close()
 
+    # Отдельная оплата для экрана «Оплаты»: вкладка должна видеть только её,
+    # а не поставку выше.
+    payment_dialog = OperationDialog(
+        store, initial_counterparty_id=supplier.id, initial_kind="Оплата"
+    )
+    assert payment_dialog.kind_combo.currentText() == "Оплата"
+    assert payment_dialog.due_panel.isHidden()
+    payment_dialog.date_edit.setDate(QDate(2026, 10, 27))
+    payment_dialog.amount_edit.setText("200")
+    payment_dialog._save()
+    payment_op = next(item for item in store.data.operations if item.kind == "Оплата")
+    payment_dialog.close()
+
     window = MainWindow(store)
-    journal = window.operations_view
-    assert journal.found_label.text() == "Найдено: 1"
-    journal._select_operation_row(op.id)
-    assert journal.selected_operation_id() == op.id
+    journal = window.payments_view
+    assert journal.found_label.text() == "Найдено: 1"  # оплата, без поставки
+    journal._select_operation_row(payment_op.id)
+    assert journal.selected_operation_id() == payment_op.id
     assert journal.edit_btn.isEnabled() and journal.delete_btn.isEnabled()
 
     journal.date_from.setText("28.10.2026")  # операция от 27.10 — вне диапазона
@@ -225,16 +252,16 @@ def test_operation_dialog_and_journal_crud(qt_app, store):
     journal.reset_filters()
     assert journal.found_label.text() == "Найдено: 1"
 
-    # Главное окно после CRUD в журнале обновляет недельную таблицу:
-    # до удаления долг виден на сроке 26.11 (чт), после — ячейка пуста.
+    # Поставка по-прежнему даёт долг на сроке 26.11 (чт). Удаление оплаты
+    # из журнала его не меняет: оплата архивный долг пока не уменьшает.
     window.suppliers_view.goto_date(date(2026, 11, 26))
     week_table = window.suppliers_view.table
     ggg_row = 4 + [s.name for s in store.data.suppliers].index("ггг")
     assert week_table.item(ggg_row, 3 + 3 * 3 + 1).text() == "1 200,00"
 
-    assert journal.delete_operation(op.id)
-    assert week_table.item(ggg_row, 3 + 3 * 3 + 1).text() == ""
-    assert store.data.operations == []
+    assert journal.delete_operation(payment_op.id)
+    assert week_table.item(ggg_row, 3 + 3 * 3 + 1).text() == "1 200,00"
+    assert [item.id for item in store.data.operations] == [op.id]
     assert journal.found_label.text() == "Найдено: 0"
     assert not journal.edit_btn.isEnabled()
     window.close()
@@ -420,26 +447,92 @@ def test_data_calendar_marks_days_and_saves_explicitly(qt_app, store):
     window.close()
 
 
-def test_customer_income_input_stores_due_date(qt_app, store):
-    """У покупателей «Приход» тоже вводится ячейкой и получает срок."""
+def test_customer_sale_table_and_direct_input(qt_app, store):
+    """Покупатели: «Реализация/Оплата», без «Долга» и без срока оплаты."""
+    from datetime import date
+
+    from PySide6.QtCore import Qt
+
+    from oplata import styles
     from oplata.app import MainWindow
     from oplata.models import Counterparty
-    from oplata.views.week_view import FIRST_DATA_ROW
+    from oplata.views.week_view import FIRST_DATA_ROW, TOTAL_ROW
 
-    customer = Counterparty(name="Покупатель А", deferment_days=2)
+    customer = Counterparty(name="Покупатель А")
     store.data.customers.append(customer)
     window = MainWindow(store)
     view = window.customers_view
-    income = view.table.item(FIRST_DATA_ROW, 3)
-    monday = view._days[0]
-    income.setText("500")
+    monday = date(2026, 10, 26)
+    today = date(2026, 10, 27)
+    view.goto_date(monday)
+    store.data.day_overrides[today.isoformat()] = "off"
+    view._rebuild_table(view._partners, view._days, today)
+    table = view.table
 
+    assert table.columnCount() == 17  # 3 левые + 7 дней * 2 подколонки
+    assert table.item(2, 3).text() == "Реализация"
+    assert table.item(2, 4).text() == "Оплата"
+    assert all(
+        table.item(2, col) is None or table.item(2, col).text() != "Долг"
+        for col in range(table.columnCount())
+    )
+
+    def bg_name(row, col):
+        brush = table.item(row, col).background()
+        return None if brush.style() == Qt.BrushStyle.NoBrush else brush.color().name()
+
+    # Только верхнее поле «27 вт» салатовое; ниже этот день не красим.
+    assert bg_name(1, 3 + 1 * 2) == styles.WEEK_TABLE_TODAY_GREEN
+    assert bg_name(2, 3 + 1 * 2) is None
+    assert bg_name(TOTAL_ROW, 3 + 1 * 2) is None
+    assert bg_name(FIRST_DATA_ROW, 3 + 1 * 2) is None
+    # Суббота как обычный выходной остаётся розовой и в теле таблицы.
+    assert bg_name(FIRST_DATA_ROW, 3 + 5 * 2) == styles.WEEK_TABLE_WEEKEND_PINK
+
+    sale = table.item(FIRST_DATA_ROW, 3)
+    sale.setText("500")
     (op,) = store.data.operations
-    assert (op.counterparty_id, op.kind, op.date, op.amount) == (
+    assert (op.counterparty_id, op.kind, op.date, op.amount, op.due_date) == (
         customer.id,
-        "Приход",
+        "Реализация",
         monday.isoformat(),
         "500.00",
+        "",
     )
-    assert op.due_date == view._days[2].isoformat()  # понедельник + 2 дня
+    assert sale.text() == "500,00"
     window.close()
+
+
+def test_realization_dialog_saves_without_due_date(qt_app, store):
+    """Окно покупателя: «Реализация», дата реализации, без срока оплаты."""
+    from datetime import date
+
+    from PySide6.QtWidgets import QLabel
+
+    from oplata.dialogs.realization_dialog import RealizationDialog
+    from oplata.models import Counterparty
+
+    customer = Counterparty(name="Покупатель Б")
+    store.data.customers.append(customer)
+    store.save()
+    dialog = RealizationDialog(
+        store, customer.id, preset_date=date(2026, 10, 27)
+    )
+    labels = [label.text() for label in dialog.findChildren(QLabel)]
+    assert dialog.windowTitle() == "Реализация"
+    assert "Дата реализации *" in labels
+    assert not any("СРОК ОПЛАТЫ" in text.upper() for text in labels)
+    assert not hasattr(dialog, "due_label")
+
+    dialog.amount_edit.setText("1 250,50")
+    dialog._save()
+    assert dialog.saved_date == date(2026, 10, 27)
+    (op,) = store.data.operations
+    assert (op.kind, op.counterparty_id, op.date, op.amount, op.due_date) == (
+        "Реализация",
+        customer.id,
+        "2026-10-27",
+        "1250.50",
+        "",
+    )
+    dialog.close()

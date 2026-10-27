@@ -1,4 +1,4 @@
-"""Окно добавления/редактирования операции из «Журнала операций».
+"""Окно добавления/редактирования операции (с экрана «Оплаты»).
 
 Назначение: исправлять уже введённые поставки/оплаты и вручную добавлять
 операцию с документом и комментарием, которых нет при вводе из недельной
@@ -33,12 +33,12 @@ from PySide6.QtWidgets import (
 
 from .. import calc
 from ..dates import fmt_date, fmt_money_plain, parse_money
-from ..models import KIND_INCOME, KIND_PAYMENT, Operation
+from ..models import KIND_INCOME, KIND_PAYMENT, KIND_SALE, Operation
 from ..storage import DataStore
 from ..widgets import blue_button, date_edit_value, make_amount_edit, make_date_edit
 from .delivery_dialog import due_reason_text
 
-OPERATION_KINDS = (KIND_INCOME, KIND_PAYMENT)
+OPERATION_KINDS = (KIND_INCOME, KIND_SALE, KIND_PAYMENT)
 NO_COUNTERPARTY = "— выберите контрагента —"
 
 
@@ -57,6 +57,7 @@ class OperationDialog(QDialog):
         store: DataStore,
         operation: Operation | None = None,
         initial_counterparty_id: str | None = None,
+        initial_kind: str | None = None,
         parent: QWidget | None = None,
     ) -> None:
         super().__init__(parent)
@@ -65,7 +66,9 @@ class OperationDialog(QDialog):
         self.changed = False
         self.saved_operation_id: str | None = operation.id if operation else None
 
-        self._initial_kind = operation.kind if operation else KIND_INCOME
+        self._initial_kind = (
+            operation.kind if operation else (initial_kind or KIND_INCOME)
+        )
         self._initial_counterparty_id = (
             operation.counterparty_id if operation else (initial_counterparty_id or "")
         )

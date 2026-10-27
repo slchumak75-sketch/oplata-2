@@ -1,10 +1,11 @@
-"""Экран «Операции» — журнал операций с фильтрами (макет 04-operations.png).
+"""Экран «Оплаты» — журнал оплат с фильтрами.
 
-Сюда попадают поставки из окна «Поставка» и суммы из ячеек недельных
-таблиц. С v0.4.0 операцию можно добавить вручную, отредактировать
-(двойной клик или кнопка «Изменить») и удалить с подтверждением.
-Долги здесь не считаются: журнал показывает исходные операции, а
-расчёты таблицы поставщиков делает calc.py.
+С v0.8.0 отдельная вкладка «Операции» удалена по запросу пользователя;
+этот экран открывается из вкладки «Оплаты» и показывает только операции
+типа «Оплата». Оплату можно добавить вручную, отредактировать (двойной
+клик или кнопка «Изменить») и удалить с подтверждением. Долги здесь не
+считаются: журнал показывает исходные операции, а расчёты таблицы
+поставщиков делает calc.py.
 """
 
 from __future__ import annotations
@@ -31,7 +32,7 @@ from PySide6.QtWidgets import (
 
 from ..dates import fmt_date, fmt_money_plain
 from ..dialogs.operation_dialog import OperationDialog
-from ..models import Operation
+from ..models import KIND_INCOME, KIND_PAYMENT, KIND_SALE, Operation
 from ..storage import DataStore
 from ..widgets import danger_button, green_button, make_panel
 
@@ -76,10 +77,12 @@ class OperationsView(QWidget):
         self,
         store: DataStore,
         on_data_changed: Callable[[], None] | None = None,
+        fixed_kind: str | None = None,
         parent: QWidget | None = None,
     ) -> None:
         super().__init__(parent)
         self.store = store
+        self.fixed_kind = fixed_kind
         # После добавления/правки/удаления главное окно обновляет таблицы
         # поставщиков/покупателей и «Сводку»; сам журнал обновляется здесь.
         self.on_data_changed = on_data_changed
@@ -96,8 +99,14 @@ class OperationsView(QWidget):
         filters.addWidget(self.supplier_filter)
 
         self.kind_filter = QComboBox()
-        # TODO(этап операций): список типов уточнить у пользователя.
-        self.kind_filter.addItems([ALL_OPERATIONS, "Приход", "Оплата"])
+        if self.fixed_kind is None:
+            self.kind_filter.addItems(
+                [ALL_OPERATIONS, KIND_INCOME, KIND_SALE, KIND_PAYMENT]
+            )
+        else:
+            # Экран «Оплаты» всегда показывает один фиксированный тип.
+            self.kind_filter.addItems([self.fixed_kind])
+            self.kind_filter.setVisible(False)
         self.kind_filter.currentIndexChanged.connect(lambda *_: self.refresh())
         filters.addWidget(self.kind_filter)
 
@@ -139,7 +148,7 @@ class OperationsView(QWidget):
         # --- журнал ---
         panel, panel_layout = make_panel()
         title_row = QHBoxLayout()
-        title = QLabel("Журнал операций")
+        title = QLabel("Оплаты" if self.fixed_kind == KIND_PAYMENT else "Журнал операций")
         title.setObjectName("PanelTitle")
         title_row.addWidget(title)
         title_row.addStretch(1)
@@ -252,7 +261,10 @@ class OperationsView(QWidget):
     def _add_operation(self) -> None:
         initial_id = self.supplier_filter.currentData() or None
         dialog = OperationDialog(
-            self.store, initial_counterparty_id=str(initial_id or ""), parent=self
+            self.store,
+            initial_counterparty_id=str(initial_id or ""),
+            initial_kind=self.fixed_kind,
+            parent=self,
         )
         dialog.exec()
         if dialog.changed:

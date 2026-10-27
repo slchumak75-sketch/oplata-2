@@ -1,8 +1,9 @@
 """Главное окно: тёмно-синяя шапка + 5 экранов (QStackedWidget).
 
-Шапка по макетам: слева «▦ Оплаты / Строймаркет», далее вкладки
-Сводка | Поставщики | Покупатели | Операции | Данные, справа кнопки
-«Карточка поставщика» и «Карточка покупателя».
+Шапка: слева «▦ Оплаты / Строймаркет», далее вкладки
+Сводка | Оплаты | Поставщики | Покупатели | Данные, справа кнопки
+«Карточка поставщика» и «Карточка покупателя». Вкладки «Операции»
+с v0.8.0 нет по запросу пользователя.
 """
 
 from __future__ import annotations
@@ -23,14 +24,16 @@ from PySide6.QtWidgets import (
 from . import __app_name__, __version__, styles
 from .dialogs.counterparty_card import CounterpartyCardDialog
 from .dialogs.delivery_dialog import DeliveryDialog
+from .dialogs.realization_dialog import RealizationDialog
+from .models import KIND_PAYMENT
 from .storage import DataStore
 from .views.data_view import DataView
 from .views.operations_view import OperationsView
 from .views.summary_view import SummaryView
 from .views.week_view import WeekView
 
-NAV_TITLES = ("Сводка", "Поставщики", "Покупатели", "Операции", "Данные")
-IDX_SUMMARY, IDX_SUPPLIERS, IDX_CUSTOMERS, IDX_OPERATIONS, IDX_DATA = range(5)
+NAV_TITLES = ("Сводка", "Оплаты", "Поставщики", "Покупатели", "Данные")
+IDX_SUMMARY, IDX_PAYMENTS, IDX_SUPPLIERS, IDX_CUSTOMERS, IDX_DATA = range(5)
 
 
 class MainWindow(QMainWindow):
@@ -64,9 +67,12 @@ class MainWindow(QMainWindow):
             "customer",
             lambda cid: self.open_counterparty_card("customer", cid),
             on_data_changed=self.refresh_after_week_edit,
+            on_open_realization=self.open_realization_dialog,
         )
-        self.operations_view = OperationsView(
-            store, on_data_changed=self.refresh_after_operation_change
+        self.payments_view = OperationsView(
+            store,
+            on_data_changed=self.refresh_after_operation_change,
+            fixed_kind=KIND_PAYMENT,
         )
         self.data_view = DataView(
             store, on_calendar_saved=self.refresh_after_calendar_change
@@ -75,9 +81,9 @@ class MainWindow(QMainWindow):
         self.stack = QStackedWidget()
         for view in (
             self.summary_view,
+            self.payments_view,
             self.suppliers_view,
             self.customers_view,
-            self.operations_view,
             self.data_view,
         ):
             self.stack.addWidget(view)
@@ -169,12 +175,33 @@ class MainWindow(QMainWindow):
         )
         dialog.exec()
         if dialog.changed:
-            self.operations_view.refresh()
+            self.payments_view.refresh()
             self.summary_view.refresh()
             if dialog.saved_due_date is not None:
                 self.suppliers_view.goto_date(dialog.saved_due_date)
             else:
                 self.suppliers_view.refresh()
+
+    # ------------------------------------------------------------ реализация
+    def open_realization_dialog(self, customer_id: str, preset_date=None) -> None:
+        """Окно «Реализация» по клику по имени покупателя."""
+        dialog = RealizationDialog(
+            self.store,
+            customer_id,
+            preset_date=preset_date,
+            on_open_card=lambda: self.open_counterparty_card(
+                "customer", customer_id
+            ),
+            parent=self,
+        )
+        dialog.exec()
+        if dialog.changed:
+            self.payments_view.refresh()
+            self.summary_view.refresh()
+            if dialog.saved_date is not None:
+                self.customers_view.goto_date(dialog.saved_date)
+            else:
+                self.customers_view.refresh()
 
     # -------------------------------------------------------------- карточки
     def open_counterparty_card(self, kind: str, selected_id: str | None) -> None:
@@ -182,17 +209,17 @@ class MainWindow(QMainWindow):
             self.store,
             kind,
             selected_id=selected_id,
-            on_open_operations=self._go_to_operations,
+            on_open_operations=self._go_to_payments,
             parent=self,
         )
         dialog.exec()
         if dialog.changed:
             self.refresh_all()
 
-    def _go_to_operations(self, kind: str, counterparty_id: str) -> None:
-        self.show_page(IDX_OPERATIONS)
+    def _go_to_payments(self, kind: str, counterparty_id: str) -> None:
+        self.show_page(IDX_PAYMENTS)
         if kind == "supplier" and counterparty_id:
-            self.operations_view.set_supplier_filter(counterparty_id)
+            self.payments_view.set_supplier_filter(counterparty_id)
 
     def refresh_after_week_edit(self) -> None:
         """После ввода суммы в недельной таблице обновить зависимые экраны.
@@ -200,7 +227,7 @@ class MainWindow(QMainWindow):
         Саму недельную таблицу не трогаем — она уже показала введённое
         и пересчитала свою строку «ВСЕГО».
         """
-        self.operations_view.refresh()
+        self.payments_view.refresh()
         self.summary_view.refresh()
 
     def refresh_after_operation_change(self) -> None:
@@ -224,6 +251,6 @@ class MainWindow(QMainWindow):
         self.summary_view.refresh()
         self.suppliers_view.refresh()
         self.customers_view.refresh()
-        self.operations_view.refresh_supplier_filter()
-        self.operations_view.refresh()
+        self.payments_view.refresh_supplier_filter()
+        self.payments_view.refresh()
         # DataView от контрагентов не зависит — не трогаем, чтобы не сбрасывать год.

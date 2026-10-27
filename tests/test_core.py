@@ -66,6 +66,39 @@ def test_appdata_roundtrip():
     assert restored.day_overrides == {"2026-01-01": "off"}
 
 
+def test_old_customer_income_migrates_to_sale_without_due_date():
+    customer = Counterparty(name="Покупатель")
+    supplier = Counterparty(name="Поставщик")
+    data = AppData(
+        suppliers=[supplier],
+        customers=[customer],
+        operations=[
+            Operation(
+                kind=KIND_INCOME,
+                counterparty_id=customer.id,
+                date="2026-10-26",
+                amount="100.00",
+                due_date="2026-10-28",
+            ),
+            Operation(
+                kind=KIND_INCOME,
+                counterparty_id=supplier.id,
+                date="2026-10-26",
+                amount="200.00",
+                due_date="2026-10-28",
+            ),
+        ],
+    )
+
+    restored = AppData.from_dict(data.to_dict())
+    customer_op, supplier_op = restored.operations
+    assert (customer_op.kind, customer_op.due_date) == ("Реализация", "")
+    assert (supplier_op.kind, supplier_op.due_date) == (
+        KIND_INCOME,
+        "2026-10-28",
+    )
+
+
 def test_storage_creates_and_reloads(tmp_path):
     path = tmp_path / "data.json"
     store = DataStore(path)

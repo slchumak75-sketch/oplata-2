@@ -23,7 +23,9 @@
 ``summary_totals``, ``supplier_debt_row``, ``overdue_payments``.
 Не распространять на неё формулы без отдельного ТЗ.
 
-Отображение ввода: «Приход»/«Оплата» за день = суммы операций за день.
+Отображение ввода: «Приход»/«Реализация»/«Оплата» за день = суммы
+операций соответствующего типа за день. Срок и долг по-прежнему
+считаются только для поставщицкого «Прихода».
 """
 
 from __future__ import annotations
@@ -37,6 +39,7 @@ from .dates import fmt_money_plain
 from .models import (
     KIND_INCOME,
     KIND_PAYMENT,
+    KIND_SALE,
     AppData,
     Counterparty,
     Operation,
@@ -46,7 +49,11 @@ from .models import (
 
 ZERO = Decimal("0")
 
-_COLUMN_KIND_TO_OP_KIND = {"income": KIND_INCOME, "payment": KIND_PAYMENT}
+_COLUMN_KIND_TO_OP_KIND = {
+    "income": KIND_INCOME,
+    "sale": KIND_SALE,
+    "payment": KIND_PAYMENT,
+}
 
 
 # ---------------------------------------------------------------------------
@@ -136,7 +143,12 @@ def operation_due_date(
     op: Operation, counterparty: Counterparty, day_overrides: Mapping[str, str]
 ) -> date | None:
     """Срок оплаты поставки: сохранённый при вводе или пересчёт на лету
-    (для операций, введённых до v0.3.0, у которых due_date пуст)."""
+    (для операций, введённых до v0.3.0, у которых due_date пуст).
+
+    У «Реализации» покупателя и у «Оплаты» срока оплаты нет.
+    """
+    if op.kind != KIND_INCOME:
+        return None
     if op.due_date:
         try:
             return date.fromisoformat(op.due_date)
@@ -219,9 +231,9 @@ def week_cell_amount(
     operations: Sequence[Operation] = (),
     data: AppData | None = None,
 ) -> Decimal:
-    """Числовое значение ячейки Приход/Долг/Оплата.
+    """Числовое значение ячейки Приход/Реализация/Долг/Оплата.
 
-    ``income``/``payment`` — суммы операций за день. ``debt`` — исходная сумма
+    ``income``/``sale``/``payment`` — суммы операций за день. ``debt`` — исходная сумма
     поставок со сроком в этот день (архив, оплата не уменьшает) (нужен ``data``: поставщик,
     его условия и календарь выходных).
     """
