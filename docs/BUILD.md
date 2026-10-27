@@ -2,13 +2,15 @@
 
 ## Для пользователя: где скачать готовую программу
 
-Программа собирается автоматически на GitHub при каждом обновлении. Начиная
-с v0.4.1 каждый запуск **Build Windows** создаёт два варианта:
+Программа собирается автоматически на GitHub при каждом обновлении.
+Для ускорения обычных задач (ADR-013) ветки и Pull Request собирают
+только рекомендуемый folder-вариант. Запасной single-file создаётся
+для релизных тегов `v*` и при ручном запуске с опцией `build_single`.
 
 | Артефакт | Что внутри | Когда использовать |
 |---|---|---|
 | `Oplata-windows-folder-vX.Y.Z` — **рекомендуется** | папка `Oplata` с `Oplata.exe`, DLL и служебными файлами + `START_HERE_RU.txt` | основной вариант; не распаковывается во временную папку при каждом запуске и обычно менее подозрителен для эвристик браузера/антивируса |
-| `Oplata-windows-single-file-vX.Y.Z` | один `Oplata.exe` + `START_HERE_RU.txt` | запасной вариант, если нужен именно один файл |
+| `Oplata-windows-single-file-vX.Y.Z` | один `Oplata.exe` + `START_HERE_RU.txt` | запасной вариант в Releases/ручной сборке, если нужен именно один файл |
 
 ### Скачивание рекомендуемого варианта
 
@@ -85,13 +87,14 @@ Windows или SmartScreen ради одной загрузки. После ск
 
 | Триггер | Что происходит |
 |---|---|
-| push в `main` или `arena/**`, Pull Request | тесты (Ubuntu, headless Qt) → генерация Windows-метаданных → сборка folder и single-file на `windows-latest` → smoke-test обоих EXE → проверка VersionInfo → SHA-256 → два артефакта |
-| push тега `v*` (например `v0.4.1`) | всё выше **+ GitHub Release** с двумя ZIP и `SHA256SUMS.txt` |
-| вручную (Actions → Build Windows → Run workflow) | как push |
+| push в `main` или `arena/**`, Pull Request | тесты (Ubuntu, headless Qt) → генерация Windows-метаданных → **только folder** на `windows-latest` → smoke-test EXE → проверка VersionInfo → SHA-256 → один артефакт |
+| push тега `v*` (например `v0.4.1`) | тесты → **folder + single-file** → smoke-test обоих EXE → ZIP, SHA-256 и **GitHub Release** |
+| вручную (Actions → Build Windows → Run workflow) | как push; галочка `build_single` добавляет single-file |
 
-Artifacts загружаются из каталогов `package-folder/` и `package-single/`
-напрямую. GitHub сам создаёт один скачиваемый ZIP для каждого артефакта;
-прежней вложенности «ZIP внутри ZIP» больше нет.
+Artifacts загружаются напрямую из `package-folder/`, а когда собран
+запасной вариант — также из `package-single/`. GitHub сам создаёт один
+скачиваемый ZIP для каждого артефакта; вложенности «ZIP внутри ZIP» нет.
+Релизные ZIP на обычных ветках не готовятся — они нужны только тегам.
 
 Сборка падает, если падают тесты, если хотя бы один готовый EXE не
 запускается в `--self-test` или если в EXE отсутствуют ожидаемые

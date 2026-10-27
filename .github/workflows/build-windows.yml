@@ -1,16 +1,16 @@
 # Автосборка Windows-приложения «Оплаты — Строймаркет».
 #
-# Когда запускается:
-#   * push в main или arena/**  -> тесты + две Windows-сборки (артефакты);
-#   * pull request              -> тесты + две Windows-сборки (артефакты);
-#   * push тега v* (напр. v0.4.1) -> + публикация GitHub Release с zip;
-#   * вручную: Actions -> Build Windows -> Run workflow.
+# Быстрый режим (ADR-013):
+#   * push в main или arena/**, pull request -> тесты + folder-сборка;
+#   * push тега v* -> folder + single-file + публикация GitHub Release;
+#   * вручную: Actions -> Build Windows -> Run workflow
+#     (опция build_single добавляет single-file и без тега).
 #
 # Варианты:
-#   * Oplata-windows-folder-v...      — рекомендуемый: папка Oplata
-#     (PyInstaller onedir, без самораспаковки во временную папку);
+#   * Oplata-windows-folder-v...      — рекомендуемый, собирается всегда:
+#     папка Oplata (PyInstaller onedir, без самораспаковки);
 #   * Oplata-windows-single-file-v... — запасной: один Oplata.exe
-#     (PyInstaller onefile).
+#     (PyInstaller onefile), только для релизов/ручного запуска с опцией.
 #
 # Где скачать: вкладка Actions -> нужный запуск -> Artifacts,
 # а для тегов — раздел Releases. Подробности: docs/BUILD.md
@@ -26,6 +26,12 @@ on:
       - "v*"
   pull_request:
   workflow_dispatch:
+    inputs:
+      build_single:
+        description: "Также собрать запасной пакет одним файлом"
+        type: boolean
+        required: false
+        default: false
 
 permissions:
   contents: write # нужно только шагу публикации Release на тегах v*
@@ -45,15 +51,17 @@ jobs:
         with:
           python-version: "3.12"
           cache: pip
+          cache-dependency-path: requirements.txt
 
       # Библиотеки, без которых PySide6 не стартует даже в offscreen-режиме
       - name: Install Qt runtime libraries
         run: |
-          sudo apt-get update
-          sudo apt-get install -y libegl1 libgl1 libxkbcommon0 libfontconfig1
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends libegl1 libgl1 libxkbcommon0 libfontconfig1
 
+      # PyInstaller тестам не нужен: не ставим requirements-dev целиком.
       - name: Install dependencies
-        run: pip install -r requirements-dev.txt
+        run: python -m pip install --disable-pip-version-check -r requirements.txt "pytest>=8,<9"
 
       - name: Run tests
         env:
@@ -64,6 +72,10 @@ jobs:
     name: Build Windows packages
     needs: test
     runs-on: windows-latest
+    env:
+      # Обычные ветки: только быстрый рекомендуемый folder-пакет.
+      # Single — релизные теги и ручной запуск с галочкой build_single.
+      BUILD_SINGLE: ${{ startsWith(github.ref, 'refs/tags/v') || inputs.build_single }}
     steps:
       - uses: actions/checkout@v4
 
@@ -71,9 +83,10 @@ jobs:
         with:
           python-version: "3.12"
           cache: pip
+          cache-dependency-path: requirements.txt
 
       - name: Install dependencies
-        run: pip install -r requirements.txt "pyinstaller>=6,<7"
+        run: python -m pip install --disable-pip-version-check -r requirements.txt "pyinstaller>=6,<7"
 
       - name: Read app version
         id: version
@@ -109,7 +122,8 @@ jobs:
           Copy-Item ".\packaging\START_HERE_RU.txt" ".\package-folder\START_HERE_RU.txt"
           Remove-Item ".\dist" -Recurse -Force
 
-      - name: Build single-file package (fallback)
+      - name: Build single-file package (fallback; tags/manual only)
+        if: env.BUILD_SINGLE == 'true'
         shell: pwsh
         env:
           OPLATA_PACKAGE_MODE: single
@@ -131,10 +145,11 @@ jobs:
         shell: pwsh
         run: |
           $expectedVersion = "${{ steps.version.outputs.version }}"
-          $executables = @(
-            ".\package-folder\Oplata\Oplata.exe",
-            ".\package-single\Oplata.exe"
-          )
+          $executables = @(".\package-folder\Oplata\Oplata.exe")
+          $singleExe = ".\package-single\Oplata.exe"
+          if (Test-Path $singleExe) {
+            $executables += $singleExe
+          }
 
           foreach ($exe in $executables) {
             $info = (Get-Item $exe).VersionInfo
@@ -165,6 +180,7 @@ jobs:
           $summary | Add-Content $env:GITHUB_STEP_SUMMARY
 
       - name: Prepare release ZIP files and checksums
+        if: startsWith(github.ref, 'refs/tags/v')
         shell: pwsh
         run: |
           $version = "${{ steps.version.outputs.version }}"
@@ -194,6 +210,7 @@ jobs:
           if-no-files-found: error
 
       - name: Upload single-file artifact (fallback)
+        if: env.BUILD_SINGLE == 'true'
         uses: actions/upload-artifact@v4
         with:
           name: Oplata-windows-single-file-v${{ steps.version.outputs.version }}
