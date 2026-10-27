@@ -1,11 +1,11 @@
 """Недельная таблица — экраны «Поставщики» и «Покупатели» (макеты 02/03).
 
-Состояние (v0.3.1, запросы пользователя 27.10.2026):
-* Клик по поставщику открывает окно «Поставка» (07-delivery-dialog.png);
-  двойной клик по ячейке «Приход» — то же окно с датой этой ячейки.
-  Прямой ввод в ячейку «Приход» у поставщиков заменён этим окном,
-  у покупателей ячейка «Приход» пока редактируется как раньше.
-* «Оплата» редактируется прямо в ячейке и сохраняется как операция дня.
+Состояние (v0.6.0, запросы пользователя 27.10.2026):
+* Клик по поставщику открывает окно «Поставка» (07-delivery-dialog.png)
+  для отдельной поставки с видимым сроком оплаты.
+* «Приход» и «Оплата» редактируются прямо в ячейках у поставщиков и
+  покупателей и сохраняются как операции дня; для «Прихода» срок
+  считается тем же ``calc.payment_due_date`` по календарю «Данные».
 * «Долг» (только поставщики) считается в calc: исходная сумма поставок
   на срок оплаты; сумма остаётся для архива, оплата её пока не уменьшает
   (правила оплат пользователь даст отдельным этапом); колонки
@@ -13,7 +13,9 @@
   У покупателей «Долг» пока пустой (правил для них пользователь не давал).
 * Таблица растягивается на всю ширину окна; шрифт сумм подгоняется под
   максимальное число ``88 888,88``; дни разделены толстыми линиями
-  (08-week-day-separators.png); шрифт шапки таблицы увеличен.
+  (08-week-day-separators.png); шрифт шапки таблицы увеличен. Статичной
+  окраски/заливки ячеек нет (остаются сетка, разделители дней и обычное
+  выделение выбранной ячейки Qt).
 """
 
 from __future__ import annotations
@@ -59,7 +61,13 @@ from ..dates import (
 )
 from ..models import KIND_INCOME, KIND_PAYMENT, Counterparty, set_daily_operation
 from ..storage import DataStore
-from ..widgets import danger_button, date_edit_value, make_date_edit, set_date_edit
+from ..widgets import (
+    AmountLineEdit,
+    danger_button,
+    date_edit_value,
+    make_date_edit,
+    set_date_edit,
+)
 
 HEADER_ROWS = 3
 TOTAL_ROW = 3
@@ -68,12 +76,10 @@ COLS = 3 + 7 * 3  # имя + 2 просрочки + 7 дней * (Приход/�
 SUBHEADERS = ("Приход", "Долг", "Оплата")
 SUBHEADER_KINDS = ("income", "debt", "payment")
 OP_KIND_BY_COLUMN = {"income": KIND_INCOME, "payment": KIND_PAYMENT}
-DEBT_CELL_BG = "#f4f6fa"  # лёгкая серая заливка нередактируемых ячеек долга
 DAY_SEPARATOR_COLOR = "#5b6b84"  # толстые линии между днями, как на макете 08
 SEPARATOR_AFTER_COLS = {2, 5, 8, 11, 14, 17, 20}  # после «за неделю» и каждого дня, кроме Вс
 MAX_AMOUNT_TEXT = "88 888,88"  # под это число подгоняется шрифт сумм (запрос пользователя)
 META_ROLE = Qt.ItemDataRole.UserRole        # "id|дата|kind" редактируемых ячеек
-DIALOG_ROLE = Qt.ItemDataRole.UserRole + 1  # то же для ячеек, открывающих «Поставку»
 # Веса и минимумы ширин колонок для растягивания на всю ширину таблицы.
 BASE_WIDTHS = [180, 96, 96] + [60] * 21
 MIN_WIDTHS = [146, 80, 80] + [52] * 21
@@ -85,7 +91,16 @@ def _money_text(amount: Decimal) -> str:
 
 
 class DaySeparatorDelegate(QStyledItemDelegate):
-    """Рисует толстую вертикальную линию на границах дней (макет 08)."""
+    """Рисует толстую вертикальную линию на границах дней (макет 08).
+
+    Заодно создаёт редактор суммы для редактируемых ячеек: нулевое
+    значение очищается при фокусе, ненулевое выделяется целиком.
+    """
+
+    def createEditor(self, parent, option, index):  # noqa: N802 - Qt API
+        if index.data(META_ROLE):
+            return AmountLineEdit(parent=parent)
+        return super().createEditor(parent, option, index)
 
     def paint(
         self, painter: QPainter, option: QStyleOptionViewItem, index: QModelIndex
@@ -132,7 +147,8 @@ class WeekView(QWidget):
         # Вызывается после сохранения ввода, чтобы главное окно обновило
         # «Операции»/«Сводку» (сама эта таблица при этом не перестраивается).
         self.on_data_changed = on_data_changed
-        # Только поставщики: окно «Поставка» (клик по имени / двойной по Приходу).
+        # Только поставщики: окно «Поставка» по клику по имени. Сумма в
+        # ячейке «Приход» при этом вводится напрямую (v0.6.0).
         self.on_open_delivery = on_open_delivery
         self.week_start = week_monday(date.today())
         self._partners: list[Counterparty] = []
@@ -150,7 +166,6 @@ class WeekView(QWidget):
         self.table.verticalHeader().setVisible(False)
         self.table.setItemDelegate(DaySeparatorDelegate(self.table))
         self.table.itemClicked.connect(self._on_item_clicked)
-        self.table.itemDoubleClicked.connect(self._on_item_double_clicked)
         self.table.itemChanged.connect(self._on_item_changed)
         root.addWidget(self.table, stretch=1)
         self.refresh()
@@ -264,13 +279,6 @@ class WeekView(QWidget):
             self.on_open_delivery(str(counterparty_id), None)
         else:
             self.on_open_card(str(counterparty_id))
-
-    def _on_item_double_clicked(self, item: QTableWidgetItem) -> None:
-        meta = item.data(DIALOG_ROLE)
-        if not meta or self.on_open_delivery is None:
-            return
-        counterparty_id, date_iso, _kind = str(meta).split("|", 2)
-        self.on_open_delivery(counterparty_id, date.fromisoformat(date_iso))
 
     def _on_item_changed(self, item: QTableWidgetItem) -> None:
         """Пользователь ввёл сумму в редактируемую ячейку: проверить и сохранить."""
@@ -449,7 +457,7 @@ class WeekView(QWidget):
         for row in range(HEADER_ROWS):
             table.setRowHeight(row, 28)  # шапка выше — шрифт увеличен
 
-        def put(row, col, text, *, bg=None, bold=False, center=True,
+        def put(row, col, text, *, bold=False, center=True,
                 editable=False, color=None, underline=False, size=None):
             item = QTableWidgetItem(text)
             flags = Qt.ItemFlag.ItemIsEnabled | Qt.ItemFlag.ItemIsSelectable
@@ -458,8 +466,6 @@ class WeekView(QWidget):
             item.setFlags(flags)
             if center:
                 item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
-            if bg:
-                item.setBackground(QColor(bg))
             font = QFont()
             font.setBold(bold)
             font.setUnderline(underline)
@@ -480,42 +486,34 @@ class WeekView(QWidget):
             self._amount_items.append(cell)
             return cell
 
-        pink, beige = styles.HEADER_PINK, styles.HEADER_BEIGE
-
         # Строка 0: месяцы (неделя может захватывать 1–2 месяца)
-        put(0, 0, "", bg=styles.HEADER_MONTH)
+        put(0, 0, "")
         table.setSpan(0, 0, 1, 3)
         col = 3
         for (_year, _month), group in groupby(days, key=lambda d: (d.year, d.month)):
             group_days = list(group)
-            put(0, col, month_title(group_days[0]),
-                bg=styles.HEADER_MONTH, bold=True, size=13)
+            put(0, col, month_title(group_days[0]), bold=True, size=13)
             table.setSpan(0, col, 1, len(group_days) * 3)
             col += len(group_days) * 3
 
         # Строка 1: дни недели (шрифт шапки увеличен по запросу пользователя)
         put(1, 0, "ПОСТАВЩИК" if self.kind == "supplier" else "ПОКУПАТЕЛЬ",
-            bg=pink, bold=True, size=13)
-        put(1, 1, "ПРОСРОЧЕН. ЗАДОЛЖ.", bg=pink, bold=True, size=12)
+            bold=True, size=13)
+        put(1, 1, "ПРОСРОЧЕН. ЗАДОЛЖ.", bold=True, size=12)
         table.setSpan(1, 1, 1, 2)
         for i, day in enumerate(days):
-            bg = beige if day.weekday() >= 5 else pink
             c = 3 + i * 3
             put(1, c, f"{day.day}  {WEEKDAYS_RU_SHORT[day.weekday()]}",
-                bg=bg, bold=True, size=13)
+                bold=True, size=13)
             table.setSpan(1, c, 1, 3)
 
-        # Строка 2: подзаголовки
-        put(2, 0, "", bg=pink)
-        put(2, 1, "на сегодня", bg=pink, bold=True, size=12)
-        put(2, 2, "за неделю", bg=pink, bold=True, size=12)
-        for i, day in enumerate(days):
-            if day == today:
-                bg = styles.TODAY_YELLOW  # текущий день подсвечен жёлтым на макете
-            else:
-                bg = beige if day.weekday() >= 5 else "#f1f5fb"
+        # Строка 2: подзаголовки (без окраски ячеек — запрос v0.6.0)
+        put(2, 0, "")
+        put(2, 1, "на сегодня", bold=True, size=12)
+        put(2, 2, "за неделю", bold=True, size=12)
+        for i, _day in enumerate(days):
             for j, sub in enumerate(SUBHEADERS):
-                put(2, 3 + i * 3 + j, sub, bg=bg, bold=True, size=12)
+                put(2, 3 + i * 3 + j, sub, bold=True, size=12)
 
         operations = self.store.data.operations
         partner_ids = [p.id for p in partners]
@@ -554,7 +552,7 @@ class WeekView(QWidget):
                 name_item.setToolTip("Клик — окно «Поставка» для этого поставщика")
             # Просрочено «на сегодня» / задолженность «за неделю» (calc).
             for col_idx, amount in ((1, overdue), (2, week)):
-                cell = put(row, col_idx, _money_text(amount), bg=DEBT_CELL_BG, size=11)
+                cell = put(row, col_idx, _money_text(amount), size=11)
                 cell.setTextAlignment(
                     Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter
                 )
@@ -564,8 +562,7 @@ class WeekView(QWidget):
                     meta = f"{partner.id}|{day.isoformat()}|{kind_name}"
                     if kind_name == "debt":
                         cell = money_cell(
-                            row, col_idx, _money_text(due_map.get(day, ZERO)),
-                            bg=DEBT_CELL_BG,
+                            row, col_idx, _money_text(due_map.get(day, ZERO))
                         )
                         cell.setToolTip(
                             "Сумма поставок со сроком оплаты в этот день. "
@@ -576,21 +573,15 @@ class WeekView(QWidget):
                     value = calc.week_cell_value(
                         partner.id, day, kind_name, operations
                     )
-                    supplier_income_via_dialog = (
-                        self.kind == "supplier"
-                        and kind_name == "income"
-                        and self.on_open_delivery is not None
-                    )
-                    if supplier_income_via_dialog:
-                        cell = money_cell(row, col_idx, value)
-                        cell.setData(DIALOG_ROLE, meta)
+                    cell = money_cell(row, col_idx, value, editable=True)
+                    cell.setData(META_ROLE, meta)
+                    if kind_name == "income":
                         cell.setToolTip(
-                            "Двойной клик — окно «Поставка»: дата, сумма с НДС, "
-                            "срок оплаты"
+                            "Приход: введите сумму и нажмите Enter. Срок "
+                            "оплаты посчитается по отсрочке и календарю "
+                            "«Данные». Пустая ячейка — удалить."
                         )
                     else:
-                        cell = money_cell(row, col_idx, value, editable=True)
-                        cell.setData(META_ROLE, meta)
                         cell.setToolTip(
                             f"{SUBHEADERS[j]}: введите сумму и нажмите Enter. "
                             "Пустая ячейка — удалить."

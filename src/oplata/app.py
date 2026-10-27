@@ -68,7 +68,9 @@ class MainWindow(QMainWindow):
         self.operations_view = OperationsView(
             store, on_data_changed=self.refresh_after_operation_change
         )
-        self.data_view = DataView(store)
+        self.data_view = DataView(
+            store, on_calendar_saved=self.refresh_after_calendar_change
+        )
 
         self.stack = QStackedWidget()
         for view in (
@@ -151,7 +153,7 @@ class MainWindow(QMainWindow):
 
     # -------------------------------------------------------------- поставка
     def open_delivery_dialog(self, supplier_id: str, preset_date=None) -> None:
-        """Окно «Поставка» (клик по поставщику / двойной клик по «Приходу»).
+        """Окно «Поставка» по клику по имени поставщика.
 
         После сохранения (макеты/правила пользователя): таблица сама
         переходит на неделю срока оплаты, чтобы было видно «Долг».
@@ -206,6 +208,13 @@ class MainWindow(QMainWindow):
 
         Сам журнал уже перечитал себя перед вызовом этого метода.
         """
+        self.suppliers_view.refresh()
+        self.customers_view.refresh()
+        self.summary_view.refresh()
+
+    def refresh_after_calendar_change(self) -> None:
+        """После «Сохранить» в календаре перечитать обе недельные таблицы."""
+
         self.suppliers_view.refresh()
         self.customers_view.refresh()
         self.summary_view.refresh()

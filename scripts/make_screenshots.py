@@ -54,6 +54,11 @@ def main() -> int:
     with tempfile.TemporaryDirectory() as tmp:
         store = DataStore(Path(tmp) / "data.json")
         window = MainWindow(store)
+        # На документационном снимке не нужен случайный временный путь:
+        # показываем реальное расположение данных у пользователя Windows.
+        window.data_view.path_label.setText(
+            r"%APPDATA%\OplataStroymarket\data.json"
+        )
         window.resize(1920, 1000)  # как развёрнутое окно на Full HD у пользователя
         window.show()
 

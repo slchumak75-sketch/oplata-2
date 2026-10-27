@@ -1,7 +1,8 @@
 """Окно «Поставка» (макет docs/mockups/07-delivery-dialog.png).
 
-Открывается кликом по поставщику в неделенной таблице «Поставщики»
-(или двойным кликом по ячейке «Приход» — тогда дата подставлена из ячейки).
+Открывается кликом по поставщику в неделенной таблице «Поставщики».
+С v0.6.0 сумма «Приход» также вводится прямо в ячейку таблицы; окно
+остаётся способом добавить отдельную поставку с видимым сроком оплаты.
 
 Правила (от пользователя, 27.10.2026):
 * Срок оплаты = дата поставки + отсрочка; при предоплате или реализации
@@ -20,13 +21,11 @@ from __future__ import annotations
 from collections.abc import Callable
 from datetime import date
 
-from PySide6.QtCore import Qt
 from PySide6.QtWidgets import (
     QDialog,
     QFrame,
     QHBoxLayout,
     QLabel,
-    QLineEdit,
     QMessageBox,
     QPushButton,
     QVBoxLayout,
@@ -37,7 +36,13 @@ from .. import calc
 from ..dates import fmt_date, parse_money
 from ..models import Counterparty, add_delivery
 from ..storage import DataStore
-from ..widgets import blue_button, date_edit_value, make_date_edit, set_date_edit
+from ..widgets import (
+    blue_button,
+    date_edit_value,
+    make_amount_edit,
+    make_date_edit,
+    set_date_edit,
+)
 
 FOOTER_TEXT = (
     "Срок оплаты = дата поставки + отсрочка; при предоплате или реализации "
@@ -132,8 +137,7 @@ class DeliveryDialog(QDialog):
         root.addWidget(self.date_edit)
 
         root.addWidget(QLabel("Сумма с НДС *"))
-        self.amount_edit = QLineEdit("0,00")
-        self.amount_edit.setAlignment(Qt.AlignmentFlag.AlignRight)
+        self.amount_edit = make_amount_edit()
         root.addWidget(self.amount_edit)
         amount_hint = QLabel(
             "Одна сумма уже с НДС в руб.; на срок оплаты она появится в «Долге»."
@@ -228,9 +232,8 @@ class DeliveryDialog(QDialog):
 
     def _clear(self) -> None:
         set_date_edit(self.date_edit, self.initial_date)
-        self.amount_edit.setText("0,00")
+        self.amount_edit.clear()
         self.amount_edit.setFocus()
-        self.amount_edit.selectAll()
         self._refresh_due()
 
     def _save(self) -> None:

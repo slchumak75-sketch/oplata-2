@@ -18,7 +18,6 @@ from __future__ import annotations
 from datetime import date
 from decimal import Decimal, InvalidOperation
 
-from PySide6.QtCore import Qt
 from PySide6.QtWidgets import (
     QComboBox,
     QDialog,
@@ -36,7 +35,7 @@ from .. import calc
 from ..dates import fmt_date, fmt_money_plain, parse_money
 from ..models import KIND_INCOME, KIND_PAYMENT, Operation
 from ..storage import DataStore
-from ..widgets import blue_button, date_edit_value, make_date_edit
+from ..widgets import blue_button, date_edit_value, make_amount_edit, make_date_edit
 from .delivery_dialog import due_reason_text
 
 OPERATION_KINDS = (KIND_INCOME, KIND_PAYMENT)
@@ -122,8 +121,7 @@ class OperationDialog(QDialog):
         root.addWidget(self.date_edit)
 
         root.addWidget(QLabel("Сумма *"))
-        self.amount_edit = QLineEdit(self._initial_amount_text())
-        self.amount_edit.setAlignment(Qt.AlignmentFlag.AlignRight)
+        self.amount_edit = make_amount_edit(self._initial_amount_text())
         root.addWidget(self.amount_edit)
 
         root.addWidget(QLabel("Документ"))
@@ -182,7 +180,7 @@ class OperationDialog(QDialog):
 
     def _initial_amount_text(self) -> str:
         if self.operation is None:
-            return "0,00"
+            return ""
         try:
             return fmt_money_plain(Decimal(self.operation.amount or "0"))
         except InvalidOperation:

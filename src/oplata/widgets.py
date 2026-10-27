@@ -2,8 +2,19 @@
 
 from __future__ import annotations
 
-from PySide6.QtWidgets import QDateEdit, QFrame, QPushButton, QVBoxLayout, QLabel
-from PySide6.QtCore import QDate, Qt
+from decimal import Decimal, InvalidOperation
+
+from PySide6.QtCore import QDate, Qt, QTimer
+from PySide6.QtGui import QFocusEvent
+from PySide6.QtWidgets import (
+    QDateEdit,
+    QFrame,
+    QLabel,
+    QLineEdit,
+    QPushButton,
+    QVBoxLayout,
+    QWidget,
+)
 
 from . import styles
 
@@ -18,12 +29,65 @@ def make_panel() -> tuple[QFrame, QVBoxLayout]:
     return frame, layout
 
 
+def _is_zero_amount_text(text: str) -> bool:
+    """True для ``0``, ``0,00``, ``,00``, ``0.00 руб.`` и подобных нулей."""
+
+    cleaned = (text or "").strip().lower().removesuffix("руб.").removesuffix("руб")
+    cleaned = cleaned.replace(" ", "").replace("\u00a0", "").replace("\u202f", "")
+    cleaned = cleaned.replace(",", ".")
+    if not cleaned:
+        return False
+    try:
+        return Decimal(cleaned) == 0
+    except InvalidOperation:
+        return False
+
+
+class AmountLineEdit(QLineEdit):
+    """Поле денежной суммы без мешающих начальных нулей.
+
+    Запрос пользователя: «нули при вводе должны убираться автоматически».
+    Поэтому начальное ``0,00`` не показывается как настоящий текст, а
+    если нулевое значение попало в поле программно, оно очищается при
+    получении фокуса. Ненулевая сумма при фокусе выделяется целиком,
+    чтобы новая цифра сразу заменяла старое значение.
+    """
+
+    def __init__(self, text: str = "", parent: QWidget | None = None) -> None:
+        super().__init__("" if _is_zero_amount_text(text) else text, parent)
+        self.setAlignment(Qt.AlignmentFlag.AlignRight)
+
+    def focusInEvent(self, event: QFocusEvent) -> None:  # noqa: N802 - Qt API
+        super().focusInEvent(event)
+        if _is_zero_amount_text(self.text()):
+            self.clear()
+        elif self.text():
+            if event.reason() == Qt.FocusReason.MouseFocusReason:
+                # После щелчка мыши Qt ещё поставит курсор в точку клика;
+                # выделяем отложенно, чтобы выделение не сбросилось.
+                QTimer.singleShot(0, self.selectAll)
+            else:
+                # Клавиатурный/программный фокус: выделить сразу, чтобы
+                # первая же набранная цифра заменила старую сумму.
+                self.selectAll()
+
+
+def make_amount_edit(text: str = "") -> AmountLineEdit:
+    """Создать поле суммы с автоматической очисткой нулевого значения."""
+
+    return AmountLineEdit(text)
+
+
+_DISABLED_BUTTON_STYLE = "QPushButton:disabled{background:#cbd5e1;color:#fff}"
+
+
 def danger_button(text: str) -> QPushButton:
     btn = QPushButton(text)
     btn.setStyleSheet(
         f"QPushButton{{background:{styles.RED};color:#fff;border:none;"
         f"border-radius:8px;padding:7px 16px;font-weight:700}}"
         f"QPushButton:hover{{background:#c81e1e}}"
+        f"{_DISABLED_BUTTON_STYLE}"
     )
     return btn
 
@@ -34,6 +98,7 @@ def green_button(text: str) -> QPushButton:
         f"QPushButton{{background:{styles.GREEN};color:#fff;border:none;"
         f"border-radius:8px;padding:7px 16px;font-weight:700}}"
         f"QPushButton:hover{{background:#11853d}}"
+        f"{_DISABLED_BUTTON_STYLE}"
     )
     return btn
 
@@ -44,6 +109,7 @@ def blue_button(text: str) -> QPushButton:
         f"QPushButton{{background:{styles.BLUE};color:#fff;border:none;"
         f"border-radius:8px;padding:7px 16px;font-weight:700}}"
         f"QPushButton:hover{{background:#1d4ed8}}"
+        f"{_DISABLED_BUTTON_STYLE}"
     )
     return btn
 

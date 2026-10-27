@@ -36,7 +36,7 @@ oplata-2/
     main.py                     # QApplication, --self-test
     app.py                      # MainWindow: шапка + QStackedWidget из 5 экранов
     styles.py                   # цвета по макетам + QSS
-    widgets.py                  # панели, цветные кнопки, поля даты, KPI-карточки
+    widgets.py                  # панели, цветные кнопки, поля даты/сумм, KPI-карточки
     dates.py       [без Qt]     # недели Пн–Вс, русские месяцы, формат сумм
     models.py      [без Qt]     # Counterparty, Operation, AppData, seed_data()
     storage.py     [без Qt]     # DataStore: JSON в %APPDATA%\OplataStroymarket\data.json
@@ -46,14 +46,14 @@ oplata-2/
       summary_view.py           # Сводка + снимок значений и QPrintPreviewDialog
       week_view.py              # Поставщики и Покупатели (kind="supplier"/"customer")
       operations_view.py        # Операции (журнал, фильтры, CRUD)
-      data_view.py              # Данные (календарь выходных на год)
+      data_view.py              # Данные (черновик календаря на год + явное «Сохранить»)
     dialogs/
       counterparty_card.py      # Карточки поставщика/покупателя
       delivery_dialog.py        # Окно «Поставка» (дата, сумма с НДС, срок оплаты)
       operation_dialog.py       # Добавление/редактирование операции журнала
   tests/
     test_core.py                # даты, модели, storage, срок и архивный долг
-    test_ui_smoke.py            # 5 экранов, поставка, ввод ячеек, CRUD журнала, карточки, печать в PDF
+    test_ui_smoke.py            # 5 экранов, поставка, ввод ячеек, поле суммы, календарь, CRUD, печать PDF
     test_reports.py             # HTML печатной «Сводки»: KPI, таблица, escaping, пустое состояние
     test_packaging.py           # Windows VS_VERSION_INFO и синхронность версий
   .github/workflows/build-windows.yml
@@ -74,6 +74,10 @@ data.json ──DataStore──> AppData ──> экраны (views) ──кл
 - После CRUD в журнале `OperationsView` перечитывает себя и вызывает
   `MainWindow.refresh_after_operation_change()` (недельные таблицы + «Сводка»).
 - Экран «Данные» от контрагентов не зависит и при `refresh_all()` не трогается.
+  Его календарные клики меняют только `_pending_overrides`; кнопка
+  «Сохранить» пишет `day_overrides`, вызывает `store.save()` и через
+  `MainWindow.refresh_after_calendar_change()` обновляет обе недельные
+  таблицы и «Сводку».
 - `WeekView` перестраивает таблицу целиком при смене недели/списка —
   объёмы этапа оболочки это позволяют.
 
@@ -110,10 +114,15 @@ day_overrides)` (дата + отсрочка, режимы без отсрочк
 при переданном `data`).
 
 Ввод: «Поставка» → `models.add_delivery` (+ `due_date`) → save →
-`WeekView.goto_date(срок)`; ячейка «Оплата» → `WeekView._on_item_changed` →
-`dates.parse_money` → `models.set_daily_operation` → save →
+`WeekView.goto_date(срок)`; ячейки «Приход»/«Оплата» →
+`WeekView._on_item_changed` → `dates.parse_money` →
+`models.set_daily_operation` (для «Прихода» срок даёт тот же
+`calc.payment_due_date` по сохранённому календарю) → save →
 `WeekView._update_calculated_cells` (Долг/«на сегодня»/«за неделю»/ВСЕГО
 без перестройки таблицы) + `MainWindow.refresh_after_week_edit`.
+Редактор денежных ячеек создаёт делегат `WeekView` на базе
+`widgets.AmountLineEdit`: нулевое значение очищается при фокусе,
+ненулевое выделяется целиком.
 Ручная правка: `OperationsView` → `OperationDialog` → изменение того же
 `Operation` (+ политика срока из ADR-009) → save → обновление журнала и
 `MainWindow.refresh_after_operation_change`; удаление идёт тем же путём
