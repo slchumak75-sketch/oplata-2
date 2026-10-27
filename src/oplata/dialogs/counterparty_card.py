@@ -1,7 +1,8 @@
 """Карточка поставщика / карточка покупателя (макет 06-supplier-card.png).
 
-Макет есть только для поставщика; покупатель сделан симметрично
-(предположение зафиксировано в docs/SPEC.md §8).
+Макет есть только для поставщика. Для покупателя по запросу
+пользователя убран блок условий поставщика: отсрочка и режимы
+«Предоплата»/«Реализация» в карточке покупателя не показываются.
 
 Поведение кнопок на этапе оболочки:
 * «Сохранить» — сохранить выбранного (или создать, если выбран «— Новый —»)
@@ -84,41 +85,51 @@ class CounterpartyCardDialog(QDialog):
         self.name_edit = QLineEdit()
         root.addWidget(self.name_edit)
 
-        # Отсрочка (слева) + режим оплаты (справа) — как на макете.
-        middle = QHBoxLayout()
-        middle.setSpacing(24)
+        # Условия оплаты есть только у поставщика. Для покупателя этот
+        # блок не создаём вовсе (по запросу пользователя — лишнее).
+        self.deferment_spin: QSpinBox | None = None
+        self.chk_prepayment: QCheckBox | None = None
+        self.chk_realization: QCheckBox | None = None
+        if is_supplier:
+            # Отсрочка (слева) + режим оплаты (справа) — как на макете.
+            middle = QHBoxLayout()
+            middle.setSpacing(24)
 
-        left = QVBoxLayout()
-        left.addWidget(QLabel("Отсрочка платежа, дней"))
-        self.deferment_spin = QSpinBox()
-        self.deferment_spin.setRange(0, 3650)
-        self.deferment_spin.setSizePolicy(
-            QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed
-        )  # на макете поле растянуто на свою половину окна
-        left.addWidget(self.deferment_spin)
-        deferment_hint = QLabel(
-            "Срок оплаты = дата поставки + отсрочка. 0 — срок вручную."
-        )
-        deferment_hint.setObjectName("Muted")
-        deferment_hint.setWordWrap(True)
-        left.addWidget(deferment_hint)
-        left.addStretch(1)
-        middle.addLayout(left, stretch=1)
+            left = QVBoxLayout()
+            left.addWidget(QLabel("Отсрочка платежа, дней"))
+            self.deferment_spin = QSpinBox()
+            self.deferment_spin.setRange(0, 3650)
+            self.deferment_spin.setSizePolicy(
+                QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed
+            )  # на макете поле растянуто на свою половину окна
+            left.addWidget(self.deferment_spin)
+            deferment_hint = QLabel(
+                "Срок оплаты = дата поставки + отсрочка. 0 — срок вручную."
+            )
+            deferment_hint.setObjectName("Muted")
+            deferment_hint.setWordWrap(True)
+            left.addWidget(deferment_hint)
+            left.addStretch(1)
+            middle.addLayout(left, stretch=1)
 
-        right = QVBoxLayout()
-        right.addWidget(QLabel("Режим оплаты"))
-        self.chk_prepayment = QCheckBox("Предоплата")
-        self.chk_realization = QCheckBox("Реализация")
-        self.chk_prepayment.toggled.connect(lambda *_: self._update_deferment_enabled())
-        self.chk_realization.toggled.connect(lambda *_: self._update_deferment_enabled())
-        right.addWidget(self.chk_prepayment)
-        right.addWidget(self.chk_realization)
-        mode_hint = QLabel("При выбранном режиме отсрочка неактивна.")
-        mode_hint.setObjectName("Muted")
-        right.addWidget(mode_hint)
-        right.addStretch(1)
-        middle.addLayout(right, stretch=1)
-        root.addLayout(middle)
+            right = QVBoxLayout()
+            right.addWidget(QLabel("Режим оплаты"))
+            self.chk_prepayment = QCheckBox("Предоплата")
+            self.chk_realization = QCheckBox("Реализация")
+            self.chk_prepayment.toggled.connect(
+                lambda *_: self._update_deferment_enabled()
+            )
+            self.chk_realization.toggled.connect(
+                lambda *_: self._update_deferment_enabled()
+            )
+            right.addWidget(self.chk_prepayment)
+            right.addWidget(self.chk_realization)
+            mode_hint = QLabel("При выбранном режиме отсрочка неактивна.")
+            mode_hint.setObjectName("Muted")
+            right.addWidget(mode_hint)
+            right.addStretch(1)
+            middle.addLayout(right, stretch=1)
+            root.addLayout(middle)
 
         self.chk_archived = QCheckBox(
             "В архиве (скрывать из списков, историю сохранить)"
@@ -181,28 +192,47 @@ class CounterpartyCardDialog(QDialog):
         item = self._current()
         if item is None:
             self.name_edit.clear()
-            self.deferment_spin.setValue(0)
-            self.chk_prepayment.setChecked(False)
-            self.chk_realization.setChecked(False)
+            if self.deferment_spin is not None:
+                self.deferment_spin.setValue(0)
+            if self.chk_prepayment is not None:
+                self.chk_prepayment.setChecked(False)
+            if self.chk_realization is not None:
+                self.chk_realization.setChecked(False)
             self.chk_archived.setChecked(False)
         else:
             self.name_edit.setText(item.name)
-            self.deferment_spin.setValue(item.deferment_days)
-            self.chk_prepayment.setChecked(item.prepayment)
-            self.chk_realization.setChecked(item.realization)
+            if self.deferment_spin is not None:
+                self.deferment_spin.setValue(item.deferment_days)
+            if self.chk_prepayment is not None:
+                self.chk_prepayment.setChecked(item.prepayment)
+            if self.chk_realization is not None:
+                self.chk_realization.setChecked(item.realization)
             self.chk_archived.setChecked(item.archived)
         self.delete_btn.setEnabled(item is not None)
         self._update_deferment_enabled()
 
     def _update_deferment_enabled(self) -> None:
-        mode_selected = self.chk_prepayment.isChecked() or self.chk_realization.isChecked()
+        if (
+            self.deferment_spin is None
+            or self.chk_prepayment is None
+            or self.chk_realization is None
+        ):
+            return
+        mode_selected = (
+            self.chk_prepayment.isChecked() or self.chk_realization.isChecked()
+        )
         self.deferment_spin.setEnabled(not mode_selected)
 
     def _apply_fields(self, item: Counterparty) -> None:
         item.name = self.name_edit.text().strip()
-        item.deferment_days = self.deferment_spin.value()
-        item.prepayment = self.chk_prepayment.isChecked()
-        item.realization = self.chk_realization.isChecked()
+        # У покупателя этих полей в окне нет: существующие значения модели
+        # не затираем, новые покупатели получают значения по умолчанию.
+        if self.deferment_spin is not None:
+            item.deferment_days = self.deferment_spin.value()
+        if self.chk_prepayment is not None:
+            item.prepayment = self.chk_prepayment.isChecked()
+        if self.chk_realization is not None:
+            item.realization = self.chk_realization.isChecked()
         item.archived = self.chk_archived.isChecked()
 
     def _validate_name(self) -> bool:

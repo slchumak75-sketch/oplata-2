@@ -45,16 +45,31 @@ def test_main_window_all_pages(qt_app, store):
 
 
 def test_week_table_income_and_payment_input(qt_app, store):
-    """Приход и Оплата вводятся прямо в ячейках; заливки у таблицы нет."""
+    """Прямой ввод, розовые выходные/праздники и салатовая текущая дата."""
+    from datetime import date
+
     from PySide6.QtCore import Qt
     from PySide6.QtWidgets import QStyleOptionViewItem
 
+    from oplata import styles
     from oplata.app import MainWindow
     from oplata.views.week_view import FIRST_DATA_ROW, TOTAL_ROW
     from oplata.widgets import AmountLineEdit
 
     window = MainWindow(store)
     view = window.suppliers_view
+    view.goto_date(date(2026, 10, 26))
+    holiday = date(2026, 10, 30)       # помеченный в «Данных» праздник в пятницу
+    saturday = date(2026, 10, 31)       # помеченный рабочий перенос
+    today = date(2026, 10, 27)
+    store.data.day_overrides.update(
+        {
+            holiday.isoformat(): "off",
+            saturday.isoformat(): "work",
+            today.isoformat(): "off",  # салатовый сегодня важнее розового
+        }
+    )
+    view._rebuild_table(view._partners, view._days, today)
     table = view.table
     income = table.item(FIRST_DATA_ROW, 3)   # пн, Приход -> прямой ввод
     debt = table.item(FIRST_DATA_ROW, 4)     # пн, Долг -> считается программой
@@ -70,12 +85,18 @@ def test_week_table_income_and_payment_input(qt_app, store):
     assert isinstance(editor, AmountLineEdit)  # нули и в редакторе ячейки не мешают
     editor.deleteLater()
 
-    # Запрос пользователя: убрать окраску ячеек недельной таблицы.
-    for row in range(table.rowCount()):
-        for col in range(table.columnCount()):
-            item = table.item(row, col)
-            if item is not None:
-                assert item.background().style() == Qt.BrushStyle.NoBrush
+    def bg_name(row, col):
+        brush = table.item(row, col).background()
+        return None if brush.style() == Qt.BrushStyle.NoBrush else brush.color().name()
+
+    assert bg_name(1, 3 + 1 * 3) == styles.WEEK_TABLE_TODAY_GREEN
+    assert bg_name(FIRST_DATA_ROW, 3 + 1 * 3) == styles.WEEK_TABLE_TODAY_GREEN
+    assert bg_name(1, 3 + 4 * 3) == styles.WEEK_TABLE_WEEKEND_PINK  # праздник
+    assert bg_name(FIRST_DATA_ROW, 3 + 4 * 3) == styles.WEEK_TABLE_WEEKEND_PINK
+    assert bg_name(FIRST_DATA_ROW, 3 + 5 * 3) is None  # рабочая суббота
+    assert bg_name(FIRST_DATA_ROW, 3 + 6 * 3) == styles.WEEK_TABLE_WEEKEND_PINK
+    assert bg_name(FIRST_DATA_ROW, 3) is None  # обычный понедельник без заливки
+    assert view.date_edit.minimumWidth() >= 138  # год не под стрелкой календаря
 
     monday = view._days[0]
     income.setText("300")  # программная правка = тот же сигнал, что от Enter
@@ -236,6 +257,31 @@ def test_supplier_card_adds_counterparty(qt_app, store):
     assert not dialog.deferment_spin.isEnabled()
     dialog.chk_prepayment.setChecked(False)
     assert dialog.deferment_spin.isEnabled()
+    dialog.close()
+
+
+def test_customer_card_has_no_supplier_payment_terms(qt_app, store):
+    """В карточке покупателя нет отсрочки и режимов поставщика."""
+    from PySide6.QtWidgets import QLabel
+
+    from oplata.dialogs.counterparty_card import CounterpartyCardDialog
+
+    dialog = CounterpartyCardDialog(store, "customer")
+    assert dialog.deferment_spin is None
+    assert dialog.chk_prepayment is None
+    assert dialog.chk_realization is None
+    label_texts = {label.text() for label in dialog.findChildren(QLabel)}
+    assert "Отсрочка платежа, дней" not in label_texts
+    assert "Режим оплаты" not in label_texts
+
+    dialog.name_edit.setText("Новый покупатель")
+    dialog._add()
+    added = store.data.customers[-1]
+    assert (added.deferment_days, added.prepayment, added.realization) == (
+        0,
+        False,
+        False,
+    )
     dialog.close()
 
 

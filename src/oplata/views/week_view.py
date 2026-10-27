@@ -1,6 +1,6 @@
 """Недельная таблица — экраны «Поставщики» и «Покупатели» (макеты 02/03).
 
-Состояние (v0.6.0, запросы пользователя 27.10.2026):
+Состояние (v0.7.0, запросы пользователя 27.10.2026):
 * Клик по поставщику открывает окно «Поставка» (07-delivery-dialog.png)
   для отдельной поставки с видимым сроком оплаты.
 * «Приход» и «Оплата» редактируются прямо в ячейках у поставщиков и
@@ -13,9 +13,10 @@
   У покупателей «Долг» пока пустой (правил для них пользователь не давал).
 * Таблица растягивается на всю ширину окна; шрифт сумм подгоняется под
   максимальное число ``88 888,88``; дни разделены толстыми линиями
-  (08-week-day-separators.png); шрифт шапки таблицы увеличен. Статичной
-  окраски/заливки ячеек нет (остаются сетка, разделители дней и обычное
-  выделение выбранной ячейки Qt).
+  (08-week-day-separators.png); шрифт шапки таблицы увеличен. Колонки
+  выходных и помеченных в «Данных» праздников подсвечены розовым,
+  текущая дата — салатовым (при совпадении приоритет у текущей даты);
+  другой статичной заливки нет.
 """
 
 from __future__ import annotations
@@ -457,13 +458,15 @@ class WeekView(QWidget):
         for row in range(HEADER_ROWS):
             table.setRowHeight(row, 28)  # шапка выше — шрифт увеличен
 
-        def put(row, col, text, *, bold=False, center=True,
+        def put(row, col, text, *, bg=None, bold=False, center=True,
                 editable=False, color=None, underline=False, size=None):
             item = QTableWidgetItem(text)
             flags = Qt.ItemFlag.ItemIsEnabled | Qt.ItemFlag.ItemIsSelectable
             if editable:
                 flags |= Qt.ItemFlag.ItemIsEditable
             item.setFlags(flags)
+            if bg:
+                item.setBackground(QColor(bg))
             if center:
                 item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
             font = QFont()
@@ -486,6 +489,15 @@ class WeekView(QWidget):
             self._amount_items.append(cell)
             return cell
 
+        def day_bg(day: date) -> str | None:
+            """Фон колонки дня: сегодня — салатовый, выходной/праздник — розовый."""
+
+            if day == today:
+                return styles.WEEK_TABLE_TODAY_GREEN
+            if calc.is_day_off(day, self.store.data.day_overrides):
+                return styles.WEEK_TABLE_WEEKEND_PINK
+            return None
+
         # Строка 0: месяцы (неделя может захватывать 1–2 месяца)
         put(0, 0, "")
         table.setSpan(0, 0, 1, 3)
@@ -504,16 +516,17 @@ class WeekView(QWidget):
         for i, day in enumerate(days):
             c = 3 + i * 3
             put(1, c, f"{day.day}  {WEEKDAYS_RU_SHORT[day.weekday()]}",
-                bold=True, size=13)
+                bg=day_bg(day), bold=True, size=13)
             table.setSpan(1, c, 1, 3)
 
-        # Строка 2: подзаголовки (без окраски ячеек — запрос v0.6.0)
+        # Строка 2: подзаголовки с подсветкой выходных/сегодня (v0.7.0)
         put(2, 0, "")
         put(2, 1, "на сегодня", bold=True, size=12)
         put(2, 2, "за неделю", bold=True, size=12)
-        for i, _day in enumerate(days):
+        for i, day in enumerate(days):
             for j, sub in enumerate(SUBHEADERS):
-                put(2, 3 + i * 3 + j, sub, bold=True, size=12)
+                put(2, 3 + i * 3 + j, sub,
+                    bg=day_bg(day), bold=True, size=12)
 
         operations = self.store.data.operations
         partner_ids = [p.id for p in partners]
@@ -538,7 +551,10 @@ class WeekView(QWidget):
                     value = calc.week_column_total(
                         partner_ids, day, kind_name, operations
                     )
-                money_cell(TOTAL_ROW, 3 + i * 3 + j, value, bold=True)
+                money_cell(
+                    TOTAL_ROW, 3 + i * 3 + j, value,
+                    bg=day_bg(day), bold=True,
+                )
 
         # Строки контрагентов
         for r, partner in enumerate(partners):
@@ -562,7 +578,8 @@ class WeekView(QWidget):
                     meta = f"{partner.id}|{day.isoformat()}|{kind_name}"
                     if kind_name == "debt":
                         cell = money_cell(
-                            row, col_idx, _money_text(due_map.get(day, ZERO))
+                            row, col_idx, _money_text(due_map.get(day, ZERO)),
+                            bg=day_bg(day),
                         )
                         cell.setToolTip(
                             "Сумма поставок со сроком оплаты в этот день. "
@@ -573,7 +590,10 @@ class WeekView(QWidget):
                     value = calc.week_cell_value(
                         partner.id, day, kind_name, operations
                     )
-                    cell = money_cell(row, col_idx, value, editable=True)
+                    cell = money_cell(
+                        row, col_idx, value,
+                        bg=day_bg(day), editable=True,
+                    )
                     cell.setData(META_ROLE, meta)
                     if kind_name == "income":
                         cell.setToolTip(

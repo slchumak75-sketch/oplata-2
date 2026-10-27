@@ -119,6 +119,8 @@ def make_date_edit(day) -> QDateEdit:
     edit = QDateEdit()
     edit.setDisplayFormat("dd.MM.yyyy")
     edit.setCalendarPopup(True)
+    # Дата целиком + зона стрелки календаря справа (без наложения на год).
+    edit.setMinimumWidth(138)
     edit.setDate(QDate(day.year, day.month, day.day))
     return edit
 

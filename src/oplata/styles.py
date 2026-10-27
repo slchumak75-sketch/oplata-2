@@ -16,6 +16,8 @@ GREEN = "#159947"
 BLUE = "#2563eb"
 WEEKEND_RED = "#e53935"     # красные ячейки выходных в календаре «Данные»
 WORKDAY_GREY = "#eceff3"    # серые ячейки рабочих дней там же
+WEEK_TABLE_WEEKEND_PINK = "#ffe1e8"  # розовые колонки выходных/праздников
+WEEK_TABLE_TODAY_GREEN = "#ccf5a3"   # салатовая колонка текущей даты
 
 APP_STYLESHEET = f"""
 * {{
@@ -61,6 +63,17 @@ QLineEdit, QComboBox, QDateEdit, QSpinBox {{
 }}
 QLineEdit:focus, QComboBox:focus, QDateEdit:focus, QSpinBox:focus {{
     border: 1px solid {BLUE};
+}}
+QDateEdit {{
+    /* Место справа зарезервировано под кнопку календаря: стрелка не
+       должна накладываться на последние цифры года. */
+    padding-right: 28px;
+}}
+QDateEdit::drop-down {{
+    subcontrol-origin: padding;
+    subcontrol-position: center right;
+    width: 24px;
+    border: none;
 }}
 QPushButton {{
     background: #ffffff;
