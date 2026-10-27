@@ -1,14 +1,19 @@
 # Автосборка Windows-приложения «Оплаты — Строймаркет».
 #
 # Когда запускается:
-#   * push в main или arena/**  -> тесты + сборка Oplata.exe (артефакт);
-#   * pull request              -> тесты + сборка (артефакт);
-#   * push тега v* (напр. v0.2.0) -> + публикация GitHub Release с zip;
+#   * push в main или arena/**  -> тесты + две Windows-сборки (артефакты);
+#   * pull request              -> тесты + две Windows-сборки (артефакты);
+#   * push тега v* (напр. v0.4.1) -> + публикация GitHub Release с zip;
 #   * вручную: Actions -> Build Windows -> Run workflow.
 #
-# Где скачать exe: вкладка Actions -> нужный запуск -> Artifacts
-# (Oplata-windows-...), а для тегов — раздел Releases.
-# Подробности: docs/BUILD.md
+# Варианты:
+#   * Oplata-windows-folder-v...      — рекомендуемый: папка Oplata
+#     (PyInstaller onedir, без самораспаковки во временную папку);
+#   * Oplata-windows-single-file-v... — запасной: один Oplata.exe
+#     (PyInstaller onefile).
+#
+# Где скачать: вкладка Actions -> нужный запуск -> Artifacts,
+# а для тегов — раздел Releases. Подробности: docs/BUILD.md
 
 name: Build Windows
 
@@ -56,7 +61,7 @@ jobs:
         run: pytest -q
 
   build-windows:
-    name: Build Oplata.exe (Windows)
+    name: Build Windows packages
     needs: test
     runs-on: windows-latest
     steps:
@@ -78,33 +83,129 @@ jobs:
           "version=$v" >> $env:GITHUB_OUTPUT
           Write-Host "Oplata version: $v"
 
-      - name: Build exe with PyInstaller
-        run: pyinstaller --noconfirm oplata.spec
-
-      - name: Smoke test (exe starts and closes cleanly)
+      - name: Generate Windows version metadata
         shell: pwsh
         run: |
-          $p = Start-Process -FilePath ".\dist\Oplata.exe" -ArgumentList "--self-test" -Wait -PassThru
-          if ($p.ExitCode -ne 0) { throw "Smoke test failed, exit code $($p.ExitCode)" }
-          Write-Host "Smoke test OK"
+          python scripts/write_version_info.py
+          if ($LASTEXITCODE -ne 0) { throw "Version metadata generation failed" }
+          Get-Content ".\build\version_info.txt"
 
-      - name: Pack zip
+      - name: Build folder package (recommended)
+        shell: pwsh
+        env:
+          OPLATA_PACKAGE_MODE: folder
+        run: |
+          pyinstaller --noconfirm --clean oplata.spec
+          if ($LASTEXITCODE -ne 0) { throw "Folder build failed, exit code $LASTEXITCODE" }
+
+          $exe = ".\dist\Oplata\Oplata.exe"
+          if (-not (Test-Path $exe)) { throw "Folder build did not create $exe" }
+          $p = Start-Process -FilePath $exe -ArgumentList "--self-test" -Wait -PassThru
+          if ($p.ExitCode -ne 0) { throw "Folder smoke test failed, exit code $($p.ExitCode)" }
+          Write-Host "Folder smoke test OK"
+
+          New-Item -ItemType Directory -Force ".\package-folder" | Out-Null
+          Copy-Item ".\dist\Oplata" ".\package-folder\Oplata" -Recurse
+          Copy-Item ".\packaging\START_HERE_RU.txt" ".\package-folder\START_HERE_RU.txt"
+          Remove-Item ".\dist" -Recurse -Force
+
+      - name: Build single-file package (fallback)
+        shell: pwsh
+        env:
+          OPLATA_PACKAGE_MODE: single
+        run: |
+          pyinstaller --noconfirm --clean oplata.spec
+          if ($LASTEXITCODE -ne 0) { throw "Single-file build failed, exit code $LASTEXITCODE" }
+
+          $exe = ".\dist\Oplata.exe"
+          if (-not (Test-Path $exe)) { throw "Single-file build did not create $exe" }
+          $p = Start-Process -FilePath $exe -ArgumentList "--self-test" -Wait -PassThru
+          if ($p.ExitCode -ne 0) { throw "Single-file smoke test failed, exit code $($p.ExitCode)" }
+          Write-Host "Single-file smoke test OK"
+
+          New-Item -ItemType Directory -Force ".\package-single" | Out-Null
+          Copy-Item $exe ".\package-single\Oplata.exe"
+          Copy-Item ".\packaging\START_HERE_RU.txt" ".\package-single\START_HERE_RU.txt"
+
+      - name: Verify EXE metadata and record SHA-256
         shell: pwsh
         run: |
-          $zip = "Oplata-v${{ steps.version.outputs.version }}-windows.zip"
-          Compress-Archive -Path ".\dist\Oplata.exe" -DestinationPath $zip
-          "ZIP_NAME=$zip" >> $env:GITHUB_ENV
+          $expectedVersion = "${{ steps.version.outputs.version }}"
+          $executables = @(
+            ".\package-folder\Oplata\Oplata.exe",
+            ".\package-single\Oplata.exe"
+          )
 
-      - name: Upload artifact
+          foreach ($exe in $executables) {
+            $info = (Get-Item $exe).VersionInfo
+            Write-Host "$exe"
+            Write-Host "  ProductName=$($info.ProductName)"
+            Write-Host "  FileDescription=$($info.FileDescription)"
+            Write-Host "  FileVersion=$($info.FileVersion)"
+            Write-Host "  ProductVersion=$($info.ProductVersion)"
+            if ($info.FileVersion -ne $expectedVersion -or $info.ProductVersion -ne $expectedVersion) {
+              throw "Unexpected EXE version metadata in $exe (expected $expectedVersion)"
+            }
+            if ([string]::IsNullOrWhiteSpace($info.ProductName) -or [string]::IsNullOrWhiteSpace($info.FileDescription)) {
+              throw "Missing EXE product metadata in $exe"
+            }
+          }
+
+          $summary = @(
+            "## Oplata v$expectedVersion — Windows packages",
+            "",
+            "| File | SHA-256 |",
+            "|---|---|"
+          )
+          foreach ($exe in $executables) {
+            $hash = (Get-FileHash $exe -Algorithm SHA256).Hash.ToLowerInvariant()
+            $summary += "| ``$exe`` | ``$hash`` |"
+            Write-Host "SHA256 $hash  $exe"
+          }
+          $summary | Add-Content $env:GITHUB_STEP_SUMMARY
+
+      - name: Prepare release ZIP files and checksums
+        shell: pwsh
+        run: |
+          $version = "${{ steps.version.outputs.version }}"
+          $folderZip = "Oplata-v$version-windows-folder.zip"
+          $singleZip = "Oplata-v$version-windows-single-file.zip"
+
+          Compress-Archive -Path ".\package-folder\*" -DestinationPath $folderZip
+          Compress-Archive -Path ".\package-single\*" -DestinationPath $singleZip
+
+          $checksums = foreach ($file in @($folderZip, $singleZip)) {
+            $hash = (Get-FileHash $file -Algorithm SHA256).Hash.ToLowerInvariant()
+            "$hash  $file"
+          }
+          $checksums | Set-Content "SHA256SUMS.txt" -Encoding ascii
+          Get-Content "SHA256SUMS.txt"
+
+          "FOLDER_ZIP=$folderZip" >> $env:GITHUB_ENV
+          "SINGLE_ZIP=$singleZip" >> $env:GITHUB_ENV
+
+      # Upload directories directly: GitHub creates exactly one downloadable
+      # ZIP for each artifact, without our old ZIP-inside-ZIP nesting.
+      - name: Upload folder artifact (recommended)
         uses: actions/upload-artifact@v4
         with:
-          name: Oplata-windows-v${{ steps.version.outputs.version }}
-          path: ${{ env.ZIP_NAME }}
+          name: Oplata-windows-folder-v${{ steps.version.outputs.version }}
+          path: package-folder/**
+          if-no-files-found: error
+
+      - name: Upload single-file artifact (fallback)
+        uses: actions/upload-artifact@v4
+        with:
+          name: Oplata-windows-single-file-v${{ steps.version.outputs.version }}
+          path: package-single/**
           if-no-files-found: error
 
       - name: Publish GitHub Release (only on v* tags)
         if: startsWith(github.ref, 'refs/tags/v')
         uses: softprops/action-gh-release@v2
         with:
-          files: ${{ env.ZIP_NAME }}
+          files: |
+            ${{ env.FOLDER_ZIP }}
+            ${{ env.SINGLE_ZIP }}
+            SHA256SUMS.txt
           generate_release_notes: true

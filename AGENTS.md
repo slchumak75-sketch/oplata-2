@@ -38,8 +38,9 @@
 
 ## Стек в двух словах
 
-Python 3.11+ + PySide6-Essentials (Qt) → PyInstaller собирает один
-`Oplata.exe`. Сборка автоматически на GitHub Actions
+Python 3.11+ + PySide6-Essentials (Qt) → PyInstaller собирает два
+Windows-варианта: основной папкой (`Oplata\Oplata.exe` + DLL, ADR-010)
+и запасной одним файлом. Сборка автоматически на GitHub Actions
 (`.github/workflows/build-windows.yml`, детали — `docs/BUILD.md`).
 Обоснование стека — ADR-001 в `docs/DECISIONS.md`.
 
@@ -53,7 +54,8 @@ QT_QPA_PLATFORM=offscreen .venv/bin/python -m pytest -q   # тесты (Linux/CI
 .venv/bin/python run.py                                    # запуск из исходников
 .venv/bin/python run.py --self-test                        # открыться и закрыться (код 0)
 QT_QPA_PLATFORM=offscreen .venv/bin/python scripts/make_screenshots.py  # переснять скриншоты docs/
-.venv/bin/pyinstaller --noconfirm oplata.spec              # -> dist/Oplata.exe (на Windows)
+.venv/bin/python scripts/write_version_info.py             # Windows-метаданные EXE
+.venv/bin/pyinstaller --noconfirm --clean oplata.spec      # -> dist/Oplata/Oplata.exe (на Windows; режим folder по умолчанию)
 ```
 
 На Linux для Qt нужны системные библиотеки (`libegl1 libgl1 libxkbcommon0
@@ -90,11 +92,15 @@ libfontconfig1`) — в CI они ставятся шагом workflow.
 
 - Работай в ветке своей сессии (Arena: `arena/...`), не пушь в `main` напрямую.
 - После пуша проверь сборку: `gh run list --branch <ветка>`, при падении — `gh run view <id> --log-failed`.
-- Готовый exe для пользователя: артефакт запуска Actions либо Release (тег `v*`).
+- Готовая программа для пользователя: основной артефакт
+  `Oplata-windows-folder-v…` запуска Actions (запасной —
+  `Oplata-windows-single-file-v…`) либо соответствующие ZIP в Release
+  (тег `v*`).
 
 ## Definition of Done для любой задачи
 
 - [ ] Тесты зелёные (`pytest -q`), `--self-test` возвращает 0.
 - [ ] Если менялся UI — пересняты скриншоты (`scripts/make_screenshots.py`) и сверены с макетами.
 - [ ] `CHANGELOG.md` (+ `SPEC/ROADMAP/DECISIONS` по ситуации) обновлены.
-- [ ] Пуш в ветку сессии, GitHub Actions зелёный, пользователю сказано, где скачать exe.
+- [ ] Пуш в ветку сессии, GitHub Actions зелёный, пользователю сказано,
+      где скачать основной `Oplata-windows-folder-v…`.

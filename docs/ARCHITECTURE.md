@@ -6,7 +6,7 @@
 |---|---|---|
 | Язык | Python 3.11+ | Читаемость для любого агента, разработка и тесты без Windows |
 | GUI | PySide6-Essentials (Qt 6) | Современный вид «как на макетах», нативный Windows-рендер, шрифт Segoe UI |
-| Упаковка | PyInstaller (`oplata.spec`) | Один `Oplata.exe` без установки Python |
+| Упаковка | PyInstaller (`oplata.spec`) | Основная папка `Oplata` (onedir) без установки Python; запасной один `Oplata.exe` (onefile); ADR-010 |
 | Данные (этап 0) | Один JSON-файл | Просто; объёмов пока нет (ADR-002, потом вероятен SQLite) |
 | CI/CD | GitHub Actions, `windows-latest` | Exe собирается сам при каждом пуше (`BUILD.md`) |
 | Тесты | pytest (ядро без Qt + offscreen-smoke UI) | Быстрые, запускаются в Linux-джобе |
@@ -16,7 +16,7 @@
 ```text
 oplata-2/
   run.py                        # вход: python run.py [--self-test]; его же собирает PyInstaller
-  oplata.spec                   # рецепт сборки Oplata.exe (onefile, windowed)
+  oplata.spec                   # PyInstaller: folder/onedir (основной) и single/onefile (запасной), windowed
   pyproject.toml                # метаданные, зависимости, настройки pytest
   requirements.txt / -dev.txt   # runtime / + pytest, pyinstaller
   AGENTS.md                     # правила для продолжающих (читать первым)
@@ -25,8 +25,11 @@ oplata-2/
     SPEC.md  ARCHITECTURE.md  BUILD.md  ROADMAP.md  DECISIONS.md
     mockups/                    # исходные макеты пользователя
     screenshots/                # рендеры текущей оболочки (scripts/make_screenshots.py)
+  packaging/
+    START_HERE_RU.txt           # инструкция первого запуска в обоих Windows-пакетах
   scripts/
-    build_windows.bat           # локальная сборка exe на Windows
+    build_windows.bat           # локальная сборка exe на Windows (folder по умолчанию, single — аргументом)
+    write_version_info.py       # VS_VERSION_INFO для Oplata.exe из версии приложения
     make_screenshots.py         # переснять docs/screenshots
   src/oplata/
     __init__.py                 # __version__ (синхронно с pyproject.toml!)
@@ -50,6 +53,7 @@ oplata-2/
   tests/
     test_core.py                # даты, модели, storage, срок и архивный долг
     test_ui_smoke.py            # 5 экранов, поставка, ввод ячеек, CRUD журнала, карточки
+    test_packaging.py           # Windows VS_VERSION_INFO и синхронность версий
   .github/workflows/build-windows.yml
 ```
 
