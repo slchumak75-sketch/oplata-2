@@ -12,6 +12,7 @@ from oplata.models import (
     KIND_PAYMENT,
     AppData,
     Counterparty,
+    add_delivery,
     daily_operation_total,
     seed_data,
     set_daily_operation,
@@ -74,11 +75,10 @@ def test_storage_creates_and_reloads(tmp_path):
     assert [c.name for c in reloaded.data.customers] == ["Покупатель 1"]
 
 
-def test_calc_is_stub_zeros():
-    """Формулы ДОЛГА не реализованы: KPI/долг/просрочка обязаны давать нули.
+def test_calc_summary_still_stub():
+    """«Сводка» пока заглушка: её формулы пользователь ещё не давал.
 
-    Когда пользователь даст формулы, этот тест заменяется тестами формул.
-    (Отображение введённых Приход/Оплата — не формула, см. тест ниже.)
+    Долг в таблице «Поставщики» уже считается — см. тесты ниже.
     """
     today = date(2026, 10, 26)
     totals = calc.summary_totals(today)
@@ -86,9 +86,9 @@ def test_calc_is_stub_zeros():
     row = calc.supplier_debt_row("any", today)
     assert row.debt == Decimal("0") and row.next_due_date is None
     assert calc.overdue_payments(today) == []
-    assert calc.week_debt(today) == Decimal("0")
+    assert calc.week_debt(today) == Decimal("0")  # без данных считать нечего
     assert calc.week_cell_value("any", today, "income") == ""
-    assert calc.week_cell_value("any", today, "debt") == ""
+    assert calc.week_cell_value("any", today, "debt") == ""  # без data нет условий
 
 
 def test_parse_money_user_input():
@@ -114,8 +114,9 @@ def test_daily_operation_input_roundtrip():
     assert daily_operation_total(data.operations, supplier.id, iso, KIND_INCOME) == Decimal("1000.00")
     assert calc.week_cell_value(supplier.id, day, "income", data.operations) == "1 000,00"
     assert calc.week_cell_value(supplier.id, day, "payment", data.operations) == "250,50"
-    # Долг — заглушка даже при наличии операций
-    assert calc.week_cell_value(supplier.id, day, "debt", data.operations) == ""
+    # Долг: у «ааа» отсрочка 0, срок = день поставки; оплата 250,50 гасит
+    # часть поставки 1000, остаток долга на эту дату — 749,50.
+    assert calc.week_cell_value(supplier.id, day, "debt", data.operations, data) == "749,50"
     # ВСЕГО по колонке
     ids = [s.id for s in data.suppliers]
     assert calc.week_column_total(ids, day, "income", data.operations) == "1 000,00"
@@ -127,3 +128,46 @@ def test_daily_operation_input_roundtrip():
     assert daily_operation_total(data.operations, supplier.id, iso, KIND_INCOME) == Decimal("0")
     set_daily_operation(data, supplier.id, iso, KIND_PAYMENT, Decimal("0"))
     assert data.operations == []
+
+
+def test_due_date_rules():
+    """Срок оплаты: дата + отсрочка, режимы без отсрочки, перенос с выходного."""
+    deferred = Counterparty(name="X", deferment_days=10)
+    # Пн 26.10.2026 + 10 дней = Чт 05.11.2026 (рабочий, переноса нет)
+    assert date(2026, 10, 26).weekday() == 0
+    assert calc.payment_due_date(date(2026, 10, 26), deferred, {}) == date(2026, 11, 5)
+
+    deferred2 = Counterparty(name="Y", deferment_days=2)
+    # Чт 29.10 + 2 = Сб 31.10 (выходной) -> Пн 02.11
+    assert calc.payment_due_date(date(2026, 10, 29), deferred2, {}) == date(2026, 11, 2)
+    # Пн 02.11 помечен выходным в календаре «Данные» -> Вт 03.11
+    overrides = {"2026-11-02": "off"}
+    assert calc.payment_due_date(date(2026, 10, 29), deferred2, overrides) == date(2026, 11, 3)
+
+    # Предоплата: отсрочка не применяется, но перенос с выходного работает
+    prepaid = Counterparty(name="Z", deferment_days=30, prepayment=True)
+    assert calc.payment_due_date(date(2026, 10, 27), prepaid, {}) == date(2026, 10, 27)
+    assert calc.payment_due_date(date(2026, 10, 31), prepaid, {}) == date(2026, 11, 2)
+    realization = Counterparty(name="R", deferment_days=30, realization=True)
+    assert calc.raw_due_date(date(2026, 10, 27), realization) == date(2026, 10, 27)
+
+
+def test_unpaid_debt_fifo_and_week_overdue_columns():
+    supplier = Counterparty(name="S", deferment_days=7)
+    data = AppData(suppliers=[supplier])
+    add_delivery(data, supplier.id, "2026-10-19", "2026-10-26", Decimal("1000"))
+    add_delivery(data, supplier.id, "2026-10-20", "2026-10-27", Decimal("500"))
+    # Оплата 1200 гасит первую поставку целиком и 200 от второй (FIFO)
+    set_daily_operation(data, supplier.id, "2026-10-27", KIND_PAYMENT, Decimal("1200"))
+
+    due_map = calc.unpaid_by_due_date(data, supplier)
+    assert due_map == {date(2026, 10, 27): Decimal("300")}
+    assert calc.week_cell_value(supplier.id, date(2026, 10, 27), "debt", data.operations, data) == "300,00"
+    assert calc.week_cell_value(supplier.id, date(2026, 10, 26), "debt", data.operations, data) == ""
+    # Приход виден в день поставки, долг — в день срока
+    assert calc.week_cell_value(supplier.id, date(2026, 10, 19), "income", data.operations) == "1 000,00"
+    # Задолженность за неделю 26.10–01.11 и просрочено на сегодня
+    assert calc.week_debt(date(2026, 10, 26), data, [supplier]) == Decimal("300")
+    assert calc.week_debt(date(2026, 11, 2), data, [supplier]) == Decimal("0")
+    assert calc.overdue_amount(data, supplier, date(2026, 10, 27)) == Decimal("0")  # срок сегодня — не просрочено
+    assert calc.overdue_amount(data, supplier, date(2026, 10, 28)) == Decimal("300")

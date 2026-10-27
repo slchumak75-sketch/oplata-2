@@ -45,6 +45,7 @@ oplata-2/
       data_view.py              # Данные (календарь выходных на год)
     dialogs/
       counterparty_card.py      # Карточки поставщика/покупателя
+      delivery_dialog.py        # Окно «Поставка» (дата, сумма с НДС, срок оплаты)
   tests/
     test_core.py                # даты, модели, storage, calc-заглушки
     test_ui_smoke.py            # окно строится, 5 экранов, карточка добавляет
@@ -58,9 +59,8 @@ data.json ──DataStore──> AppData ──> экраны (views) ──кл
     ^                                                    │
     └────────────────── DataStore.save() <───────────────┘
                              
-экраны ──спрашивают суммы──> calc.py ──(этап 0: нули)──> отображение "0,00 руб."
-                             (этап формул: здесь появятся расчёты,
-                              сигнатуры функций уже зафиксированы)
+экраны ──спрашивают суммы──> calc.py ──> срок оплаты и долг поставщиков (v0.3.0);
+                             «Сводка» пока получает нули-заглушки
 ```
 
 - `MainWindow.refresh_all()` перестраивает экраны после правок в карточках.
@@ -78,7 +78,10 @@ data.json ──DataStore──> AppData ──> экраны (views) ──кл
      "prepayment": false, "realization": false, "archived": false}
   ],
   "customers": [],
-  "operations": [],
+  "operations": [
+    {"kind": "Приход", "counterparty_id": "a1b2c3d4e5f6", "date": "2026-10-26",
+     "amount": "88888.88", "document": "", "comment": "", "due_date": "2026-11-05"}
+  ],
   "day_overrides": {"2026-07-18": "off"}
 }
 ```
@@ -88,18 +91,19 @@ data.json ──DataStore──> AppData ──> экраны (views) ──кл
 
 ## Контракт calc.py
 
-`summary_totals(on_date)`, `supplier_debt_row(supplier_id, on_date)`,
-`overdue_payments(on_date)`, `week_debt(week_monday)` — по-прежнему
-**заглушки формул** (нули). С v0.2.0 `week_cell_value(counterparty_id, day,
-kind, operations)` и `week_column_total(ids, day, kind, operations)`
-показывают для `income`/`payment` суммы ВВЕДЁННЫХ операций дня (это не
-формула), а для `debt` возвращают пусто.
+Заглушки «Сводки»: `summary_totals`, `supplier_debt_row`, `overdue_payments`.
+Формулы поставщиков (v0.3.0): `payment_due_date(delivery, counterparty,
+day_overrides)` (дата + отсрочка, режимы без отсрочки, перенос с выходного),
+`unpaid_by_due_date(data, counterparty)` (FIFO-остатки по срокам),
+`week_debt(monday, data, counterparties)`, `overdue_amount(data, cp, today)`,
+`week_cell_amount/value(..., operations, data)` (`debt` считается только
+при переданном `data`).
 
-Ввод в ячейку недельной таблицы: `WeekView._on_item_changed` →
-`dates.parse_money` → `models.set_daily_operation` (ячейка = итог дня,
-ADR-006) → `DataStore.save()` → `MainWindow.refresh_after_week_edit`
-(обновляет «Операции» и «Сводку», саму таблицу не перестраивает —
-она обновляет только свою строку «ВСЕГО»).
+Ввод: «Поставка» → `models.add_delivery` (+ `due_date`) → save →
+`WeekView.goto_date(срок)`; ячейка «Оплата» → `WeekView._on_item_changed` →
+`dates.parse_money` → `models.set_daily_operation` → save →
+`WeekView._update_calculated_cells` (Долг/«на сегодня»/«за неделю»/ВСЕГО
+без перестройки таблицы) + `MainWindow.refresh_after_week_edit`.
 
 ## Принципы
 

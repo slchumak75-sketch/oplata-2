@@ -24,6 +24,7 @@ from PySide6.QtWidgets import QApplication  # noqa: E402
 from oplata import styles  # noqa: E402
 from oplata.app import MainWindow  # noqa: E402
 from oplata.dialogs.counterparty_card import CounterpartyCardDialog  # noqa: E402
+from oplata.dialogs.delivery_dialog import DeliveryDialog  # noqa: E402
 from oplata.storage import DataStore  # noqa: E402
 
 OUT = ROOT / "docs" / "screenshots"
@@ -49,7 +50,7 @@ def main() -> int:
     with tempfile.TemporaryDirectory() as tmp:
         store = DataStore(Path(tmp) / "data.json")
         window = MainWindow(store)
-        window.resize(1440, 860)
+        window.resize(1920, 1000)  # как развёрнутое окно на Full HD у пользователя
         window.show()
 
         def shoot(index: int = 0) -> None:
@@ -66,6 +67,15 @@ def main() -> int:
             app.processEvents()
             dialog.grab().save(str(OUT / "supplier-card.png"))
             print("saved supplier-card")
+            dialog.close()
+            # Окно «Поставка» — как на макете пользователя с «eee / Предоплата»
+            eee = next(s for s in store.data.suppliers if s.name == "eee")
+            eee.prepayment = True
+            delivery = DeliveryDialog(store, eee.id)
+            delivery.show()
+            app.processEvents()
+            delivery.grab().save(str(OUT / "delivery-dialog.png"))
+            print("saved delivery-dialog")
             app.quit()
 
         QTimer.singleShot(200, shoot)

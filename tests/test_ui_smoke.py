@@ -44,33 +44,73 @@ def test_main_window_all_pages(qt_app, store):
     window.close()
 
 
-def test_week_table_income_payment_input(qt_app, store):
-    """Ввод в Приход/Оплата сохраняется; Долг вводить нельзя (формула позже)."""
+def test_week_table_payment_input(qt_app, store):
+    """Оплата вводится в ячейке; Приход у поставщиков — через окно «Поставка»."""
     from PySide6.QtCore import Qt
 
     from oplata.app import MainWindow
-    from oplata.views.week_view import FIRST_DATA_ROW, TOTAL_ROW
+    from oplata.views.week_view import DIALOG_ROLE, FIRST_DATA_ROW, TOTAL_ROW
 
     window = MainWindow(store)
     table = window.suppliers_view.table
-    income = table.item(FIRST_DATA_ROW, 3)   # пн, Приход
-    debt = table.item(FIRST_DATA_ROW, 4)     # пн, Долг
-    payment = table.item(FIRST_DATA_ROW, 5)  # пн, Оплата
-    assert income.flags() & Qt.ItemFlag.ItemIsEditable
+    income = table.item(FIRST_DATA_ROW, 3)   # пн, Приход -> окно «Поставка»
+    debt = table.item(FIRST_DATA_ROW, 4)     # пн, Долг -> считается программой
+    payment = table.item(FIRST_DATA_ROW, 5)  # пн, Оплата -> ввод в ячейке
+    assert not (income.flags() & Qt.ItemFlag.ItemIsEditable)
+    assert income.data(DIALOG_ROLE)  # двойной клик откроет «Поставку»
     assert payment.flags() & Qt.ItemFlag.ItemIsEditable
     assert not (debt.flags() & Qt.ItemFlag.ItemIsEditable)
 
-    income.setText("1 500,75")  # программная правка = тот же сигнал, что от Enter
-    payment.setText("200")
-    kinds = sorted(op.kind for op in store.data.operations)
-    assert kinds == ["Оплата", "Приход"]
-    assert income.text() == "1 500,75"  # переформатировано после сохранения
-    assert table.item(TOTAL_ROW, 3).text() == "1 500,75"  # ВСЕГО обновилось
-    # Операции видны в журнале
-    assert window.operations_view.found_label.text() == "Найдено: 2"
+    payment.setText("200")  # программная правка = тот же сигнал, что от Enter
+    assert [op.kind for op in store.data.operations] == ["Оплата"]
+    assert payment.text() == "200,00"  # переформатировано после сохранения
+    assert table.item(TOTAL_ROW, 5).text() == "200,00"  # ВСЕГО обновилось
+    assert window.operations_view.found_label.text() == "Найдено: 1"
 
     payment.setText("")  # очистка ячейки удаляет операцию
-    assert [op.kind for op in store.data.operations] == ["Приход"]
+    assert store.data.operations == []
+    window.close()
+
+
+def test_delivery_dialog_saves_and_debt_shows_in_week(qt_app, store):
+    """Окно «Поставка»: срок = дата + отсрочка, сумма встаёт в «Долг» на срок."""
+    from datetime import date
+
+    from oplata.app import MainWindow
+    from oplata.dialogs.delivery_dialog import DeliveryDialog
+
+    supplier = next(s for s in store.data.suppliers if s.name == "ггг")
+    assert supplier.deferment_days == 10  # сид с макета карточки
+    dialog = DeliveryDialog(store, supplier.id, preset_date=date(2026, 10, 26))
+    assert dialog.conditions_label.text() == "Условия: Отсрочка: 10 дн."
+    assert dialog.due_label.text() == "05.11.2026"  # 26.10 + 10 дней
+    dialog.amount_edit.setText("88 888,88")  # максимальное число от пользователя
+    dialog._save()
+    assert dialog.saved_due_date == date(2026, 11, 5)
+    (op,) = store.data.operations
+    assert (op.kind, op.date, op.due_date, op.amount) == (
+        "Приход", "2026-10-26", "2026-11-05", "88888.88",
+    )
+    dialog.close()
+
+    # Предоплата (как на скрине «eee»): срок = дата поставки
+    eee = next(s for s in store.data.suppliers if s.name == "eee")
+    eee.prepayment = True
+    prepaid = DeliveryDialog(store, eee.id, preset_date=date(2026, 10, 27))
+    assert prepaid.conditions_label.text() == "Условия: Предоплата"
+    assert prepaid.due_label.text() == "27.10.2026"
+    assert "отсрочка не применяется" in prepaid.due_reason_label.text()
+    prepaid.close()
+
+    # Таблица показывает долг в неделе срока: 05.11 — чт (день №3 от пн 02.11)
+    window = MainWindow(store)
+    window.suppliers_view.goto_date(date(2026, 11, 5))
+    table = window.suppliers_view.table
+    ggg_row = 4 + [s.name for s in store.data.suppliers].index("ггг")
+    assert table.item(ggg_row, 3 + 3 * 3 + 1).text() == "88 888,88"  # Долг чт
+    assert table.item(ggg_row, 2).text() == "88 888,88"  # задолженность за неделю
+    assert table.item(3, 2).text() == "88 888,88"  # ВСЕГО за неделю
+    assert window.suppliers_view.right_value_label.text() == "88 888,88 руб."
     window.close()
 
 

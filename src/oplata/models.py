@@ -5,7 +5,7 @@
 * Карточка поставщика: наименование*, отсрочка платежа (дней),
   режим оплаты (Предоплата / Реализация), «В архиве».
 * Карточка покупателя: макета не было — сделана симметрично поставщику
-  (ЗАФИКСИРОВАННОЕ ПРЕДПОЛОЖЕНИЕ, см. SPEC.md §7, подтвердить у пользователя).
+  (ЗАФИКСИРОВАННОЕ ПРЕДПОЛОЖЕНИЕ, см. SPEC.md §8, подтвердить у пользователя).
 * Операция журнала: тип, поставщик, дата, сумма, документ, комментарий.
 
 Никаких вычисляемых полей (долг, просрочка) здесь нет и быть не должно —
@@ -48,18 +48,21 @@ class Counterparty:
 
 @dataclass
 class Operation:
-    """Строка «Журнала операций». На этапе оболочки журнал пуст.
+    """Строка «Журнала операций».
 
-    TODO(этап формул/операций): уточнить у пользователя список типов
-    операций (приход/оплата/…) — на макете виден лишь фильтр «Все операции».
+    Типы пока: «Приход» (поставка) и «Оплата». У поставки ``date`` — дата
+    поставки, а ``due_date`` — срок оплаты, рассчитанный при вводе
+    (дата поставки + отсрочка, см. calc.payment_due_date); пустой
+    ``due_date`` у старых записей пересчитывается на лету.
     """
 
     kind: str = ""
     counterparty_id: str = ""
     date: str = ""          # ISO ``YYYY-MM-DD`` строкой, чтобы JSON был простым
-    amount: str = "0"       # Decimal строкой (без float!) — расчётов пока нет
+    amount: str = "0"       # Decimal строкой (без float!)
     document: str = ""
     comment: str = ""
+    due_date: str = ""      # ISO срок оплаты (только для «Прихода»-поставки)
     id: str = field(default_factory=new_id)
 
     @classmethod
@@ -71,6 +74,7 @@ class Operation:
             amount=str(data.get("amount", "0")),
             document=str(data.get("document", "")),
             comment=str(data.get("comment", "")),
+            due_date=str(data.get("due_date", "")),
             id=str(data.get("id") or new_id()),
         )
 
@@ -144,11 +148,15 @@ KIND_INCOME = "Приход"
 KIND_PAYMENT = "Оплата"
 
 
-def _op_amount(op: Operation) -> Decimal:
+def operation_amount(op: Operation) -> Decimal:
+    """Сумма операции как Decimal (битая строка трактуется как 0)."""
     try:
         return Decimal(op.amount or "0")
     except InvalidOperation:
         return Decimal("0")
+
+
+_op_amount = operation_amount
 
 
 def daily_operation_total(
@@ -168,8 +176,13 @@ def set_daily_operation(
     date_iso: str,
     kind: str,
     amount: Decimal | None,
+    due_date_iso: str = "",
 ) -> None:
-    """Задать итог дня из ячейки таблицы. ``None`` или 0 — очистить день."""
+    """Задать итог дня из ячейки таблицы. ``None`` или 0 — очистить день.
+
+    ``due_date_iso`` — срок оплаты для «Прихода» (считает вызывающий код
+    через calc.payment_due_date), для «Оплаты» не используется.
+    """
     data.operations = [
         op
         for op in data.operations
@@ -187,5 +200,26 @@ def set_daily_operation(
                 counterparty_id=counterparty_id,
                 date=date_iso,
                 amount=f"{quantized:.2f}",
+                due_date=due_date_iso if kind == KIND_INCOME else "",
             )
         )
+
+
+def add_delivery(
+    data: AppData,
+    counterparty_id: str,
+    delivery_date_iso: str,
+    due_date_iso: str,
+    amount: Decimal,
+) -> Operation:
+    """Добавить поставку из окна «Поставка» (в отличие от ячейки — НЕ заменяет
+    другие поставки этого дня: поставок за день может быть несколько)."""
+    op = Operation(
+        kind=KIND_INCOME,
+        counterparty_id=counterparty_id,
+        date=delivery_date_iso,
+        amount=f"{amount.quantize(Decimal('0.01')):.2f}",
+        due_date=due_date_iso,
+    )
+    data.operations.append(op)
+    return op

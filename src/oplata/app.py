@@ -22,6 +22,7 @@ from PySide6.QtWidgets import (
 
 from . import __app_name__, __version__, styles
 from .dialogs.counterparty_card import CounterpartyCardDialog
+from .dialogs.delivery_dialog import DeliveryDialog
 from .storage import DataStore
 from .views.data_view import DataView
 from .views.operations_view import OperationsView
@@ -36,7 +37,7 @@ class MainWindow(QMainWindow):
     def __init__(self, store: DataStore) -> None:
         super().__init__()
         self.store = store
-        self.setWindowTitle(f"{__app_name__}  v{__version__} (оболочка)")
+        self.setWindowTitle(f"{__app_name__}  v{__version__}")
         self.resize(1440, 860)
         self.setMinimumSize(1100, 640)
 
@@ -56,6 +57,7 @@ class MainWindow(QMainWindow):
             "supplier",
             lambda sid: self.open_counterparty_card("supplier", sid),
             on_data_changed=self.refresh_after_week_edit,
+            on_open_delivery=self.open_delivery_dialog,
         )
         self.customers_view = WeekView(
             store,
@@ -144,6 +146,31 @@ class MainWindow(QMainWindow):
     def show_page(self, index: int) -> None:
         self.stack.setCurrentIndex(index)
         self.nav_buttons[index].setChecked(True)
+
+    # -------------------------------------------------------------- поставка
+    def open_delivery_dialog(self, supplier_id: str, preset_date=None) -> None:
+        """Окно «Поставка» (клик по поставщику / двойной клик по «Приходу»).
+
+        После сохранения (макеты/правила пользователя): таблица сама
+        переходит на неделю срока оплаты, чтобы было видно «Долг».
+        """
+        dialog = DeliveryDialog(
+            self.store,
+            supplier_id,
+            preset_date=preset_date,
+            on_open_card=lambda: self.open_counterparty_card(
+                "supplier", supplier_id
+            ),
+            parent=self,
+        )
+        dialog.exec()
+        if dialog.changed:
+            self.operations_view.refresh()
+            self.summary_view.refresh()
+            if dialog.saved_due_date is not None:
+                self.suppliers_view.goto_date(dialog.saved_due_date)
+            else:
+                self.suppliers_view.refresh()
 
     # -------------------------------------------------------------- карточки
     def open_counterparty_card(self, kind: str, selected_id: str | None) -> None:
