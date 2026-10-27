@@ -111,6 +111,13 @@ def test_delivery_dialog_saves_and_debt_shows_in_week(qt_app, store):
     assert table.item(ggg_row, 2).text() == "88 888,88"  # задолженность за неделю
     assert table.item(3, 2).text() == "88 888,88"  # ВСЕГО за неделю
     assert window.suppliers_view.right_value_label.text() == "88 888,88 руб."
+
+    # Оплата в день срока НЕ убирает сумму из «Долга» (требование
+    # пользователя v0.3.1: остаётся для архива; правила оплат — позже)
+    payment_cell = table.item(ggg_row, 3 + 3 * 3 + 2)  # Оплата чт 05.11
+    payment_cell.setText("88 888,88")
+    assert table.item(ggg_row, 3 + 3 * 3 + 1).text() == "88 888,88"  # Долг на месте
+    assert table.item(ggg_row, 2).text() == "88 888,88"  # и «за неделю» тоже
     window.close()
 
 

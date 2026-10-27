@@ -1,6 +1,6 @@
 """Расчёты программы. ВСЕ формулы живут только здесь.
 
-Состояние на 27.10.2026 (v0.3.0) — первые формулы дал пользователь
+Состояние на 27.10.2026 (v0.3.1) — первые формулы дал пользователь
 (окно «Поставка», макет docs/mockups/07-delivery-dialog.png):
 
 РЕАЛИЗОВАНО (только таблица «Поставщики»):
@@ -8,13 +8,16 @@
   «Реализации» отсрочка НЕ применяется (срок = дата поставки).
   Если срок выпал на выходной по календарю «Данные» — сдвиг на ближайший
   следующий рабочий день. См. ``payment_due_date``.
-* Ячейка «Долг» на дату срока: неоплаченный остаток поставок с этим сроком.
-* Колонка «за неделю» (задолженность): сумма неоплаченных остатков со
-  сроками внутри показанной недели.
-* Колонка «на сегодня» (просрочено): сумма неоплаченных остатков со
-  сроками раньше сегодняшнего дня.
-* Оплаты распределяются на поставки по FIFO (сначала самый ранний срок) —
-  ПРЕДПОЛОЖЕНИЕ, пользователь распределение ещё не описывал (SPEC Q1).
+* Ячейка «Долг» на дату срока: исходная сумма поставок с этим сроком.
+  По требованию пользователя (v0.3.1) она ОСТАЁТСЯ для архива и не
+  уменьшается и не исчезает при оплате.
+* Колонка «за неделю» (задолженность): сумма «Долгов» со сроками внутри
+  показанной недели.
+* Колонка «на сегодня» (просрочено): сумма «Долгов» со сроками раньше
+  сегодняшнего дня.
+* ⚠️ «Оплата» ПОКА НЕ УМЕНЬШАЕТ долг нигде: как именно оплата будет
+  влиять на долг/просрочку, пользователь разъяснит отдельным этапом
+  («когда дойдём до оплат»). Не вводить распределение оплат самому.
 
 ПО-ПРЕЖНЕМУ ЗАГЛУШКИ (нули): «Сводка» целиком —
 ``summary_totals``, ``supplier_debt_row``, ``overdue_payments``.
@@ -153,38 +156,26 @@ def find_counterparty(data: AppData, counterparty_id: str) -> Counterparty | Non
     return None
 
 
-def unpaid_by_due_date(
+def debt_by_due_date(
     data: AppData, counterparty: Counterparty
 ) -> dict[date, Decimal]:
-    """Неоплаченные остатки поставок по датам срока оплаты.
+    """Суммы поставок по датам срока оплаты («Долг») — архивный график.
 
-    Все «Оплаты» контрагента суммируются в общий пул и гасят поставки
-    в порядке сроков (FIFO) — предположение этапа v0.3.0.
+    ⚠️ Оплаты здесь сознательно НЕ вычитаются (требование пользователя
+    v0.3.1: сумма в «Долге» остаётся для архива и не исчезает). Как
+    «Оплата» будет влиять на долг — отдельный этап по разъяснениям
+    пользователя; до тех пор это исходные суммы поставок по срокам.
     """
-    deliveries: list[tuple[date, date, Decimal]] = []  # (срок, дата поставки, сумма)
-    payment_pool = ZERO
-    for op in data.operations:
-        if op.counterparty_id != counterparty.id:
-            continue
-        if op.kind == KIND_INCOME:
-            due = operation_due_date(op, counterparty, data.day_overrides)
-            if due is None:
-                continue
-            try:
-                delivery_day = date.fromisoformat(op.date)
-            except ValueError:
-                continue
-            deliveries.append((due, delivery_day, operation_amount(op)))
-        elif op.kind == KIND_PAYMENT:
-            payment_pool += operation_amount(op)
-
     result: dict[date, Decimal] = {}
-    for due, _delivery_day, amount in sorted(deliveries):
-        paid = min(amount, payment_pool)
-        payment_pool -= paid
-        remaining = amount - paid
-        if remaining > 0:
-            result[due] = result.get(due, ZERO) + remaining
+    for op in data.operations:
+        if op.counterparty_id != counterparty.id or op.kind != KIND_INCOME:
+            continue
+        due = operation_due_date(op, counterparty, data.day_overrides)
+        if due is None:
+            continue
+        amount = operation_amount(op)
+        if amount != 0:
+            result[due] = result.get(due, ZERO) + amount
     return result
 
 
@@ -193,14 +184,14 @@ def week_debt(
     data: AppData | None = None,
     counterparties: Iterable[Counterparty] = (),
 ) -> Decimal:
-    """«Задолженность за неделю»: сумма неоплаченных остатков со сроками
+    """«Задолженность за неделю»: сумма «Долгов» со сроками
     внутри недели (Пн–Вс) по заданным поставщикам. Без ``data`` — 0."""
     if data is None:
         return ZERO
     week_sunday = week_monday + timedelta(days=6)
     total = ZERO
     for counterparty in counterparties:
-        for due, amount in unpaid_by_due_date(data, counterparty).items():
+        for due, amount in debt_by_due_date(data, counterparty).items():
             if week_monday <= due <= week_sunday:
                 total += amount
     return total
@@ -209,9 +200,9 @@ def week_debt(
 def overdue_amount(
     data: AppData, counterparty: Counterparty, today: date
 ) -> Decimal:
-    """«Просрочено на сегодня»: неоплаченные остатки со сроком раньше ``today``."""
+    """«Просрочено на сегодня»: «Долги» со сроком раньше ``today`` (оплата пока не вычитается)."""
     total = ZERO
-    for due, amount in unpaid_by_due_date(data, counterparty).items():
+    for due, amount in debt_by_due_date(data, counterparty).items():
         if due < today:
             total += amount
     return total
@@ -230,8 +221,8 @@ def week_cell_amount(
 ) -> Decimal:
     """Числовое значение ячейки Приход/Долг/Оплата.
 
-    ``income``/``payment`` — суммы операций за день. ``debt`` — неоплаченный
-    остаток поставок со сроком в этот день (нужен ``data``: поставщик,
+    ``income``/``payment`` — суммы операций за день. ``debt`` — исходная сумма
+    поставок со сроком в этот день (архив, оплата не уменьшает) (нужен ``data``: поставщик,
     его условия и календарь выходных).
     """
     if column_kind == "debt":
@@ -240,7 +231,7 @@ def week_cell_amount(
         counterparty = find_counterparty(data, counterparty_id)
         if counterparty is None:
             return ZERO
-        return unpaid_by_due_date(data, counterparty).get(day, ZERO)
+        return debt_by_due_date(data, counterparty).get(day, ZERO)
 
     op_kind = _COLUMN_KIND_TO_OP_KIND.get(column_kind)
     if op_kind is None:

@@ -94,7 +94,8 @@ data.json ──DataStore──> AppData ──> экраны (views) ──кл
 Заглушки «Сводки»: `summary_totals`, `supplier_debt_row`, `overdue_payments`.
 Формулы поставщиков (v0.3.0): `payment_due_date(delivery, counterparty,
 day_overrides)` (дата + отсрочка, режимы без отсрочки, перенос с выходного),
-`unpaid_by_due_date(data, counterparty)` (FIFO-остатки по срокам),
+`debt_by_due_date(data, counterparty)` (архивные суммы поставок по срокам;
+оплата их пока не уменьшает — ADR-008),
 `week_debt(monday, data, counterparties)`, `overdue_amount(data, cp, today)`,
 `week_cell_amount/value(..., operations, data)` (`debt` считается только
 при переданном `data`).

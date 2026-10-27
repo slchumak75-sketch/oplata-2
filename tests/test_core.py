@@ -114,9 +114,10 @@ def test_daily_operation_input_roundtrip():
     assert daily_operation_total(data.operations, supplier.id, iso, KIND_INCOME) == Decimal("1000.00")
     assert calc.week_cell_value(supplier.id, day, "income", data.operations) == "1 000,00"
     assert calc.week_cell_value(supplier.id, day, "payment", data.operations) == "250,50"
-    # Долг: у «ааа» отсрочка 0, срок = день поставки; оплата 250,50 гасит
-    # часть поставки 1000, остаток долга на эту дату — 749,50.
-    assert calc.week_cell_value(supplier.id, day, "debt", data.operations, data) == "749,50"
+    # Долг: у «ааа» отсрочка 0, срок = день поставки. Сумма остаётся в
+    # «Долге» полностью (1000), хотя рядом есть оплата 250,50: по
+    # требованию пользователя оплата пока долг не уменьшает (архив).
+    assert calc.week_cell_value(supplier.id, day, "debt", data.operations, data) == "1 000,00"
     # ВСЕГО по колонке
     ids = [s.id for s in data.suppliers]
     assert calc.week_column_total(ids, day, "income", data.operations) == "1 000,00"
@@ -152,22 +153,30 @@ def test_due_date_rules():
     assert calc.raw_due_date(date(2026, 10, 27), realization) == date(2026, 10, 27)
 
 
-def test_unpaid_debt_fifo_and_week_overdue_columns():
+def test_debt_is_archival_payment_does_not_reduce_it():
+    """Требование пользователя (v0.3.1): сумма из «Долга» не исчезает.
+
+    Оплата пока НЕ уменьшает ни «Долг», ни «за неделю», ни «на сегодня» —
+    правила оплат пользователь разъяснит отдельным этапом.
+    """
     supplier = Counterparty(name="S", deferment_days=7)
     data = AppData(suppliers=[supplier])
     add_delivery(data, supplier.id, "2026-10-19", "2026-10-26", Decimal("1000"))
     add_delivery(data, supplier.id, "2026-10-20", "2026-10-27", Decimal("500"))
-    # Оплата 1200 гасит первую поставку целиком и 200 от второй (FIFO)
+    # Оплата 1200 записана, но долг не трогает (архив сроков как есть)
     set_daily_operation(data, supplier.id, "2026-10-27", KIND_PAYMENT, Decimal("1200"))
 
-    due_map = calc.unpaid_by_due_date(data, supplier)
-    assert due_map == {date(2026, 10, 27): Decimal("300")}
-    assert calc.week_cell_value(supplier.id, date(2026, 10, 27), "debt", data.operations, data) == "300,00"
-    assert calc.week_cell_value(supplier.id, date(2026, 10, 26), "debt", data.operations, data) == ""
+    due_map = calc.debt_by_due_date(data, supplier)
+    assert due_map == {
+        date(2026, 10, 26): Decimal("1000"),
+        date(2026, 10, 27): Decimal("500"),
+    }
+    assert calc.week_cell_value(supplier.id, date(2026, 10, 26), "debt", data.operations, data) == "1 000,00"
+    assert calc.week_cell_value(supplier.id, date(2026, 10, 27), "debt", data.operations, data) == "500,00"
     # Приход виден в день поставки, долг — в день срока
     assert calc.week_cell_value(supplier.id, date(2026, 10, 19), "income", data.operations) == "1 000,00"
-    # Задолженность за неделю 26.10–01.11 и просрочено на сегодня
-    assert calc.week_debt(date(2026, 10, 26), data, [supplier]) == Decimal("300")
+    # «За неделю» = сумма Долгов недели; «на сегодня» = Долги со сроком < сегодня
+    assert calc.week_debt(date(2026, 10, 26), data, [supplier]) == Decimal("1500")
     assert calc.week_debt(date(2026, 11, 2), data, [supplier]) == Decimal("0")
-    assert calc.overdue_amount(data, supplier, date(2026, 10, 27)) == Decimal("0")  # срок сегодня — не просрочено
-    assert calc.overdue_amount(data, supplier, date(2026, 10, 28)) == Decimal("300")
+    assert calc.overdue_amount(data, supplier, date(2026, 10, 27)) == Decimal("1000")  # срок 26.10 уже прошёл
+    assert calc.overdue_amount(data, supplier, date(2026, 10, 28)) == Decimal("1500")
