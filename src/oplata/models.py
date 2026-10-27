@@ -136,12 +136,11 @@ def seed_data() -> AppData:
 #
 # Запрос пользователя 27.10.2026: «сделать возможность ввода в поле приход
 # и оплата». Введённая в ячейку сумма хранится как Operation за этот день,
-# поэтому она видна в «Журнале операций» и будет исходными данными для
-# будущих формул Долга (сам Долг по-прежнему НЕ считается).
-# Ячейка показывает ИТОГ дня; правка ячейки заменяет все операции этого
-# типа/контрагента/даты одной операцией на новую сумму (других источников
-# операций пока нет; когда появится диалог операций с документами —
-# пересмотреть, см. ROADMAP этап 2).
+# поэтому она видна в «Журнале операций» и является исходными данными для
+# формул срока и архивного долга поставщиков.
+# Ячейка показывает ИТОГ дня. С v0.4.0 единственная операция дня при правке
+# ячейки обновляется на месте (документ/комментарий/срок сохраняются); если
+# операций несколько, итог дня по-прежнему заменяется одной (ADR-006/009).
 # ---------------------------------------------------------------------------
 
 KIND_INCOME = "Приход"
@@ -180,29 +179,45 @@ def set_daily_operation(
 ) -> None:
     """Задать итог дня из ячейки таблицы. ``None`` или 0 — очистить день.
 
-    ``due_date_iso`` — срок оплаты для «Прихода» (считает вызывающий код
-    через calc.payment_due_date), для «Оплаты» не используется.
+    Если операция такого типа за день ровно одна, она обновляется на месте:
+    документ, комментарий и уже сохранённый срок оплаты не теряются
+    (важно после появления редактора операций). Если операций несколько,
+    итог дня заменяется одной операцией — известное ограничение ADR-006.
+
+    ``due_date_iso`` — срок оплаты для новой «Приход»-операции (считает
+    вызывающий код через calc.payment_due_date), для «Оплаты» не нужен.
     """
-    data.operations = [
-        op
-        for op in data.operations
-        if not (
+
+    def matches(op: Operation) -> bool:
+        return (
             op.counterparty_id == counterparty_id
             and op.date == date_iso
             and op.kind == kind
         )
-    ]
-    if amount is not None and amount != 0:
-        quantized = amount.quantize(Decimal("0.01"))
-        data.operations.append(
-            Operation(
-                kind=kind,
-                counterparty_id=counterparty_id,
-                date=date_iso,
-                amount=f"{quantized:.2f}",
-                due_date=due_date_iso if kind == KIND_INCOME else "",
-            )
+
+    if amount is None or amount == 0:
+        data.operations = [op for op in data.operations if not matches(op)]
+        return
+
+    amount_text = f"{amount.quantize(Decimal('0.01')):.2f}"
+    existing = [op for op in data.operations if matches(op)]
+    if len(existing) == 1:
+        op = existing[0]
+        op.amount = amount_text
+        if kind == KIND_INCOME and due_date_iso and not op.due_date:
+            op.due_date = due_date_iso
+        return
+
+    data.operations = [op for op in data.operations if not matches(op)]
+    data.operations.append(
+        Operation(
+            kind=kind,
+            counterparty_id=counterparty_id,
+            date=date_iso,
+            amount=amount_text,
+            due_date=due_date_iso if kind == KIND_INCOME else "",
         )
+    )
 
 
 def add_delivery(

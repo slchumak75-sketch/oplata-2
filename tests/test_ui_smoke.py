@@ -1,7 +1,7 @@
 """Smoke-тесты интерфейса (headless, QT_QPA_PLATFORM=offscreen в CI).
 
-Проверяем только оболочку: окно строится, все 5 экранов переключаются,
-карточка открывается и умеет добавить контрагента. Формул здесь нет.
+Проверяем построение окна и главные пользовательские сценарии:
+ввод оплаты, поставку и долг, CRUD операций в журнале, карточки.
 """
 
 import os
@@ -118,6 +118,75 @@ def test_delivery_dialog_saves_and_debt_shows_in_week(qt_app, store):
     payment_cell.setText("88 888,88")
     assert table.item(ggg_row, 3 + 3 * 3 + 1).text() == "88 888,88"  # Долг на месте
     assert table.item(ggg_row, 2).text() == "88 888,88"  # и «за неделю» тоже
+    window.close()
+
+
+def test_operation_dialog_and_journal_crud(qt_app, store):
+    """Журнал: добавить операцию, поправить её, отфильтровать и удалить."""
+    from datetime import date
+
+    from PySide6.QtCore import QDate
+
+    from oplata.app import MainWindow
+    from oplata.dialogs.operation_dialog import OperationDialog
+
+    supplier = next(s for s in store.data.suppliers if s.name == "ггг")
+    dialog = OperationDialog(store, initial_counterparty_id=supplier.id)
+    dialog.date_edit.setDate(QDate(2026, 10, 26))
+    dialog.amount_edit.setText("1 000,50")
+    dialog.document_edit.setText("Накладная 42")
+    dialog.comment_edit.setText("первая поставка")
+    assert dialog.due_label.text() == "05.11.2026"  # ггг: отсрочка 10 дней
+    dialog._save()
+    (op,) = store.data.operations
+    assert (op.kind, op.date, op.due_date, op.amount) == (
+        "Приход", "2026-10-26", "2026-11-05", "1000.50",
+    )
+    dialog.close()
+
+    # Правка только суммы НЕ пересчитывает сохранённый срок, даже если
+    # отсрочка поставщика уже изменилась.
+    supplier.deferment_days = 30
+    edit = OperationDialog(store, operation=op)
+    edit.amount_edit.setText("1200")
+    assert edit.due_label.text() == "05.11.2026"
+    edit._save()
+    assert op.amount == "1200.00" and op.due_date == "2026-11-05"
+    edit.close()
+
+    # А изменение даты поставки срок пересчитывает (27.10 + 30 дней).
+    edit2 = OperationDialog(store, operation=op)
+    edit2.date_edit.setDate(QDate(2026, 10, 27))
+    assert edit2.due_label.text() == "26.11.2026"
+    edit2._save()
+    assert op.date == "2026-10-27" and op.due_date == "2026-11-26"
+    assert op.document == "Накладная 42"  # документ/комментарий пережили правки
+    edit2.close()
+
+    window = MainWindow(store)
+    journal = window.operations_view
+    assert journal.found_label.text() == "Найдено: 1"
+    journal._select_operation_row(op.id)
+    assert journal.selected_operation_id() == op.id
+    assert journal.edit_btn.isEnabled() and journal.delete_btn.isEnabled()
+
+    journal.date_from.setText("28.10.2026")  # операция от 27.10 — вне диапазона
+    assert journal.found_label.text() == "Найдено: 0"
+    journal.reset_filters()
+    assert journal.found_label.text() == "Найдено: 1"
+
+    # Главное окно после CRUD в журнале обновляет недельную таблицу:
+    # до удаления долг виден на сроке 26.11 (чт), после — ячейка пуста.
+    window.suppliers_view.goto_date(date(2026, 11, 26))
+    week_table = window.suppliers_view.table
+    ggg_row = 4 + [s.name for s in store.data.suppliers].index("ггг")
+    assert week_table.item(ggg_row, 3 + 3 * 3 + 1).text() == "1 200,00"
+
+    assert journal.delete_operation(op.id)
+    assert week_table.item(ggg_row, 3 + 3 * 3 + 1).text() == ""
+    assert store.data.operations == []
+    assert journal.found_label.text() == "Найдено: 0"
+    assert not journal.edit_btn.isEnabled()
     window.close()
 
 

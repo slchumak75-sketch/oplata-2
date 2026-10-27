@@ -37,18 +37,19 @@ oplata-2/
     dates.py       [без Qt]     # недели Пн–Вс, русские месяцы, формат сумм
     models.py      [без Qt]     # Counterparty, Operation, AppData, seed_data()
     storage.py     [без Qt]     # DataStore: JSON в %APPDATA%\OplataStroymarket\data.json
-    calc.py        [без Qt]     # ⚠️ ЗАГЛУШКИ формул (нули) — сюда писать формулы позже
+    calc.py        [без Qt]     # срок/долг поставщиков; «Сводка» пока заглушки
     views/
       summary_view.py           # Сводка
       week_view.py              # Поставщики и Покупатели (kind="supplier"/"customer")
-      operations_view.py        # Операции (журнал + фильтры)
+      operations_view.py        # Операции (журнал, фильтры, CRUD)
       data_view.py              # Данные (календарь выходных на год)
     dialogs/
       counterparty_card.py      # Карточки поставщика/покупателя
       delivery_dialog.py        # Окно «Поставка» (дата, сумма с НДС, срок оплаты)
+      operation_dialog.py       # Добавление/редактирование операции журнала
   tests/
-    test_core.py                # даты, модели, storage, calc-заглушки
-    test_ui_smoke.py            # окно строится, 5 экранов, карточка добавляет
+    test_core.py                # даты, модели, storage, срок и архивный долг
+    test_ui_smoke.py            # 5 экранов, поставка, ввод ячеек, CRUD журнала, карточки
   .github/workflows/build-windows.yml
 ```
 
@@ -64,6 +65,8 @@ data.json ──DataStore──> AppData ──> экраны (views) ──кл
 ```
 
 - `MainWindow.refresh_all()` перестраивает экраны после правок в карточках.
+- После CRUD в журнале `OperationsView` перечитывает себя и вызывает
+  `MainWindow.refresh_after_operation_change()` (недельные таблицы + «Сводка»).
 - Экран «Данные» от контрагентов не зависит и при `refresh_all()` не трогается.
 - `WeekView` перестраивает таблицу целиком при смене недели/списка —
   объёмы этапа оболочки это позволяют.
@@ -105,6 +108,10 @@ day_overrides)` (дата + отсрочка, режимы без отсрочк
 `dates.parse_money` → `models.set_daily_operation` → save →
 `WeekView._update_calculated_cells` (Долг/«на сегодня»/«за неделю»/ВСЕГО
 без перестройки таблицы) + `MainWindow.refresh_after_week_edit`.
+Ручная правка: `OperationsView` → `OperationDialog` → изменение того же
+`Operation` (+ политика срока из ADR-009) → save → обновление журнала и
+`MainWindow.refresh_after_operation_change`; удаление идёт тем же путём
+после подтверждения.
 
 ## Принципы
 

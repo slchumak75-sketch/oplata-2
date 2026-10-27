@@ -65,7 +65,9 @@ class MainWindow(QMainWindow):
             lambda cid: self.open_counterparty_card("customer", cid),
             on_data_changed=self.refresh_after_week_edit,
         )
-        self.operations_view = OperationsView(store)
+        self.operations_view = OperationsView(
+            store, on_data_changed=self.refresh_after_operation_change
+        )
         self.data_view = DataView(store)
 
         self.stack = QStackedWidget()
@@ -197,6 +199,15 @@ class MainWindow(QMainWindow):
         и пересчитала свою строку «ВСЕГО».
         """
         self.operations_view.refresh()
+        self.summary_view.refresh()
+
+    def refresh_after_operation_change(self) -> None:
+        """После правки операции в журнале обновить недельные таблицы.
+
+        Сам журнал уже перечитал себя перед вызовом этого метода.
+        """
+        self.suppliers_view.refresh()
+        self.customers_view.refresh()
         self.summary_view.refresh()
 
     def refresh_all(self) -> None:

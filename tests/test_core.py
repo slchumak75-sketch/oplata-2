@@ -12,6 +12,7 @@ from oplata.models import (
     KIND_PAYMENT,
     AppData,
     Counterparty,
+    Operation,
     add_delivery,
     daily_operation_total,
     seed_data,
@@ -129,6 +130,49 @@ def test_daily_operation_input_roundtrip():
     assert daily_operation_total(data.operations, supplier.id, iso, KIND_INCOME) == Decimal("0")
     set_daily_operation(data, supplier.id, iso, KIND_PAYMENT, Decimal("0"))
     assert data.operations == []
+
+
+def test_set_daily_operation_preserves_single_operation_metadata():
+    supplier = Counterparty(name="S")
+    operation = Operation(
+        kind=KIND_PAYMENT,
+        counterparty_id=supplier.id,
+        date="2026-10-26",
+        amount="100.00",
+        document="П/п 17",
+        comment="частично",
+    )
+    data = AppData(suppliers=[supplier], operations=[operation])
+
+    set_daily_operation(
+        data, supplier.id, "2026-10-26", KIND_PAYMENT, Decimal("150")
+    )
+
+    assert data.operations == [operation]  # тот же объект, только сумма новая
+    assert operation.amount == "150.00"
+    assert operation.document == "П/п 17"
+    assert operation.comment == "частично"
+
+    delivery = Operation(
+        kind=KIND_INCOME,
+        counterparty_id=supplier.id,
+        date="2026-10-26",
+        amount="100.00",
+        document="Накладная 42",
+    )
+    data.operations.append(delivery)
+    set_daily_operation(
+        data, supplier.id, "2026-10-26", KIND_INCOME, Decimal("200"), "2026-11-05"
+    )
+    assert delivery.amount == "200.00"
+    assert delivery.document == "Накладная 42"
+    assert delivery.due_date == "2026-11-05"  # пустому сроку дата присвоена
+
+    set_daily_operation(
+        data, supplier.id, "2026-10-26", KIND_INCOME, Decimal("250"), "2026-12-01"
+    )
+    assert delivery.amount == "250.00"
+    assert delivery.due_date == "2026-11-05"  # сохранённый срок не перезаписан
 
 
 def test_due_date_rules():
