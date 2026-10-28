@@ -198,6 +198,63 @@ def debt_schedule(
     return schedule
 
 
+def supplier_schedule(
+    data: AppData, counterparty: Counterparty
+) -> dict[date, Decimal]:
+    """Полный график долга одного поставщика по срокам.
+
+    Как :func:`debt_schedule`, но для одного контрагента: суммы поставок
+    по срокам **плюс его разовые долги переноса на 1 января**.
+    """
+
+    schedule = dict(debt_by_due_date(data, counterparty))
+    for entry in data.year_start.supplier_debts:
+        if entry.counterparty_id != counterparty.id:
+            continue
+        due = _iso_day(entry.due_date)
+        amount = year_start_amount(entry)
+        if due is None or amount == 0:
+            continue
+        schedule[due] = schedule.get(due, ZERO) + amount
+    return schedule
+
+
+def supplier_schedule_remaining(
+    data: AppData, counterparty: Counterparty, upto: date
+) -> dict[date, Decimal]:
+    """Остаток полного графика долга после оплат (FIFO по срокам).
+
+    То же, что :func:`debt_remaining_by_due_date`, но с учётом долгов
+    переноса на 1 января — для «Сводки» (v0.15.0).
+    """
+
+    remaining = {
+        due: amount
+        for due, amount in supplier_schedule(data, counterparty).items()
+        if amount != 0
+    }
+    paid = ZERO
+    for op in data.operations:
+        if op.counterparty_id != counterparty.id or op.kind != KIND_PAYMENT:
+            continue
+        day = _iso_day(op.date)
+        if day is None or day > upto:
+            continue
+        paid += operation_amount(op)
+    if paid <= 0:
+        return remaining
+    for due in sorted(remaining):
+        if paid <= 0:
+            break
+        amount = remaining[due]
+        if amount <= 0:
+            continue
+        covered = amount if amount <= paid else paid
+        remaining[due] = amount - covered
+        paid -= covered
+    return remaining
+
+
 def _schedule_sum(
     schedule: Mapping[date, Decimal], start: date, end: date
 ) -> Decimal:
@@ -260,9 +317,16 @@ def supplier_overdue_total(
     monday = week_monday(on_date)
     sunday = monday + timedelta(days=6)
     limit = monday - timedelta(days=1) if on_date < monday else min(on_date, sunday)
+    # Оплаты, сделанные до конца показанной недели, уже погасили часть
+    # долга — «на сегодня» в «Сводке» и в таблице поставщиков совпадают.
+    upto = sunday
     total = ZERO
     for supplier in visible_suppliers(data, include_archived):
-        due_map = debt_by_due_date(data, supplier)
+        # У поставщика со статусом «Реализация» срок бессрочный: просрочки
+        # у него не бывает (v0.15.0).
+        if is_open_ended(supplier):
+            continue
+        due_map = supplier_schedule_remaining(data, supplier, upto)
         total += sum((amount for due, amount in due_map.items() if due <= limit), ZERO)
     return total
 
@@ -274,9 +338,18 @@ def debt_totals(
 
     schedule = debt_schedule(data, visible_suppliers(data, include_archived))
     monday = week_monday(on_date)
+    sunday = monday + timedelta(days=6)
+    # «За неделю» — тоже с вычетом оплат, как в таблице поставщиков.
+    week = ZERO
+    for supplier in visible_suppliers(data, include_archived):
+        due_map = supplier_schedule_remaining(data, supplier, sunday)
+        week += sum(
+            (amount for due, amount in due_map.items() if monday <= due <= sunday),
+            ZERO,
+        )
     return DebtTotals(
         total=sum(schedule.values(), ZERO),
-        week=_schedule_sum(schedule, monday, monday + timedelta(days=6)),
+        week=week,
         today=schedule.get(on_date, ZERO),
         # «Просрочено» считается по столбцу «на сегодня» таблицы
         # поставщиков (v0.15.0), а не по срокам раньше сегодня.
@@ -431,6 +504,18 @@ def next_working_day(day: date, day_overrides: Mapping[str, str]) -> date:
     return result
 
 
+def is_open_ended(counterparty: Counterparty) -> bool:
+    """Бессрочный срок оплаты: у поставщика со статусом «Реализация».
+
+    v0.15.0: пользователь задал — у такого поставщика срок оплаты не
+    наступает, поэтому его суммы **никогда не попадают в столбец «на
+    сегодня»** (просрочки у него не бывает). Сама задолженность
+    по-прежнему видна в «за неделю» и в общем долге.
+    """
+
+    return bool(getattr(counterparty, "realization", False))
+
+
 def raw_due_date(delivery_date: date, counterparty: Counterparty) -> date:
     """Срок оплаты БЕЗ переноса с выходного.
 
@@ -501,6 +586,49 @@ def debt_by_due_date(
         if amount != 0:
             result[due] = result.get(due, ZERO) + amount
     return result
+
+
+def debt_remaining_by_due_date(
+    data: AppData, counterparty: Counterparty, upto: date
+) -> dict[date, Decimal]:
+    """Остаток долга по срокам после оплат, сделанных не позже ``upto``.
+
+    v0.15.0: пользователь задал порядок списания. Оплата гасит долги
+    **в порядке сроков — от ранних к поздним**: сначала просроченная
+    задолженность (столбец «на сегодня»), а уже остаток оплаты — долги
+    показанной недели (столбец «за неделю»). Недоплаченный остаток
+    остаётся на своём сроке, поэтому при переходе на следующую неделю
+    он сам попадает в «на сегодня».
+
+    Архивный «Долг» в ячейках дней при этом не меняется (v0.3.1) —
+    для него по-прежнему есть :func:`debt_by_due_date`.
+    """
+
+    remaining = {
+        due: amount
+        for due, amount in debt_by_due_date(data, counterparty).items()
+        if amount != 0
+    }
+    paid = ZERO
+    for op in data.operations:
+        if op.counterparty_id != counterparty.id or op.kind != KIND_PAYMENT:
+            continue
+        day = _iso_day(op.date)
+        if day is None or day > upto:
+            continue
+        paid += operation_amount(op)
+    if paid <= 0:
+        return remaining
+    for due in sorted(remaining):
+        if paid <= 0:
+            break
+        amount = remaining[due]
+        if amount <= 0:
+            continue
+        covered = amount if amount <= paid else paid
+        remaining[due] = amount - covered
+        paid -= covered
+    return remaining
 
 
 def week_debt(

@@ -480,9 +480,31 @@ class WeekView(QWidget):
             for partner in self._partners
         ]
 
+    def _remaining_due_maps(self) -> list[dict[date, Decimal]]:
+        """Остаток долга по срокам после оплат — для «на сегодня»/«за неделю».
+
+        v0.15.0: из «за неделю» вычитается оплата; если есть
+        просроченная задолженность («на сегодня»), она гасится первой,
+        а остаток оплаты идёт в «за неделю». Оплаты берутся по конец
+        показанной недели, недоплаченный остаток остаётся на своём
+        сроке и потому переносится в «на сегодня» следующих недель.
+        Архивный «Долг» в ячейках дней не меняется.
+        """
+
+        if self.kind != "supplier" or not self._days:
+            return [{} for _ in self._partners]
+        upto = self._days[-1]
+        return [
+            calc.debt_remaining_by_due_date(self.store.data, partner, upto)
+            for partner in self._partners
+        ]
+
     @staticmethod
     def _debt_columns(
-        due_map: dict[date, Decimal], days: list[date], today: date
+        due_map: dict[date, Decimal],
+        days: list[date],
+        today: date,
+        open_ended: bool = False,
     ) -> tuple[Decimal, Decimal]:
         """(просрочено на сегодня, итог за показанную неделю).
 
@@ -491,12 +513,20 @@ class WeekView(QWidget):
         для будущей — всё, что просрочено к её началу (долги предыдущих
         недель переносятся вперёд). «За неделю» — итог по срокам внутри
         показанной недели, какой бы неделю ни смотрели.
+
+        ``open_ended`` — поставщик со статусом «Реализация»: срок оплаты
+        у него бессрочный, поэтому в «на сегодня» его суммы **не
+        попадают никогда** (v0.15.0).
         """
         if not days:
             return ZERO, ZERO
         monday, sunday = days[0], days[-1]
         limit = monday - timedelta(days=1) if today < monday else min(today, sunday)
-        overdue = sum((a for d, a in due_map.items() if d <= limit), ZERO)
+        overdue = (
+            ZERO
+            if open_ended
+            else sum((a for d, a in due_map.items() if d <= limit), ZERO)
+        )
         week = sum(
             (a for d, a in due_map.items() if monday <= d <= sunday), ZERO
         )
@@ -519,6 +549,7 @@ class WeekView(QWidget):
         """Пересчитать Долг, «на сегодня»/«за неделю», ВСЕГО и тулбар без перестройки."""
         today = date.today()
         due_maps = self._due_maps()
+        remaining_maps = self._remaining_due_maps()
         partner_ids = [p.id for p in self._partners]
         operations = self.store.data.operations
         total_overdue = ZERO
@@ -527,9 +558,18 @@ class WeekView(QWidget):
         days = self._days
         self._rebuilding = True
         try:
-            for r, due_map in enumerate(due_maps):
+            for r, (due_map, remaining_map) in enumerate(
+                zip(due_maps, remaining_maps)
+            ):
                 row = FIRST_DATA_ROW + r
-                overdue, week = self._debt_columns(due_map, days, today)
+                # ``due_map`` — архивный «Долг» по дням, ``remaining_map``
+                # — остаток после оплат для «на сегодня»/«за неделю».
+                overdue, week = self._debt_columns(
+                    remaining_map,
+                    days,
+                    today,
+                    open_ended=calc.is_open_ended(self._partners[r]),
+                )
                 total_overdue += overdue
                 total_week += week
                 if self.kind == "supplier":
@@ -709,7 +749,16 @@ class WeekView(QWidget):
         operations = self.store.data.operations
         partner_ids = [p.id for p in partners]
         due_maps = self._due_maps()
-        debt_columns = [self._debt_columns(m, days, today) for m in due_maps]
+        # «на сегодня»/«за неделю» считаются по остатку долга после
+        # оплат (v0.15.0), а архивный «Долг» в днях — по исходному
+        # графику: для него и берётся ``due_maps``.
+        remaining_maps = self._remaining_due_maps()
+        debt_columns = [
+            self._debt_columns(
+                m, days, today, open_ended=calc.is_open_ended(partner)
+            )
+            for m, partner in zip(remaining_maps, partners)
+        ]
 
         # Строка «ВСЕГО»
         total_overdue = sum((c[0] for c in debt_columns), ZERO)

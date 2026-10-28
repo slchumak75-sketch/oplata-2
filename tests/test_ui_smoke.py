@@ -212,12 +212,16 @@ def test_delivery_dialog_saves_and_debt_shows_in_week(qt_app, store):
     assert table.item(3, 2).text() == "88 888,88"  # ВСЕГО за неделю
     assert window.suppliers_view.right_value_label.text() == "88 888,88 руб."
 
-    # Оплата в день срока НЕ убирает сумму из «Долга» (требование
-    # пользователя v0.3.1: остаётся для архива; правила оплат — позже)
+    # Оплата НЕ убирает сумму из «Долга» (требование пользователя
+    # v0.3.1: остаётся для архива), но уменьшает «за неделю» (v0.15.0:
+    # оплата вычитается из «за неделю», а если есть просроченная
+    # задолженность — приоритетно из «на сегодня»).
     payment_cell = table.item(ggg_row, 3 + 3 * 3 + 2)  # Оплата чт 05.11
     payment_cell.setText("88 888,88")
     assert table.item(ggg_row, 3 + 3 * 3 + 1).text() == "88 888,88"  # Долг на месте
-    assert table.item(ggg_row, 2).text() == "88 888,88"  # и «за неделю» тоже
+    assert table.item(ggg_row, 2).text() == ""  # «за неделю» погашено
+    assert table.item(3, 2).text() == ""  # ВСЕГО за неделю
+    assert window.suppliers_view.right_value_label.text() == "0,00 руб."
     window.close()
 
 
@@ -1387,11 +1391,11 @@ def test_summary_panel_shows_three_blocks_line_by_line(qt_app, store):
 
     # Блок «Задолженность поставщикам».
     assert view.value_text("debt_total") == "2 100,00"
-    assert view.value_text("debt_week") == "500,00"
-    # «Задолженность на сегодня» удалена; «Просрочено» — как столбец
-    # «на сегодня» таблицы поставщиков: долги со сроком по 27.10
-    # включительно (700 просрочено + 500 со сроком сегодня).
-    assert view.value_text("debt_overdue") == "1 200,00"
+    # «Задолженность на сегодня» удалена. Оплата поставщику (1 200)
+    # гасит сначала просроченное (700 со сроком 20.10), остаток 500 —
+    # долги недели (v0.15.0): и «на неделе», и «Просрочено» пусты.
+    assert view.value_text("debt_week") == "0,00"
+    assert view.value_text("debt_overdue") == "0,00"
     assert view.caption_text("plan_1") == "Оплата 02.11 – 08.11"
     assert view.value_text("plan_1") == "0,00"
     assert view.caption_text("plan_2") == "Оплата 09.11 – 15.11"
@@ -1419,7 +1423,12 @@ def test_summary_calc_helpers_are_pure(qt_app, store):
     from decimal import Decimal
 
     from oplata import calc
-    from oplata.models import add_delivery, set_year_start_supplier_debt
+    from oplata.models import (
+        KIND_PAYMENT,
+        add_delivery,
+        set_daily_operation,
+        set_year_start_supplier_debt,
+    )
 
     supplier = store.data.suppliers[0]
     add_delivery(store.data, supplier.id, "2026-10-10", "2026-10-20", Decimal("700"))
@@ -1433,9 +1442,22 @@ def test_summary_calc_helpers_are_pure(qt_app, store):
     totals = calc.debt_totals(store.data, date(2026, 10, 28))
     assert totals.total == Decimal("1000")
     assert totals.today == Decimal("300")
-    # Неделя 26.10–01.11: срок 20.10 уже в прошлой неделе.
+    # Неделя 26.10–01.11: срок 20.10 уже в прошлой неделе. Оплат нет,
+    # поэтому неделя и просроченное считаются по графику.
     assert totals.week == Decimal("300")
-    assert totals.overdue == Decimal("700")
+    # «Просрочено» = столбец «на сегодня»: долги со сроком по дату
+    # сводки включительно — 700 (срок 20.10) и 300 (перенос, срок 28.10).
+    assert totals.overdue == Decimal("1000")
+
+    # Оплата 500 гасит сначала просроченное (срок 20.10), остаток 0.
+    set_daily_operation(
+        store.data, supplier.id, "2026-10-27", KIND_PAYMENT, Decimal("500")
+    )
+    paid = calc.debt_totals(store.data, date(2026, 10, 27))
+    assert paid.overdue == Decimal("200")  # 700 − 500: оплата в просрочку
+    # Долг переноса со сроком 28.10 внутри недели 26.10–01.11 не тронут:
+    # оплата приоритетно ушла в просроченное (v0.15.0).
+    assert paid.week == Decimal("300")
 
     plan = calc.weekly_payment_plan(store.data, date(2026, 10, 28))
     assert [week.amount for week in plan] == [Decimal("0")] * 4
@@ -1577,4 +1599,91 @@ def test_supplier_overdue_carries_over_to_next_week(qt_app, store):
     view.goto_date(date(2026, 10, 26) + timedelta(days=7))
     assert table.item(row, 1).text() == "700,00"
     assert table.item(row, 2).text() == "900,00"
+    window.close()
+    assert table.item(row, 1).text() == "700,00"
+    assert table.item(row, 2).text() == "900,00"
+    window.close()
+
+
+def test_supplier_payment_reduces_overdue_first_then_week(qt_app, store):
+    """v0.15.0: оплата гасит просроченное («на сегодня»), остаток — «за неделю».
+
+    Недоплаченный остаток остаётся на своём сроке, поэтому на следующей
+    неделе он снова виден в «на сегодня».
+    """
+    from datetime import date, timedelta
+    from decimal import Decimal
+
+    from oplata.app import MainWindow
+    from oplata.models import add_delivery, set_daily_operation
+
+    supplier = store.data.suppliers[0]
+    # Просрочка 700 (срок 20.10) + долг недели 500 (срок 29.10).
+    add_delivery(store.data, supplier.id, "2026-10-10", "2026-10-20", Decimal("700"))
+    add_delivery(store.data, supplier.id, "2026-10-10", "2026-10-29", Decimal("500"))
+
+    window = MainWindow(store)
+    window.show()
+    qt_app.processEvents()
+    view = window.suppliers_view
+    row = 4
+    table = view.table
+    view.goto_date(date(2026, 10, 26))
+
+    assert table.item(row, 1).text() == "700,00"  # просрочено
+    assert table.item(row, 2).text() == "500,00"  # за неделю
+
+    # Оплата 900: сначала гасит просрочку 700, остаток 200 — неделю.
+    set_daily_operation(
+        store.data, supplier.id, "2026-10-27", "Оплата", Decimal("900")
+    )
+    view.refresh()
+    assert table.item(row, 1).text() == ""  # просрочка погашена
+    assert table.item(row, 2).text() == "300,00"  # 500 − 200
+
+    # Недоплата: оплата 100 вместо 900 — остаток просрочки переносится.
+    store.data.operations[:] = [
+        op for op in store.data.operations if op.kind != "Оплата"
+    ]
+    set_daily_operation(
+        store.data, supplier.id, "2026-10-20", "Оплата", Decimal("100")
+    )
+    view.refresh()
+    assert table.item(row, 1).text() == "600,00"  # 700 − 100
+    assert table.item(row, 2).text() == "500,00"  # оплата ушла в просрочку
+    # Следующая неделя: недоплаченный остаток 600 перенесён в «на
+    # сегодня»; к нему добавился долг со сроком 29.10 — он тоже стал
+    # просроченным (600 + 500 = 1 100).
+    view.goto_date(date(2026, 10, 26) + timedelta(days=7))
+    assert table.item(row, 1).text() == "1 100,00"
+    window.close()
+
+
+def test_supplier_with_realization_never_shows_overdue(qt_app, store):
+    """Поставщик со статусом «Реализация»: срок бессрочный, «на сегодня» — пусто."""
+    from datetime import date
+    from decimal import Decimal
+
+    from oplata.app import MainWindow
+    from oplata.models import Counterparty
+
+    store.data.suppliers.append(Counterparty(name="Реализация", realization=True))
+    store.save()
+    window = MainWindow(store)
+    window.show()
+    qt_app.processEvents()
+    view = window.suppliers_view
+    view.goto_date(date(2026, 10, 26))
+    table = view.table
+    names = [s.name for s in view.counterparties()]
+    row = 4 + names.index("Реализация")
+
+    from oplata.models import add_delivery
+
+    partner = view.counterparties()[names.index("Реализация")]
+    # Поставка со сроком в прошлом — но у «Реализации» срока нет.
+    add_delivery(store.data, partner.id, "2026-10-01", "2026-10-05", Decimal("400"))
+    view.refresh()
+    assert table.item(row, 1).text() == ""  # в «на сегодня» не попадает никогда
+    assert table.item(row, 2).text() == ""  # срок 05.10 вне недели 26.10–01.11
     window.close()
