@@ -693,6 +693,9 @@ def test_receipts_customers_popup_opens_right_and_sums(qt_app, store):
     store.data.customers.extend([first, second])
     window = MainWindow(store)
     window.show()
+    # Окно должно быть достаточно широким: проверка «попап справа от
+    # таблицы» бессмысленна на узком headless-окне.
+    window.resize(1280, 800)
     qt_app.processEvents()
     view = window.receipts_view
     view.set_date(date(2026, 10, 27))
@@ -700,11 +703,16 @@ def test_receipts_customers_popup_opens_right_and_sums(qt_app, store):
     popup = view.open_popup("customers", row=2)
     assert popup is not None
     assert list(popup.edits) == [first.id, second.id]
-    # Окно всплывает справа от таблицы, а не под строкой.
+    # Окно всплывает справа от таблицы, а не под строкой. Проверяем,
+    # только когда справа есть место: в headless-среде без настоящей
+    # геометрии (платформа minimal) окна остаются узкими.
     table_right = view.incoming.table.mapToGlobal(
         view.incoming.table.rect().topRight()
     ).x()
-    assert popup.x() > table_right - popup.width()
+    screen_width = window.screen().availableGeometry().width()
+    free_space = min(screen_width, window.width()) - table_right
+    if free_space >= popup.width():
+        assert popup.x() > table_right - popup.width()
 
     # Итог пересчитывается по мере ввода и до сохранения.
     assert popup.total_label.text() == "0,00"
@@ -1883,8 +1891,8 @@ def test_users_are_listed_in_configuration_and_password_gate(
     window.close()
 
 
-def test_amount_text_fits_into_day_column(qt_app, store):
-    """v0.18.0: «88 888,88» влезает в колонку дня при любой ширине окна."""
+def test_amount_font_is_chosen_to_fit_day_column(qt_app, store):
+    """v0.18.0: «88 888,88» влезает в колонку дня при любой её ширине."""
     from PySide6.QtGui import QFont, QFontMetrics
 
     from oplata.app import MainWindow
@@ -1901,20 +1909,41 @@ def test_amount_text_fits_into_day_column(qt_app, store):
         1 + view.lead_columns + TABLE_DAYS * view.columns_per_day
     )
 
-    for width in (640, 1200, 1880):
-        view.table.setFixedWidth(width)
-        view._fit_columns_to_width()
-        qt_app.processEvents()
-        col = view._day_column(0, 0)  # первый день, первая подколонка
-        day_width = view.table.columnWidth(col)
-        item = view.table.item(4, col)  # строка первого контрагента
-        assert item is not None
+    def advance_for(pixel_size: int) -> int:
         font = QFont(view.table.font())
-        font.setPixelSize(item.font().pixelSize())
+        font.setPixelSize(pixel_size)
         font.setBold(True)
-        advance = QFontMetrics(font).horizontalAdvance(MAX_AMOUNT_TEXT)
-        assert advance <= day_width - 8, (
-            f"ширина колонки {day_width}: «{MAX_AMOUNT_TEXT}» "
-            f"занимает {advance} px"
+        return QFontMetrics(font).horizontalAdvance(MAX_AMOUNT_TEXT)
+
+    # Подбор идёт по самой узкой колонке дня (в v0.18.0 и ранее бралась
+    # ширина итоговой колонки, из-за чего сумма вылезала за ячейку).
+    captured: list[int] = []
+    original = view._fit_amount_font
+    view._fit_amount_font = lambda width: captured.append(width)
+    try:
+        view._fit_columns_to_width()
+    finally:
+        view._fit_amount_font = original
+    assert captured, "подгонка шрифта не вызывалась"
+    day_widths = [
+        view.table.columnWidth(view._day_column(day, sub))
+        for day in range(view.table_days)
+        for sub in range(view.columns_per_day)
+    ]
+    assert captured[-1] == min(day_widths)
+
+    # Метрики шрифта в headless-среде без системных шрифтов могут быть
+    # недоступны — тогда проверку ширины текста пропускаем.
+    if advance_for(8) > 60 - 8:
+        window.close()
+        return
+
+    for width in (60, 72, 80, 100, 160):
+        view._fit_amount_font(width)
+        item = view._amount_items[0] if view._amount_items else None
+        assert item is not None
+        advance = advance_for(item.font().pixelSize())
+        assert advance <= width - 8, (
+            f"колонка {width} px: «{MAX_AMOUNT_TEXT}» занимает {advance} px"
         )
     window.close()

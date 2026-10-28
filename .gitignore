@@ -19,3 +19,6 @@ data.json
 .vscode/
 Thumbs.db
 desktop.ini
+
+# Превью-скриншоты для обсуждения с пользователем (не в репозитории)
+preview-*.png

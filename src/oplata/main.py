@@ -12,6 +12,15 @@ from __future__ import annotations
 
 import sys
 
+# Импорт здесь, а не внутри main(): доступ нужен и функции _ask_user,
+# которая живёт отдельно. Qt этот модуль не тянет — только stdlib.
+from .access import (
+    Access,
+    load_current_user,
+    load_users,
+    save_current_user,
+)
+
 
 def main(argv: list[str] | None = None) -> int:
     argv = list(sys.argv[1:] if argv is None else argv)
@@ -20,12 +29,6 @@ def main(argv: list[str] | None = None) -> int:
     from PySide6.QtWidgets import QApplication
 
     from . import __app_name__, __version__, styles
-    from .access import (
-        Access,
-        load_current_user,
-        load_users,
-        save_current_user,
-    )
     from .app import MainWindow
     from .storage import DataStore
 
@@ -34,15 +37,7 @@ def main(argv: list[str] | None = None) -> int:
     app.setOrganizationName("Stroymarket")
     app.setStyleSheet(styles.APP_STYLESHEET)
 
-    # v0.18.0: на компьютере один раз выбирается, кто здесь работает, —
-    # дальше действуют права этого пользователя. В режиме самотеста
-    # (--self-test) диалог не показываем.
-    user = load_current_user()
-    if user is None:
-        user = load_users()[0] if "--self-test" in argv else _ask_user()
-        save_current_user(user)
-
-    access = Access(user)
+    access = resolve_user(argv)
     store = DataStore()
     window = MainWindow(store, access)
     # В заголовке окна видно роль — иначе непонятно, почему часть
@@ -55,6 +50,21 @@ def main(argv: list[str] | None = None) -> int:
     if "--self-test" in argv:
         QTimer.singleShot(400, app.quit)
     return app.exec()
+
+
+def resolve_user(argv: list[str]) -> Access:
+    """Определить, кто работает на этом компьютере (v0.18.0).
+
+    Выбор один раз сохраняется на компьютере; в режиме самотеста
+    (``--self-test``) диалог не показываем. Отдельная функция — чтобы
+    этот путь можно было проверить тестом без запуска Qt-цикла.
+    """
+
+    user = load_current_user()
+    if user is None:
+        user = load_users()[0] if "--self-test" in argv else _ask_user()
+        save_current_user(user)
+    return Access(user)
 
 
 def _ask_user():
