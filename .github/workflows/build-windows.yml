@@ -38,6 +38,7 @@ on:
 
 permissions:
   contents: write # нужно только шагу публикации Release на тегах v*
+  statuses: write # короткая диагностика сборки установщика (commit status)
 
 concurrency:
   group: build-windows-${{ github.ref }}
@@ -275,6 +276,39 @@ jobs:
           name: Oplata-windows-folder-v${{ steps.version.outputs.version }}
           path: package-folder/**
           if-no-files-found: error
+
+      # Логи запуска могут быть недоступны извне, поэтому первая строка с
+      # ошибкой из лога ISCC отправляется в commit status: её видно через
+      # GitHub API без скачивания артефактов.
+      - name: Report installer build status
+        if: always()
+        shell: pwsh
+        run: |
+          $log = ".\installer-build.log"
+          $desc = "installer: unknown status"
+          if (Test-Path $log) {
+            $line = Get-Content $log | Where-Object { $_ -match "Error|error|Exception|not found|failed" } | Select-Object -First 1
+            if (-not $line) { $line = (Get-Content $log | Select-Object -First 1) }
+            if ($line) {
+              $desc = $line.Trim() -replace '\s+', ' '
+              if ($desc.Length -gt 130) { $desc = $desc.Substring(0, 130) }
+            }
+          }
+          $state = if (Test-Path ".\installer\Oplata-*-Setup.exe") { "success" } else { "failure" }
+          $setup = Get-ChildItem -Path "." -Recurse -Filter "Oplata-*-Setup.exe" | Select-Object -First 1
+          if ($setup) { $state = "success"; $desc = "installer OK: $($setup.Name)" }
+          $body = @{
+            state       = $state
+            context     = "installer-build"
+            description = $desc
+          } | ConvertTo-Json
+          $headers = @{
+            Authorization = "Bearer $env:GITHUB_TOKEN"
+            Accept        = "application/vnd.github+json"
+          }
+          Invoke-RestMethod -Uri "https://api.github.com/repos/$env:GITHUB_REPOSITORY/statuses/$env:GITHUB_SHA" `
+            -Method Post -Headers $headers -Body $body -ContentType "application/json" | Out-Null
+          Write-Host "commit status installer-build: $state — $desc"
 
       - name: Upload installer build log
         if: always()

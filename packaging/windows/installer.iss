@@ -1,4 +1,4 @@
-; Установщик Windows для «Оплаты — Строймаркет» (Inno Setup 6).
+﻿; Установщик Windows для «Оплаты — Строймаркет» (Inno Setup 6).
 ;
 ; Сборка (на Windows):
 ;     ISCC.exe /DMyAppVersion=0.16.0 packaging\windows\installer.iss
