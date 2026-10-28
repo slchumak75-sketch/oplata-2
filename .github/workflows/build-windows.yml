@@ -282,7 +282,10 @@ jobs:
       # GitHub API без скачивания артефактов.
       - name: Report installer build status
         if: always()
+        continue-on-error: true
         shell: pwsh
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           $log = ".\installer-build.log"
           $desc = "installer: unknown status"
@@ -294,8 +297,8 @@ jobs:
               if ($desc.Length -gt 130) { $desc = $desc.Substring(0, 130) }
             }
           }
-          $state = if (Test-Path ".\installer\Oplata-*-Setup.exe") { "success" } else { "failure" }
           $setup = Get-ChildItem -Path "." -Recurse -Filter "Oplata-*-Setup.exe" | Select-Object -First 1
+          $state = "failure"
           if ($setup) { $state = "success"; $desc = "installer OK: $($setup.Name)" }
           $body = @{
             state       = $state
