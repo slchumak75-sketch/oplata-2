@@ -79,6 +79,10 @@ class MainWindow(QMainWindow):
             lambda cid: self.open_counterparty_card("customer", cid),
             on_data_changed=self.refresh_after_week_edit,
             on_open_realization=self.open_realization_dialog,
+            # v0.13.0: клик по покупателю показывает его журнал операций.
+            on_open_operations=lambda cid: self.open_operations_journal(
+                "customer", cid
+            ),
         )
         # «Сводка» больше не отдельная вкладка: она стоит справа на
         # вкладке «Поступление и оплаты» (запрос пользователя v0.11.0).

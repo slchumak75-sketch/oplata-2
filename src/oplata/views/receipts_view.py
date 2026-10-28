@@ -64,6 +64,11 @@ from PySide6.QtWidgets import (
 
 from .. import styles
 from ..dates import fmt_money_plain, parse_money, week_monday
+from ..dialogs.payments_journal_dialog import (
+    CARD_TITLE,
+    CASH_TITLE,
+    PaymentsJournalDialog,
+)
 from ..models import (
     CARD_SOURCE,
     CASH_SOURCE,
@@ -82,7 +87,15 @@ from ..models import (
     set_daily_other_payment,
 )
 from ..storage import DataStore
-from ..widgets import AmountLineEdit, blue_button, make_amount_edit, make_date_edit
+from ..widgets import (
+    AmountLineEdit,
+    RowHoverMixin,
+    arrow_button,
+    blue_button,
+    install_row_hover,
+    make_amount_edit,
+    make_date_edit,
+)
 
 CASH_ROW = "cash"
 CARD_ROW = "card"
@@ -101,6 +114,20 @@ NEW_PAYMENT_NAME = NEW_ROW_NAME[OUTGOING]  # короткий псевдоним
 # Сколько строк видно в блоке без прокрутки; дальше включается скроллбар.
 MAX_VISIBLE_ROWS = 8
 
+def other_row_key(name: str) -> str:
+    return f"{OTHER_PREFIX}{name}"
+
+
+def other_row_name(key: str) -> str:
+    return key[len(OTHER_PREFIX):] if key.startswith(OTHER_PREFIX) else ""
+
+
+# Постоянная строка «Прочие поступления» в блоке «Поступление» (v0.13.0):
+# она не добавляется кнопкой «+» и не удаляется — только сумма в ячейку.
+OTHER_INCOME_NAME = "Прочие поступления"
+FIXED_OTHER_ROW = other_row_key(OTHER_INCOME_NAME)
+
+
 ROW_TITLES = {
     CASH_ROW: "Поступление наличными",
     CARD_ROW: "Поступление по картам",
@@ -108,18 +135,39 @@ ROW_TITLES = {
     SUPPLIERS_ROW: "Поставщики",
 }
 
-# Строки, сумму которых вводят прямо в ячейку.
-DIRECT_INPUT_ROWS = (CASH_ROW, CARD_ROW)
+# Строки, сумму которых вводят прямо в ячейку (прочие поступления
+# тоже вводятся в ячейку, но без названия — строка постоянная).
+DIRECT_INPUT_ROWS = (CASH_ROW, CARD_ROW, FIXED_OTHER_ROW)
 # Строки, по клику открывающие окно со списком контрагентов.
 POPUP_ROWS = (CUSTOMERS_ROW, SUPPLIERS_ROW)
 
-COL_NAME, COL_AMOUNT, COL_WEEK, COL_MONTH, COL_YEAR = range(5)
-HEADERS = ("", "Сумма", "Неделя", "Месяц", "Год")
-# Ширины числовых колонок подобраны под шрифт +30% (v0.12.0): в них
-# должно влезать «88 888,88», а колонке названия — остаться место на
-# «Поступление наличными». Первая колонка растягивается на остаток.
-COLUMN_WIDTHS = {COL_AMOUNT: 120, COL_WEEK: 120, COL_MONTH: 120, COL_YEAR: 120}
-ROW_HEIGHT = 34
+COL_NAME, COL_AMOUNT, COL_WEEK, COL_MONTH, COL_QUARTER, COL_YEAR = range(6)
+HEADERS = ("", "Сумма", "Неделя", "Месяц", "Квартал", "Год")
+# Ширины числовых колонок подобраны под шрифт +30% (v0.12.0) с учётом
+# пятой колонки «Квартал» (v0.13.0): в них влезает «88 888,88», а
+# колонке названия остаётся место на «Поступление наличными».
+# Широкий, всегда видимый вертикальный скроллбар блока «Оплата»
+# (v0.13.0): «закрепить и сделать широкий».
+WIDE_SCROLLBAR = (
+    "QScrollBar:vertical{background:#f2f5fa;width:22px;margin:0}"
+    "QScrollBar::handle:vertical{background:#b9c4d6;border-radius:6px;"
+    "min-height:40px;margin:2px 3px}"
+    "QScrollBar::handle:vertical:hover{background:#93a3bd}"
+    "QScrollBar::add-line:vertical,QScrollBar::sub-line:vertical{height:0}"
+    "QScrollBar::add-page:vertical,QScrollBar::sub-page:vertical{"
+    "background:#f2f5fa}"
+)
+COLUMN_WIDTHS = {
+    COL_AMOUNT: 104,
+    COL_WEEK: 100,
+    COL_MONTH: 100,
+    COL_QUARTER: 100,
+    COL_YEAR: 104,
+}
+# Высота строки: с запасом под перенос длинного названия строки на две
+# строки (wordWrap включён, колонка названия ограничена пятью
+# числовыми колонками).
+ROW_HEIGHT = 40
 
 ZERO = Decimal("0")
 
@@ -138,15 +186,11 @@ def _money_text(amount: Decimal) -> str:
     return fmt_money_plain(amount) if amount else ""
 
 
-def other_row_key(name: str) -> str:
-    return f"{OTHER_PREFIX}{name}"
+class _HoverDelegate(RowHoverMixin, QStyledItemDelegate):
+    """Обычная ячейка блока + бежевая подсветка строки под курсором."""
 
 
-def other_row_name(key: str) -> str:
-    return key[len(OTHER_PREFIX):] if key.startswith(OTHER_PREFIX) else ""
-
-
-class AmountItemDelegate(QStyledItemDelegate):
+class AmountItemDelegate(RowHoverMixin, QStyledItemDelegate):
     """Редактор суммы для ячейки: без мешающих нулей (AmountLineEdit).
 
     Ссылку на созданный редактор держим сами: иначе Python-обёртка
@@ -217,13 +261,6 @@ class AmountPopup(QFrame):
         header.setObjectName("PopupTitle")
         root.addWidget(header)
 
-        if hint:
-            hint_label = QLabel(hint)
-            hint_label.setObjectName("Muted")
-            hint_label.setWordWrap(True)
-            hint_label.setMaximumWidth(360)
-            root.addWidget(hint_label)
-
         fields = QWidget()
         fields_layout = QVBoxLayout(fields)
         fields_layout.setContentsMargins(0, 0, 0, 0)
@@ -255,15 +292,8 @@ class AmountPopup(QFrame):
 
         # Кнопок «Закрыть»/«Сохранить» нет (v0.12.0): окно сохраняет
         # введённое и скрывается, как только вы кликнете левой кнопкой
-        # в любом месте вне полей ввода сумм.
-        hint_bottom = QLabel(
-            "Сумма сохраняется при клике вне поля ввода; Esc — отмена."
-        )
-        hint_bottom.setObjectName("Muted")
-        hint_bottom.setWordWrap(True)
-        hint_bottom.setMaximumWidth(360)
-        root.addWidget(hint_bottom)
-
+        # в любом месте вне полей ввода сумм. Пояснений по запросу
+        # v0.13.0 в окне нет — только заголовок, поля и итог.
         self._closing = False  # True — закрыть без сохранения (Esc)
         self._watching = False  # слушаем клики по всему приложению
         self._update_total()
@@ -447,12 +477,17 @@ class MoneyBlock(QFrame):
         on_name_edited: Callable[[str, str], None] | None = None,
         on_add_row: Callable[[], None] | None = None,
         on_remove_row: Callable[[str], None] | None = None,
+        on_open_journal: Callable[[str], None] | None = None,
         parent: QWidget | None = None,
         direction: str = OUTGOING,
+        stretch_table: bool = False,
     ) -> None:
         super().__init__(parent)
         self.setObjectName("Panel")
         self.direction = direction
+        # Блок «Оплата» тянется до низа экрана (v0.13.0), поэтому его
+        # таблица растягиваемая и всегда с широким скроллбаром.
+        self._stretch_table = stretch_table
         self.row_keys = list(row_keys)
         self.on_open_popup = on_open_popup
         self.on_amount_entered = on_amount_entered
@@ -460,6 +495,7 @@ class MoneyBlock(QFrame):
         self.on_name_edited = on_name_edited
         self.on_add_row = on_add_row
         self.on_remove_row = on_remove_row
+        self.on_open_journal = on_open_journal
         self._updating = False  # заполнение таблицы не считается вводом
 
         root = QVBoxLayout(self)
@@ -482,17 +518,25 @@ class MoneyBlock(QFrame):
         self.today_btn.clicked.connect(self.go_today)
         top.addWidget(self.today_btn)
 
-        self.prev_btn = QPushButton("←")
-        self.prev_btn.setFixedWidth(38)
-        self.prev_btn.setToolTip("День назад")
+        self.prev_btn = arrow_button("←", "День назад")
         self.prev_btn.clicked.connect(lambda: self.shift_date(-1))
         top.addWidget(self.prev_btn)
 
-        self.next_btn = QPushButton("→")
-        self.next_btn.setFixedWidth(38)
-        self.next_btn.setToolTip("День вперёд")
+        self.next_btn = arrow_button("→", "День вперёд")
         self.next_btn.clicked.connect(lambda: self.shift_date(1))
         top.addWidget(self.next_btn)
+
+        # Кнопки «+» и «−» живут в заголовке блока (v0.13.0) — рядом с
+        # датой и стрелками, а не под таблицей.
+        top.addSpacing(14)
+        if on_add_row is not None:
+            self.add_btn = arrow_button("+", "Добавить свою строку")
+            self.add_btn.clicked.connect(on_add_row)
+            top.addWidget(self.add_btn)
+        if on_remove_row is not None:
+            self.remove_btn = arrow_button("−", "Убрать выделенную строку")
+            self.remove_btn.clicked.connect(self._remove_selected)
+            top.addWidget(self.remove_btn)
 
         top.addStretch(1)
         root.addLayout(top)
@@ -507,6 +551,9 @@ class MoneyBlock(QFrame):
         # «клацаешь мышкой — и сразу вводишь».
         self.table.setEditTriggers(QAbstractItemView.EditTrigger.AllEditTriggers)
         self.table.setItemDelegateForColumn(COL_AMOUNT, AmountItemDelegate(self.table))
+        # Длинные названия строк («Поступление наличными») переносим, а
+        # не обрезаем: пять числовых колонок оставляют им 200–250 px.
+        self.table.setWordWrap(True)
         self.table.itemChanged.connect(self._on_item_changed)
         self.table.cellClicked.connect(self._on_cell_clicked)
         self.table.setAlternatingRowColors(False)
@@ -520,25 +567,14 @@ class MoneyBlock(QFrame):
                     Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter
                 )
         root.addWidget(self.table)
-
-        # --- кнопки «+» / «−» для строк, которые добавляет пользователь ---
-        if on_add_row is not None or on_remove_row is not None:
-            buttons = QHBoxLayout()
-            buttons.addStretch(1)
-            kind = "поступление" if direction == INCOMING else "вид оплаты"
-            if on_add_row is not None:
-                self.add_btn = QPushButton("+")
-                self.add_btn.setFixedWidth(38)
-                self.add_btn.setToolTip(f"Добавить своё: {kind}")
-                self.add_btn.clicked.connect(on_add_row)
-                buttons.addWidget(self.add_btn)
-            if on_remove_row is not None:
-                self.remove_btn = QPushButton("−")
-                self.remove_btn.setFixedWidth(38)
-                self.remove_btn.setToolTip(f"Убрать выделенное: {kind}")
-                self.remove_btn.clicked.connect(self._remove_selected)
-                buttons.addWidget(self.remove_btn)
-            root.addLayout(buttons)
+        # Подсветка всей строки бежевым при наведении (v0.13.0).
+        self._hover_delegate = _HoverDelegate(self.table)
+        self.table.setItemDelegate(self._hover_delegate)
+        install_row_hover(
+            self.table,
+            self._hover_delegate,
+            self.table.itemDelegateForColumn(COL_AMOUNT),
+        )
 
         self.set_rows(self.row_keys)
 
@@ -552,12 +588,18 @@ class MoneyBlock(QFrame):
         for row, key in enumerate(self.row_keys):
             name_item = QTableWidgetItem(self._row_title(key))
             flags = Qt.ItemFlag.ItemIsEnabled | Qt.ItemFlag.ItemIsSelectable
-            if key.startswith(OTHER_PREFIX):
+            if key.startswith(OTHER_PREFIX) and key != FIXED_OTHER_ROW:
                 flags |= Qt.ItemFlag.ItemIsEditable  # название вводится текстом
             name_item.setFlags(flags)
             name_item.setToolTip(self._row_tooltip(key))
             self.table.setItem(row, COL_NAME, name_item)
-            for column in (COL_AMOUNT, COL_WEEK, COL_MONTH, COL_YEAR):
+            for column in (
+                COL_AMOUNT,
+                COL_WEEK,
+                COL_MONTH,
+                COL_QUARTER,
+                COL_YEAR,
+            ):
                 item = QTableWidgetItem("")
                 item_flags = (
                     Qt.ItemFlag.ItemIsEnabled | Qt.ItemFlag.ItemIsSelectable
@@ -585,15 +627,26 @@ class MoneyBlock(QFrame):
         visible = min(rows, MAX_VISIBLE_ROWS)
         self.table.verticalHeader().setDefaultSectionSize(ROW_HEIGHT)
         row_height = self.table.verticalHeader().defaultSectionSize()
-        self.table.setMinimumHeight(
-            self.table.horizontalHeader().height() + row_height + 2
-        )
-        self.table.setMaximumHeight(
-            self.table.horizontalHeader().height() + visible * row_height + 2
-        )
-        self.table.setVerticalScrollBarPolicy(
-            Qt.ScrollBarPolicy.ScrollBarAsNeeded
-        )
+        header_height = self.table.horizontalHeader().height()
+        if self._stretch_table:
+            # Блок «Оплата» тянется до низа: таблица занимает всё
+            # доступное место, а скроллбар закреплён и широкий.
+            self.table.setSizePolicy(
+                QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding
+            )
+            self.table.setMinimumHeight(header_height + row_height * 2 + 2)
+            self.table.setMaximumHeight(16777215)
+            self.table.setVerticalScrollBarPolicy(
+                Qt.ScrollBarPolicy.ScrollBarAlwaysOn
+            )
+            self.table.setStyleSheet(WIDE_SCROLLBAR)
+        else:
+            self.table.setMaximumHeight(
+                header_height + visible * row_height + 2
+            )
+            self.table.setVerticalScrollBarPolicy(
+                Qt.ScrollBarPolicy.ScrollBarAsNeeded
+            )
         for column, width in COLUMN_WIDTHS.items():
             self.table.setColumnWidth(column, width)
 
@@ -603,10 +656,13 @@ class MoneyBlock(QFrame):
 
     @staticmethod
     def _row_tooltip(key: str) -> str:
-        if key.startswith(OTHER_PREFIX):
-            return "Название и сумма вводятся прямо в ячейки"
+        if key.startswith(OTHER_PREFIX) and key != FIXED_OTHER_ROW:
+            return (
+                "Название и сумма вводятся прямо в ячейки; клик по "
+                "названию — журнал строки"
+            )
         if key in DIRECT_INPUT_ROWS:
-            return "Сумма вводится прямо в ячейку"
+            return "Сумма вводится прямо в ячейку; клик по названию — журнал"
         return "Клик — окно со списком и полями сумм"
 
     def set_amount(self, row_key: str, column: int, text: str) -> None:
@@ -661,10 +717,17 @@ class MoneyBlock(QFrame):
             return
         self.on_amount_entered(key, item.text())
 
-    def _on_cell_clicked(self, row: int, _column: int) -> None:
+    def _on_cell_clicked(self, row: int, column: int) -> None:
+        """Клик по строке: окно контрагентов или журнал строки."""
+
         key = self.row_keys[row]
         if key in POPUP_ROWS:
             self.on_open_popup(key, self.table, row)
+            return
+        # Клик по названию строки (не по ячейке суммы, которая уходит в
+        # режим ввода) показывает журнал поступлений/оплат этой строки.
+        if column == COL_NAME and self.on_open_journal is not None:
+            self.on_open_journal(key)
 
     def _remove_selected(self) -> None:
         row = self.table.currentRow()
@@ -698,6 +761,7 @@ class ReceiptsView(QWidget):
         self.on_data_changed = on_data_changed
         self.summary_widget = summary_widget
         self._popup: AmountPopup | None = None
+        self._journal_dialogs: list[PaymentsJournalDialog] = []
 
         root = QHBoxLayout(self)
         root.setContentsMargins(10, 10, 10, 10)
@@ -719,11 +783,7 @@ class ReceiptsView(QWidget):
             on_open_popup=self.open_popup,
             on_amount_entered=self.save_direct_amount,
             on_date_changed=self.refresh,
-            on_name_edited=lambda key, text: self.rename_other_row(
-                key, text, INCOMING
-            ),
-            on_add_row=lambda: self.add_other_row(INCOMING),
-            on_remove_row=lambda key: self.remove_other_row(key, INCOMING),
+            on_open_journal=self.open_row_journal,
             direction=INCOMING,
         )
         self.outgoing = MoneyBlock(
@@ -737,26 +797,18 @@ class ReceiptsView(QWidget):
             ),
             on_add_row=lambda: self.add_other_row(OUTGOING),
             on_remove_row=lambda key: self.remove_other_row(key, OUTGOING),
+            on_open_journal=self.open_row_journal,
             direction=OUTGOING,
+            stretch_table=True,
         )
+        # «Поступление» — по высоте содержимого, «Оплата» тянется до
+        # низа экрана (v0.13.0).
         left_layout.addWidget(self.incoming)
-        left_layout.addWidget(self.outgoing)
+        left_layout.addWidget(self.outgoing, stretch=1)
 
-        hint = QLabel(
-            "«Сумма» — за выбранную дату; наличные, карты и свои строки "
-            "вводятся прямо в ячейку (поле ввода открывается по одному "
-            "клику), название строки — текстом в первой колонке. Свои "
-            "строки добавляются кнопкой «+» и убираются кнопкой «−» — и в "
-            "«Поступлении» (прочие поступления), и в «Оплате» (прочие виды "
-            "оплат). «Неделя/Месяц/Год» — нарастающий итог с начала периода "
-            "по эту дату. Клик по строке «Покупатели»/«Поставщики» открывает "
-            "окно справа: суммы в нём сохраняются при клике вне полей ввода; "
-            "суммы из недельных таблиц видны здесь, и наоборот."
-        )
-        hint.setObjectName("Muted")
-        hint.setWordWrap(True)
-        left_layout.addWidget(hint)
-        left_layout.addStretch(1)
+        # Пояснений под блоками нет (v0.13.0): всё видно по заголовкам
+        # колонок «Сумма / Неделя / Месяц / Квартал / Год».
+
         self.left_layout = left_layout
         root.addWidget(left, stretch=1)
 
@@ -785,10 +837,10 @@ class ReceiptsView(QWidget):
 
     # ------------------------------------------------------- прочие виды оплат
     def _incoming_rows(self) -> list[str]:
-        return [CASH_ROW, CARD_ROW, CUSTOMERS_ROW] + [
-            other_row_key(name)
-            for name in other_payment_names(self.store.data, INCOMING)
-        ]
+        # Своих строк в «Поступлении» не добавляют (v0.13.0): под
+        # «Покупателями» стоит одна постоянная строка — «Прочие
+        # поступления» — с суммой прямо в ячейке.
+        return [CASH_ROW, CARD_ROW, CUSTOMERS_ROW, FIXED_OTHER_ROW]
 
     def _outgoing_rows(self) -> list[str]:
         return [SUPPLIERS_ROW] + [
@@ -803,11 +855,11 @@ class ReceiptsView(QWidget):
         """Строки блока по направлению (постоянные + добавленные)."""
 
         if direction == INCOMING:
-            return [CASH_ROW, CARD_ROW, CUSTOMERS_ROW] + [
-                key for key in keys if key.startswith(OTHER_PREFIX)
-            ]
+            return [CASH_ROW, CARD_ROW, CUSTOMERS_ROW, FIXED_OTHER_ROW]
         return [SUPPLIERS_ROW] + [
-            key for key in keys if key.startswith(OTHER_PREFIX)
+            key
+            for key in keys
+            if key.startswith(OTHER_PREFIX) and key != FIXED_OTHER_ROW
         ]
 
     def refresh_rows(self) -> None:
@@ -818,6 +870,7 @@ class ReceiptsView(QWidget):
 
     def refresh_incoming_rows(self) -> None:
         self.incoming.set_rows(self._incoming_rows())
+
 
     def refresh_outgoing_rows(self) -> None:
         self.outgoing.set_rows(self._outgoing_rows())
@@ -1019,6 +1072,38 @@ class ReceiptsView(QWidget):
     def _forget_popup(self, *_args) -> None:
         self._popup = None
 
+    # --------------------------------------------------------------- журналы
+    def open_row_journal(self, row_key: str) -> PaymentsJournalDialog | None:
+        """Журнал поступлений/оплат по клику на название строки (v0.13.0)."""
+
+        block = (
+            self.incoming
+            if row_key in self.incoming.row_keys
+            else self.outgoing
+        )
+        if row_key == CASH_ROW:
+            title = CASH_TITLE
+        elif row_key == CARD_ROW:
+            title = CARD_TITLE
+        elif row_key.startswith(OTHER_PREFIX):
+            title = other_row_name(row_key)
+        else:
+            title = ROW_TITLES.get(row_key, row_key)
+
+        dialog = PaymentsJournalDialog(
+            self.store, block.direction, title, row_key, self
+        )
+        dialog.show()  # немодально: журнал смотрят рядом с таблицами
+        self._journal_dialogs.append(dialog)
+        dialog.finished.connect(
+            lambda *_: self._forget_journal_dialog(dialog)
+        )
+        return dialog
+
+    def _forget_journal_dialog(self, dialog: PaymentsJournalDialog) -> None:
+        if dialog in self._journal_dialogs:
+            self._journal_dialogs.remove(dialog)
+
     def _make_saver(self, block: MoneyBlock, row_key: str, ids: list[str]):
         def save(values: dict[str, Decimal]) -> None:
             day_iso = block.current_date().isoformat()
@@ -1092,13 +1177,20 @@ class ReceiptsView(QWidget):
 
     def _period_totals(
         self, key: str, day: date, direction: str = OUTGOING
-    ) -> tuple[Decimal, Decimal, Decimal]:
-        """Суммы записей за периоды: неделя (с Пн), месяц, год — по дату."""
+    ) -> tuple[Decimal, Decimal, Decimal, Decimal]:
+        """Итоги нарастанием: неделя, месяц, квартал, год — по дату.
+
+        Границы периодов (v0.13.0): неделя — понедельник…воскресенье,
+        месяц — с 1-го числа, квартал — с первого дня квартала, год —
+        с 1 января. Считаются все сохранённые записи от начала периода
+        до выбранной даты включительно (простые суммы, без формул).
+        """
 
         week_start = week_monday(day)
         month_start = day.replace(day=1)
+        quarter_start = date(day.year, 3 * ((day.month - 1) // 3) + 1, 1)
         year_start = day.replace(month=1, day=1)
-        week = month = year = ZERO
+        week = month = quarter = year = ZERO
 
         if key in (CASH_ROW, CARD_ROW):
             source = CASH_SOURCE if key == CASH_ROW else CARD_SOURCE
@@ -1138,9 +1230,11 @@ class ReceiptsView(QWidget):
                 week += amount
             if item_day >= month_start:
                 month += amount
+            if item_day >= quarter_start:
+                quarter += amount
             if item_day >= year_start:
                 year += amount
-        return week, month, year
+        return week, month, quarter, year
 
     def refresh(self) -> None:
         incoming_day = self.incoming.current_date()
@@ -1179,9 +1273,12 @@ class ReceiptsView(QWidget):
 
         for block, day in ((self.incoming, incoming_day), (self.outgoing, outgoing_day)):
             for key in block.row_keys:
-                week, month, year = self._period_totals(key, day, block.direction)
+                week, month, quarter, year = self._period_totals(
+                    key, day, block.direction
+                )
                 block.set_amount(key, COL_WEEK, _money_text(week))
                 block.set_amount(key, COL_MONTH, _money_text(month))
+                block.set_amount(key, COL_QUARTER, _money_text(quarter))
                 block.set_amount(key, COL_YEAR, _money_text(year))
 
 

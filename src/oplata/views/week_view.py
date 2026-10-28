@@ -73,6 +73,9 @@ from ..widgets import (
     date_edit_value,
     make_date_edit,
     set_date_edit,
+    RowHoverMixin,
+    arrow_button,
+    install_row_hover,
 )
 
 HEADER_ROWS = 3
@@ -107,7 +110,7 @@ def _money_text(amount: Decimal) -> str:
     return fmt_money_plain(amount) if amount != 0 else ""
 
 
-class DaySeparatorDelegate(QStyledItemDelegate):
+class DaySeparatorDelegate(RowHoverMixin, QStyledItemDelegate):
     """Рисует толстую вертикальную линию на границах дней (макет 08).
 
     Заодно создаёт редактор суммы для редактируемых ячеек: нулевое
@@ -161,6 +164,7 @@ class WeekView(QWidget):
         on_data_changed: Callable[[], None] | None = None,
         on_open_delivery: Callable[[str, date | None], None] | None = None,
         on_open_realization: Callable[[str, date | None], None] | None = None,
+        on_open_operations: Callable[[str], None] | None = None,
         parent: QWidget | None = None,
     ) -> None:
         super().__init__(parent)
@@ -175,6 +179,7 @@ class WeekView(QWidget):
         # Суммы в ячейках при этом по-прежнему вводятся напрямую.
         self.on_open_delivery = on_open_delivery
         self.on_open_realization = on_open_realization
+        self.on_open_operations = on_open_operations
         if kind == "supplier":
             self.subheaders = SUPPLIER_SUBHEADERS
             self.subheader_kinds = SUPPLIER_SUBHEADER_KINDS
@@ -211,15 +216,21 @@ class WeekView(QWidget):
         self.table.setStyleSheet(f"font-size:{styles.fs(11)}px")
         self.table.horizontalHeader().setVisible(False)
         self.table.verticalHeader().setVisible(False)
-        self.table.setItemDelegate(
-            DaySeparatorDelegate(self.separator_after_cols, self.table)
+        week_delegate = DaySeparatorDelegate(
+            self.separator_after_cols, self.table
         )
+        self.table.setItemDelegate(week_delegate)
+        install_row_hover(self.table, week_delegate)
         # Ячейка суммы становится полем ввода уже по одному клику
         # (v0.12.0): «клацаешь мышкой — и сразу вводишь». Клик по
         # названию контрагента (колонка 0) по-прежнему открывает окно
         # поставки/реализации — там ячейка не редактируемая.
         self.table.setEditTriggers(QAbstractItemView.EditTrigger.AllEditTriggers)
         self.table.itemClicked.connect(self._on_item_clicked)
+        # Двойной клик по контрагенту — прежнее действие (окно
+        # «Реализация» у покупателя), чтобы оно не пропало после того,
+        # как одинарный клик стал открывать журнал операций (v0.13.0).
+        self.table.itemDoubleClicked.connect(self._on_item_double_clicked)
         self.table.itemChanged.connect(self._on_item_changed)
         root.addWidget(self.table, stretch=1)
         self.refresh()
@@ -229,7 +240,7 @@ class WeekView(QWidget):
         bar = QHBoxLayout()
         bar.setSpacing(8)
 
-        prev_btn = QPushButton("← Неделя")
+        prev_btn = arrow_button("← Неделя", "Неделя назад")
         prev_btn.clicked.connect(lambda: self._shift_week(-7))
         bar.addWidget(prev_btn)
 
@@ -237,7 +248,7 @@ class WeekView(QWidget):
         self.week_label.setStyleSheet(f"font-weight:700;font-size:{styles.fs(14)}px")
         bar.addWidget(self.week_label)
 
-        next_btn = QPushButton("Неделя →")
+        next_btn = arrow_button("Неделя →", "Неделя вперёд")
         next_btn.clicked.connect(lambda: self._shift_week(7))
         bar.addWidget(next_btn)
 
@@ -344,12 +355,29 @@ class WeekView(QWidget):
         if self.kind == "supplier" and self.on_open_delivery is not None:
             # По макету 07: клик по поставщику открывает «Поставку».
             self.on_open_delivery(str(counterparty_id), None)
+        elif self.kind == "customer" and self.on_open_operations is not None:
+            # v0.13.0: по клику на покупателя показываем **журнал
+            # операций** этого покупателя — так видны все его записи.
+            self.on_open_operations(str(counterparty_id))
         elif self.kind == "customer" and self.on_open_realization is not None:
-            # Симметрично поставщику: клик по покупателю открывает
-            # «Реализацию»; карточка доступна из этого окна и из шапки.
+            # Раньше клик открывал «Реализацию»; оставили как запасной
+            # вариант, если журнал не задан.
             self.on_open_realization(str(counterparty_id), None)
         else:
             self.on_open_card(str(counterparty_id))
+
+    def _on_item_double_clicked(self, item: QTableWidgetItem) -> None:
+        """Двойной клик по контрагенту: «Поставка»/«Реализация»."""
+
+        if item.column() != 0 or item.row() < FIRST_DATA_ROW:
+            return
+        counterparty_id = item.data(Qt.ItemDataRole.UserRole)
+        if not counterparty_id:
+            return
+        if self.kind == "supplier" and self.on_open_delivery is not None:
+            self.on_open_delivery(str(counterparty_id), None)
+        elif self.kind == "customer" and self.on_open_realization is not None:
+            self.on_open_realization(str(counterparty_id), None)
 
     def _on_item_changed(self, item: QTableWidgetItem) -> None:
         """Пользователь ввёл сумму в редактируемую ячейку: проверить и сохранить."""
@@ -652,9 +680,15 @@ class WeekView(QWidget):
                             color=styles.LINK_BLUE, underline=True)
             name_item.setData(Qt.ItemDataRole.UserRole, partner.id)
             if self.kind == "supplier":
-                name_item.setToolTip("Клик — окно «Поставка» для этого поставщика")
+                name_item.setToolTip(
+                    "Клик — окно «Поставка» для этого поставщика; двойной "
+                    "клик — то же окно"
+                )
             elif self.kind == "customer":
-                name_item.setToolTip("Клик — окно «Реализация» для этого покупателя")
+                name_item.setToolTip(
+                    "Клик — журнал операций этого покупателя; двойной "
+                    "клик — окно «Реализация»"
+                )
             # Просрочено «на сегодня» / задолженность «за неделю» (calc).
             for col_idx, amount in ((1, overdue), (2, week)):
                 cell = put(row, col_idx, _money_text(amount), size=styles.fs(11))

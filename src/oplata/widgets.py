@@ -4,8 +4,8 @@ from __future__ import annotations
 
 from decimal import Decimal, InvalidOperation
 
-from PySide6.QtCore import QDate, Qt, QTimer
-from PySide6.QtGui import QFocusEvent
+from PySide6.QtCore import QDate, QEvent, QObject, Qt, QTimer
+from PySide6.QtGui import QColor, QFocusEvent
 from PySide6.QtWidgets import (
     QDateEdit,
     QFrame,
@@ -230,3 +230,90 @@ def kpi_card(title: str, value_text: str, green_value: bool = False) -> tuple[QF
     layout.addWidget(title_label)
     layout.addWidget(value_label)
     return frame, value_label
+
+
+# ------------------------------------------------------------------ стрелки
+def arrow_button(text: str, tooltip: str = "") -> QPushButton:
+    """Кнопка со **жирной** стрелкой (v0.13.0): крупнее и заметнее."""
+
+    button = QPushButton(text)
+    button.setFixedWidth(52)
+    font = button.font()
+    font.setBold(True)
+    if font.pointSize() > 0:
+        font.setPointSize(font.pointSize() + 6)
+    else:
+        font.setPixelSize(styles.fs(20))
+    button.setFont(font)
+    button.setStyleSheet(
+        f"QPushButton{{font-weight:800;font-size:{styles.fs(16)}px;"
+        "padding:2px 8px;}"
+    )
+    if tooltip:
+        button.setToolTip(tooltip)
+    return button
+
+
+# ------------------------------------------------------- подсветка строки
+class RowHoverMixin:
+    """Рисует бежевую подсветку **всей строки** под курсором (v0.13.0).
+
+    Подмешивается к делегату таблицы: ``paint`` вызывает базовую
+    отрисовку, а поверх кладёт полупрозрачный бежевый прямоугольник —
+    так подсветка видна и на ячейках со своим фоном (розовые выходные
+    в недельных таблицах). Номер строки под курсором задаёт
+    ``install_row_hover``.
+    """
+
+    HOVER_COLOR = QColor(246, 236, 210, 120)  # бежевый, полупрозрачный
+
+    def __init__(self, *args, **kwargs) -> None:
+        super().__init__(*args, **kwargs)
+        self._hover_row = -1
+
+    def set_hover_row(self, row: int) -> None:
+        self._hover_row = row
+
+    def paint(self, painter, option, index):  # noqa: N802 - Qt API
+        super().paint(painter, option, index)
+        if (
+            self._hover_row >= 0
+            and index.row() == self._hover_row
+            and (index.flags() & Qt.ItemFlag.ItemIsEnabled)
+        ):
+            painter.fillRect(option.rect, self.HOVER_COLOR)
+
+
+class _HoverLeaveFilter(QObject):
+    """Снимает подсветку, когда курсор ушёл с таблицы."""
+
+    def __init__(self, parent, on_leave) -> None:
+        super().__init__(parent)
+        self._on_leave = on_leave
+
+    def eventFilter(self, obj, event):  # noqa: N802 - Qt API
+        if event.type() == QEvent.Type.Leave:
+            self._on_leave()
+        return False
+
+
+def install_row_hover(table, *delegates) -> None:
+    """Подсвечивать строку под курсором во всех таблицах (v0.13.0)."""
+
+    table.setMouseTracking(True)
+    holders = list(delegates)
+
+    def set_row(row: int) -> None:
+        for delegate in holders:
+            setter = getattr(delegate, "set_hover_row", None)
+            if setter is not None:
+                setter(row)
+        table.viewport().update()
+
+    table.itemEntered.connect(lambda item: set_row(item.row()))
+    viewport = table.viewport()
+    viewport.setAttribute(Qt.WidgetAttribute.WA_Hover, True)
+    filter_obj = _HoverLeaveFilter(table, lambda: set_row(-1))
+    viewport.installEventFilter(filter_obj)
+    # Держим ссылку, иначе фильтр соберётся сборщиком мусора.
+    table._hover_filter = filter_obj  # noqa: SLF001 - служебное поле Qt

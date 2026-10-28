@@ -41,13 +41,14 @@ oplata-2/
     models.py      [без Qt]     # Counterparty, Operation, CashReceipt, AppData, seed_data()
     storage.py     [без Qt]     # DataStore: JSON в %APPDATA%\OplataStroymarket\data.json
     styles.py      [без Qt]     # цвета и QSS; FONT_SCALE — шрифты интерфейса +30% (v0.12.0)
+    widgets.py                 # AmountLineEdit, CollapsiblePanel, RowHoverMixin (подсветка строки v0.13.0), arrow_button
     calc.py        [без Qt]     # срок/долг поставщиков; «Сводка» пока заглушки
     reports.py     [без Qt]     # HTML печатной формы «Сводки» из экранного снимка
     views/
       summary_view.py           # Сводка + снимок значений и QPrintPreviewDialog
       week_view.py              # Поставщики и Покупатели (kind="supplier"/"customer")
       receipts_view.py          # Поступление и оплаты: слева блоки-таблицы (ввод в ячейки, окно справа), справа панель «Сводка»
-                                 # свои строки обоих блоков (direction), ввод по клику, скролл в блоке
+                                 # свои строки блока «Оплата», «Прочие поступления», колонка «Квартал», журналы строк
       operations_view.py        # Журнал операций (окно из карточки контрагента)
       data_view.py              # Данные: «Настройка календаря» + «Администрирование»
     dialogs/

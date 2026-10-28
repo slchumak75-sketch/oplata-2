@@ -45,19 +45,25 @@ def test_main_window_all_pages(qt_app, store):
     # Вкладка «Поступление и оплаты»: два блока один под другим, в каждом
     # таблица со столбцами «Сумма/Неделя/Месяц/Год».
     view = window.receipts_view
-    assert [view.incoming.table.item(row, 0).text() for row in range(3)] == [
+    assert [view.incoming.table.item(row, 0).text() for row in range(4)] == [
         "Поступление наличными",
         "Поступление по картам",
         "Покупатели",
+        "Прочие поступления",  # постоянная строка, v0.13.0
     ]
     assert view.outgoing.table.item(0, 0).text() == "Поставщики"
-    assert [view.incoming.table.horizontalHeaderItem(c).text() for c in range(5)] == [
+    assert [view.incoming.table.horizontalHeaderItem(c).text() for c in range(6)] == [
         "",
         "Сумма",
         "Неделя",
         "Месяц",
+        "Квартал",
         "Год",
     ]
+    # Кнопок «+»/«−» в блоке «Поступление» нет, в «Оплате» — есть.
+    assert not hasattr(view.incoming, "add_btn")
+    assert view.outgoing.add_btn.text() == "+"
+    assert view.outgoing.remove_btn.text() == "−"
     # Блок «Оплата» стоит под блоком «Поступление» (в левой колонке).
     layout = view.left_layout
     assert layout.indexOf(view.outgoing) > layout.indexOf(view.incoming)
@@ -829,9 +835,11 @@ def test_other_payment_rows_add_rename_and_remove(qt_app, store):
     assert view.outgoing.amount_text("other:Аренда") == "12 000,00"
     assert view.outgoing.amount_text("other:Аренда", COL_WEEK) == "12 000,00"
     assert view.outgoing.amount_text("other:Аренда", COL_YEAR) == "12 000,00"
-    assert [(p.name, p.date, p.amount) for p in store.data.other_payments] == [
-        ("Аренда", "2026-10-27", "12000.00")
-    ]
+    assert [
+        (p.name, p.date, p.amount, p.direction)
+        for p in store.data.other_payments
+        if p.name == "Аренда"
+    ] == [("Аренда", "2026-10-27", "12000.00", "out")]
 
     # Вторая строка и удаление первой (кнопка «−»).
     view.add_other_row()
@@ -849,7 +857,11 @@ def test_other_payment_rows_add_rename_and_remove(qt_app, store):
         "suppliers",
         "other:Новый вид оплаты",
     ]
-    assert [p.name for p in store.data.other_payments] == ["Новый вид оплаты"]
+    assert [
+        p.name
+        for p in store.data.other_payments
+        if getattr(p, "direction", "out") == "out"
+    ] == ["Новый вид оплаты"]
 
     # Постоянную строку «Поставщики» удалить нельзя.
     monkeypatched = QMessageBox.information
@@ -908,8 +920,8 @@ def test_supplier_payments_sync_both_ways(qt_app, store):
     window.close()
 
 
-def test_incoming_block_has_other_income_rows(qt_app, store):
-    """Блок «Поступление» тоже умеет свои строки — «прочие поступления»."""
+def test_incoming_block_has_fixed_other_income_row(qt_app, store):
+    """В «Поступлении» одна постоянная строка «Прочие поступления» (v0.13.0)."""
     from datetime import date
 
     from oplata.app import MainWindow
@@ -920,30 +932,32 @@ def test_incoming_block_has_other_income_rows(qt_app, store):
     qt_app.processEvents()
     view = window.receipts_view
     view.set_date(date(2026, 10, 27))
-    assert view.incoming.row_keys == ["cash", "card", "customers"]
-
-    view.add_other_row(INCOMING)
     assert view.incoming.row_keys == [
         "cash",
         "card",
         "customers",
-        "other:Новое поступление",
+        "other:Прочие поступления",
     ]
-    # Блок «Оплата» при этом не изменился.
-    assert view.outgoing.row_keys == ["suppliers"]
+    # Кнопок «+»/«−» у блока «Поступление» нет — строку не добавить и
+    # не убрать, название не редактируется.
+    assert not hasattr(view.incoming, "add_btn")
+    name_item = view.incoming.table.item(3, COL_NAME)
+    assert not (name_item.flags() & Qt.ItemFlag.ItemIsEditable)
 
-    view.incoming.table.item(3, COL_NAME).setText("Возврат")
+    # Сумма вводится прямо в ячейку и пишется с направлением «in».
     view.incoming.table.item(3, COL_AMOUNT).setText("5 000")
     qt_app.processEvents()
-    assert view.incoming.amount_text("other:Возврат") == "5 000,00"
+    assert view.incoming.amount_text("other:Прочие поступления") == "5 000,00"
     assert [
-        (p.name, p.direction, p.amount) for p in store.data.other_payments
-    ] == [("Возврат", INCOMING, "5000.00")]
+        (p.name, p.direction, p.date, p.amount)
+        for p in store.data.other_payments
+        if p.name == "Прочие поступления"
+    ] == [("Прочие поступления", INCOMING, "2026-10-27", "5000.00")]
 
-    # Свои строки двух блоков не мешают друг другу.
+    # Свои строки блока «Оплата» не пересекаются с постоянной строкой.
     view.add_other_row(OUTGOING)
     assert view.outgoing.row_keys == ["suppliers", "other:Новый вид оплаты"]
-    assert view.incoming.row_keys[-1] == "other:Возврат"
+    assert view.incoming.row_keys[-1] == "other:Прочие поступления"
     window.close()
 
 
@@ -1047,13 +1061,145 @@ def test_money_block_scrolls_long_row_list(qt_app, store):
     window.show()
     qt_app.processEvents()
     view = window.receipts_view
-    height_before = view.outgoing.table.height()
     for _ in range(9):  # всего 10 строк — больше видимых восьми
         view.add_other_row(OUTGOING)
     qt_app.processEvents()
     assert len(view.outgoing.row_keys) == 10
-    assert view.outgoing.table.maximumHeight() <= 320
-    assert view.outgoing.table.height() <= view.outgoing.table.maximumHeight()
-    assert view.outgoing.table.height() < height_before + 10 * 30
+    # Блок «Оплата» тянется до низа, а скроллбар закреплён и широкий.
     assert view.outgoing.table.verticalScrollBar().isVisible()
+    assert (
+        view.outgoing.table.verticalScrollBarPolicy()
+        == Qt.ScrollBarPolicy.ScrollBarAlwaysOn
+    )
+    assert view.outgoing.table.verticalScrollBar().width() >= 18
+    # Блок «Оплата» опущен до низа: он ниже блока «Поступление».
+    assert view.outgoing.geometry().bottom() >= view.incoming.geometry().bottom()
+    window.close()
+
+
+def test_quarter_column_and_period_bounds(qt_app, store):
+    """Колонка «Квартал»: границы периодов — Пн, 1-е число, квартал, год."""
+    from datetime import date
+    from decimal import Decimal
+
+    from oplata.app import MainWindow
+    from oplata.models import set_daily_cash_receipt
+    from oplata.views.receipts_view import COL_QUARTER
+
+    window = MainWindow(store)
+    window.show()
+    qt_app.processEvents()
+    view = window.receipts_view
+    # 27.10.2026 — вторник; неделя начинается 26.10 (понедельник).
+    view.set_date(date(2026, 10, 27))
+    # Прошлый квартал (июль) и начало года попадают только в «Год».
+    set_daily_cash_receipt(store.data, "cash", "2026-07-02", Decimal("500"))
+    # Тот же квартал, но раньше: попадает в месяц? нет — октябрь, 05.10.
+    set_daily_cash_receipt(store.data, "cash", "2026-10-05", Decimal("1000"))
+    # Текущая неделя (понедельник 26.10).
+    set_daily_cash_receipt(store.data, "cash", "2026-10-26", Decimal("2000"))
+    # Выбранный день.
+    set_daily_cash_receipt(store.data, "cash", "2026-10-27", Decimal("3000"))
+    view.refresh()
+    qt_app.processEvents()
+
+    row = view.incoming.row_keys.index("cash")
+    cells = [view.incoming.table.item(row, column).text() for column in range(1, 6)]
+    amount, week, month, quarter, year = cells
+    assert amount == "3 000,00"        # только за выбранную дату
+    assert week == "5 000,00"          # 26.10 + 27.10 (неделя Пн–Вс)
+    assert month == "6 000,00"         # с 1 октября
+    assert quarter == "6 000,00"       # с 1 октября (IV квартал)
+    assert year == "6 500,00"          # с 1 января: + июльская запись
+    assert COL_QUARTER == 4
+    window.close()
+
+
+def test_row_journals_open_for_income_and_payment(qt_app, store):
+    """Клик по названию строки: журнал поступлений / журнал оплат."""
+    from datetime import date
+    from decimal import Decimal
+
+    from oplata.app import MainWindow
+    from oplata.models import (
+        INCOMING,
+        OUTGOING,
+        set_daily_cash_receipt,
+        set_daily_other_payment,
+    )
+
+    window = MainWindow(store)
+    window.show()
+    qt_app.processEvents()
+    view = window.receipts_view
+    view.set_date(date(2026, 10, 27))
+    set_daily_cash_receipt(store.data, "cash", "2026-10-20", Decimal("1000"))
+    set_daily_other_payment(
+        store.data, "Прочие поступления", "2026-10-21", Decimal("250"), INCOMING
+    )
+
+    cash_journal = view.open_row_journal("cash")
+    qt_app.processEvents()
+    assert cash_journal.windowTitle() == "Журнал поступлений"
+    assert cash_journal.table.rowCount() == 1
+    assert cash_journal.total_label.text() == "1 000,00"
+    cash_journal.close()
+
+    income_journal = view.open_row_journal("other:Прочие поступления")
+    qt_app.processEvents()
+    assert income_journal.table.rowCount() == 1
+    assert income_journal.total_label.text() == "250,00"
+    income_journal.close()
+
+    # Журнал оплат — по своей строке блока «Оплата».
+    view.add_other_row(OUTGOING)
+    view.outgoing.table.item(1, COL_NAME).setText("Аренда")
+    view.outgoing.table.item(1, COL_AMOUNT).setText("12 000")
+    qt_app.processEvents()
+    payment_journal = view.open_row_journal("other:Аренда")
+    qt_app.processEvents()
+    assert payment_journal.windowTitle() == "Журнал оплат"
+    assert payment_journal.table.rowCount() == 1
+    assert payment_journal.total_label.text() == "12 000,00"
+    payment_journal.close()
+
+    # Клик по названию строки (не по ячейке суммы) открывает журнал.
+    before = len(view._journal_dialogs)
+    view.incoming.table.cellClicked.emit(0, COL_NAME)
+    qt_app.processEvents()
+    assert len(view._journal_dialogs) == before + 1
+    window.close()
+
+
+def test_arrows_are_bold_and_row_hover_installed(qt_app, store):
+    """Стрелки жирные; в таблицах есть подсветка строки под курсором."""
+    from PySide6.QtGui import QFont
+
+    from oplata.app import MainWindow
+
+    window = MainWindow(store)
+    window.show()
+    qt_app.processEvents()
+    view = window.receipts_view
+
+    for button in (
+        view.incoming.prev_btn,
+        view.incoming.next_btn,
+        window.suppliers_view.findChildren(type(view.incoming.prev_btn))[0],
+    ):
+        font: QFont = button.font()
+        assert font.bold() or font.weight() >= QFont.Weight.Bold
+
+    # Подсветка строки: у делегатов есть метод set_hover_row (миксин).
+    for table in (
+        view.incoming.table,
+        view.outgoing.table,
+        window.suppliers_view.table,
+        window.customers_view.table,
+    ):
+        assert table.hasMouseTracking()
+        delegate = table.itemDelegate()
+        assert hasattr(delegate, "set_hover_row")
+        delegate.set_hover_row(0)  # не падает — подсветка применилась
+        delegate.set_hover_row(-1)
     window.close()

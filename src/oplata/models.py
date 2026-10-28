@@ -551,7 +551,9 @@ def set_daily_other_payment(
             data.other_payments.remove(extra)
         return
     data.other_payments.append(
-        OtherPayment(date=date_iso, name=name, amount=amount_text)
+        OtherPayment(
+            date=date_iso, name=name, amount=amount_text, direction=direction
+        )
     )
 
 
