@@ -210,8 +210,8 @@ def test_delivery_dialog_saves_and_debt_shows_in_week(qt_app, store):
     table = window.suppliers_view.table
     ggg_row = 4 + [s.name for s in store.data.suppliers].index("ггг")
     assert table.item(ggg_row, _DAY(window.suppliers_view, 3, 1)).text() == "88 888,88"  # Долг чт
-    assert table.item(ggg_row, 2).text() == "88 888,88"  # задолженность за неделю
-    assert table.item(3, 2).text() == "88 888,88"  # ВСЕГО за неделю
+    assert table.item(ggg_row, 3).text() == "88 888,88"  # задолженность за неделю
+    assert table.item(3, 3).text() == "88 888,88"  # ВСЕГО за неделю
     assert window.suppliers_view.right_value_label.text() == "88 888,88 руб."
 
     # Оплата НЕ убирает сумму из «Долга» (требование пользователя
@@ -221,8 +221,8 @@ def test_delivery_dialog_saves_and_debt_shows_in_week(qt_app, store):
     payment_cell = table.item(ggg_row, _DAY(window.suppliers_view, 3, 2))  # Оплата чт 05.11
     payment_cell.setText("88 888,88")
     assert table.item(ggg_row, _DAY(window.suppliers_view, 3, 1)).text() == "88 888,88"  # Долг на месте
-    assert table.item(ggg_row, 2).text() == ""  # «за неделю» погашено
-    assert table.item(3, 2).text() == ""  # ВСЕГО за неделю
+    assert table.item(ggg_row, 3).text() == ""  # «за неделю» погашено
+    assert table.item(3, 3).text() == ""  # ВСЕГО за неделю
     assert window.suppliers_view.right_value_label.text() == "0,00 руб."
     window.close()
 
@@ -1272,19 +1272,20 @@ def test_arrows_are_next_to_today_and_bold_only_on_receipts(qt_app, store):
 
 
 def test_week_table_overdue_and_debt_headers_are_separate(qt_app, store):
-    """v0.16.0: три итоговые колонки — под одной шапкой «ЗАДОЛЖЕННОСТЬ НА СЕГОДНЯ»."""
+    """v0.16.0: три итоговые колонки — под одной шапкой «ЗАДОЛЖЕННОСТЬ»."""
     from oplata.app import MainWindow
 
     window = MainWindow(store)
     window.show()
     qt_app.processEvents()
     table = window.suppliers_view.table
-    assert table.item(1, 1).text() == "ЗАДОЛЖЕННОСТЬ НА СЕГОДНЯ"
+    assert table.item(1, 1).text() == "ЗАДОЛЖЕННОСТЬ"
     # Ячейки объединены: подписи столбцов стоят строкой ниже.
     assert table.columnSpan(1, 1) == 3
-    assert table.item(2, 1).text() == "на сегодня"
-    assert table.item(2, 2).text() == "за неделю"
-    assert table.item(2, 3).text() == "просрочено"
+    # v0.16.0: «просрочено» стоит слева от «на сегодня».
+    assert table.item(2, 1).text() == "просрочено"
+    assert table.item(2, 2).text() == "на сегодня"
+    assert table.item(2, 3).text() == "за неделю"
     window.close()
 
 
@@ -1597,22 +1598,22 @@ def test_supplier_overdue_carries_over_to_next_week(qt_app, store):
     table = view.table
 
     view.goto_date(date(2026, 10, 26))
-    assert table.item(1, 1).text() == "ЗАДОЛЖЕННОСТЬ НА СЕГОДНЯ"
-    assert table.item(2, 2).text() == "за неделю"
-    assert table.item(2, 3).text() == "просрочено"
-    # На текущей неделе: просрочено 700 (срок 27.10 <= сегодня),
-    # итог за неделю — 700.
+    assert table.item(1, 1).text() == "ЗАДОЛЖЕННОСТЬ"
+    assert table.item(2, 1).text() == "просрочено"
+    assert table.item(2, 2).text() == "на сегодня"
+    assert table.item(2, 3).text() == "за неделю"
+    # На текущей неделе: просрочено 700 (срок 27.10 < сегодня 28.10),
+    # «на сегодня» — 700, итог за неделю — 700.
     assert table.item(row, 1).text() == "700,00"
     assert table.item(row, 2).text() == "700,00"
+    assert table.item(row, 3).text() == "700,00"
 
     # Следующая неделя: долг 700 перенесён в «на сегодня», в «за неделю»
     # уже 900 (срок 05.11).
     view.goto_date(date(2026, 10, 26) + timedelta(days=7))
     assert table.item(row, 1).text() == "700,00"
-    assert table.item(row, 2).text() == "900,00"
-    window.close()
-    assert table.item(row, 1).text() == "700,00"
-    assert table.item(row, 2).text() == "900,00"
+    assert table.item(row, 2).text() == "700,00"
+    assert table.item(row, 3).text() == "900,00"
     window.close()
 
 
@@ -1642,7 +1643,8 @@ def test_supplier_payment_reduces_overdue_first_then_week(qt_app, store):
     view.goto_date(date(2026, 10, 26))
 
     assert table.item(row, 1).text() == "700,00"  # просрочено
-    assert table.item(row, 2).text() == "500,00"  # за неделю
+    assert table.item(row, 2).text() == "700,00"  # на сегодня
+    assert table.item(row, 3).text() == "500,00"  # за неделю
 
     # Оплата 900: сначала гасит просрочку 700, остаток 200 — неделю.
     set_daily_operation(
@@ -1650,7 +1652,8 @@ def test_supplier_payment_reduces_overdue_first_then_week(qt_app, store):
     )
     view.refresh()
     assert table.item(row, 1).text() == ""  # просрочка погашена
-    assert table.item(row, 2).text() == "300,00"  # 500 − 200
+    assert table.item(row, 2).text() == ""  # «на сегодня» тоже пусто
+    assert table.item(row, 3).text() == "300,00"  # 500 − 200
 
     # Недоплата: оплата 100 вместо 900 — остаток просрочки переносится.
     store.data.operations[:] = [
@@ -1661,12 +1664,16 @@ def test_supplier_payment_reduces_overdue_first_then_week(qt_app, store):
     )
     view.refresh()
     assert table.item(row, 1).text() == "600,00"  # 700 − 100
-    assert table.item(row, 2).text() == "500,00"  # оплата ушла в просрочку
+    assert table.item(row, 2).text() == "600,00"  # «на сегодня» = то же
+    assert table.item(row, 3).text() == "500,00"  # оплата ушла в просрочку
     # Следующая неделя: недоплаченный остаток 600 перенесён в «на
     # сегодня»; к нему добавился долг со сроком 29.10 — он тоже стал
     # просроченным (600 + 500 = 1 100).
     view.goto_date(date(2026, 10, 26) + timedelta(days=7))
-    assert table.item(row, 1).text() == "1 100,00"
+    # «Просрочено» — только истёкшие сроки: 600 со сроком 20.10.
+    assert table.item(row, 1).text() == "600,00"
+    # «На сегодня» на следующей неделе: 600 перенесено + 500 (срок 29.10).
+    assert table.item(row, 2).text() == "1 100,00"
     window.close()
 
 
@@ -1697,4 +1704,29 @@ def test_supplier_with_realization_never_shows_overdue(qt_app, store):
     view.refresh()
     assert table.item(row, 1).text() == ""  # в «на сегодня» не попадает никогда
     assert table.item(row, 2).text() == ""  # срок 05.10 вне недели 26.10–01.11
+    window.close()
+
+
+def test_week_table_fonts_are_uniform(qt_app, store):
+    """v0.16.0: в недельных таблицах один размер шрифта (был разнобой)."""
+    from oplata import styles
+    from oplata.app import MainWindow
+
+    window = MainWindow(store)
+    window.show()
+    qt_app.processEvents()
+
+    expected = styles.fs(12)
+    for view in (window.suppliers_view, window.customers_view):
+        table = view.table
+        sizes = set()
+        for row in range(table.rowCount()):
+            for col in range(table.columnCount()):
+                item = table.item(row, col)
+                if item is not None and item.text():
+                    sizes.add(item.font().pixelSize())
+        assert sizes == {expected}, f"разнобой шрифтов: {sorted(sizes)}"
+        # Заголовок недели и итог справа — одного размера.
+        assert view.week_label.font().pixelSize() == styles.fs(14)
+        assert view.right_value_label.font().pixelSize() == styles.fs(14)
     window.close()

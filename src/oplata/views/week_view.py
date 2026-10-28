@@ -190,8 +190,8 @@ class WeekView(QWidget):
         # v0.15.0: у поставщиков две итоговые колонки — «ПРОСРОЧЕН.» и
         # «ЗАДОЛЖ.»; у покупателей столбца «просрочено» нет, остаётся
         # одна колонка — «ЗАДОЛЖ.» (подзаголовок «Всего»).
-        # v0.16.0: у поставщиков три итоговых столбца — «на сегодня»,
-        # «за неделю» и новый «просрочено» (срок оплаты уже прошёл).
+        # v0.16.0: у поставщиков три итоговых столбца — «просрочено»
+        # (срок оплаты уже прошёл), «на сегодня» и «за неделю».
         self.lead_columns = 3 if kind == "supplier" else 1
         self.column_count = 1 + self.lead_columns + 7 * self.columns_per_day
         self.separator_after_cols = {self.lead_columns} | {
@@ -223,11 +223,11 @@ class WeekView(QWidget):
         root.addLayout(self._build_toolbar())
 
         self.table = QTableWidget()
-        # В недельной таблице 20+ колонок: базовый шрифт интерфейса
-        # (+30% по запросу v0.12.0) съедает место у дней, поэтому для
-        # самой таблицы берём промежуточный размер — названия и шапка
-        # крупнее прежнего, а суммы остаются читаемыми.
-        self.table.setStyleSheet(f"font-size:{styles.fs(11)}px")
+        # v0.16.0: единый шрифт для всей недельной таблицы — шапка,
+        # названия и ячейки одного размера (был разнобой 13/14/16 px).
+        # Суммы в днях всё равно подгоняет _fit_amount_font по ширине
+        # колонки, чтобы «88 888,88» влезало целиком.
+        self.table.setStyleSheet(f"font-size:{styles.fs(12)}px")
         self.table.horizontalHeader().setVisible(False)
         self.table.verticalHeader().setVisible(False)
         week_delegate = DaySeparatorDelegate(
@@ -305,14 +305,14 @@ class WeekView(QWidget):
             debt_title.setObjectName("Muted")
             bar.addWidget(debt_title)
             self.right_value_label = QLabel(fmt_money(ZERO))
-            self.right_value_label.setStyleSheet(f"font-weight:800;font-size:{styles.fs(15)}px")
+            self.right_value_label.setStyleSheet(f"font-weight:800;font-size:{styles.fs(14)}px")
             bar.addWidget(self.right_value_label)
         else:
             count_title = QLabel("Покупателей:")
             count_title.setObjectName("Muted")
             bar.addWidget(count_title)
             self.right_value_label = QLabel("0")
-            self.right_value_label.setStyleSheet(f"font-weight:800;font-size:{styles.fs(15)}px")
+            self.right_value_label.setStyleSheet(f"font-weight:800;font-size:{styles.fs(14)}px")
             bar.addWidget(self.right_value_label)
         return bar
 
@@ -581,10 +581,11 @@ class WeekView(QWidget):
                 total_week += week
                 total_late += late
                 if self.kind == "supplier":
-                    self._set_cell_text(row, 1, _money_text(overdue))
-                    self._set_cell_text(row, 2, _money_text(week))
-                    # v0.16.0: третий столбец — просроченный платёж.
-                    self._set_cell_text(row, 3, _money_text(late))
+                    # v0.16.0: порядок столбцов — «просрочено»,
+                    # «на сегодня», «за неделю».
+                    self._set_cell_text(row, 1, _money_text(late))
+                    self._set_cell_text(row, 2, _money_text(overdue))
+                    self._set_cell_text(row, 3, _money_text(week))
                 else:
                     # Покупатели: «Всего» = Реализация − Оплата (v0.15.0).
                     partner = self._partners[r]
@@ -602,9 +603,9 @@ class WeekView(QWidget):
                             _money_text(due_map.get(day, ZERO)),
                         )
             if self.kind == "supplier":
-                self._set_cell_text(TOTAL_ROW, 1, _money_text(total_overdue))
-                self._set_cell_text(TOTAL_ROW, 2, _money_text(total_week))
-                self._set_cell_text(TOTAL_ROW, 3, _money_text(total_late))
+                self._set_cell_text(TOTAL_ROW, 1, _money_text(total_late))
+                self._set_cell_text(TOTAL_ROW, 2, _money_text(total_overdue))
+                self._set_cell_text(TOTAL_ROW, 3, _money_text(total_week))
             else:
                 self._set_cell_text(TOTAL_ROW, 1, _money_text(total_customer))
             for i, day in enumerate(self._days):
@@ -664,7 +665,7 @@ class WeekView(QWidget):
         table.setColumnCount(self.column_count)
 
         for row in range(HEADER_ROWS):
-            table.setRowHeight(row, 36)  # шапка выше — шрифт увеличен
+            table.setRowHeight(row, 38)  # три строки шапки под общий шрифт
 
         def put(row, col, text, *, bg=None, bold=False, center=True,
                 editable=False, color=None, underline=False, size=None):
@@ -690,7 +691,7 @@ class WeekView(QWidget):
 
         def money_cell(row, col, text, **kwargs) -> QTableWidgetItem:
             """Ячейка суммы: правый край + шрифт, который потом подгонит _fit_*."""
-            cell = put(row, col, text, size=styles.fs(11), **kwargs)
+            cell = put(row, col, text, size=styles.fs(12), **kwargs)
             cell.setTextAlignment(
                 Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter
             )
@@ -723,20 +724,21 @@ class WeekView(QWidget):
         col = 1 + lead
         for (_year, _month), group in groupby(days, key=lambda d: (d.year, d.month)):
             group_days = list(group)
-            put(0, col, month_title(group_days[0]), bold=True, size=13)
+            put(0, col, month_title(group_days[0]), bold=True,
+                size=styles.fs(12))
             table.setSpan(0, col, 1, len(group_days) * self.columns_per_day)
             col += len(group_days) * self.columns_per_day
 
         # Строка 1: дни недели (шрифт шапки увеличен по запросу пользователя)
         put(1, 0, "ПОСТАВЩИК" if self.kind == "supplier" else "ПОКУПАТЕЛЬ",
-            bold=True, size=13)
+            bold=True, size=styles.fs(12))
         # v0.14.0: «ПРОСРОЧЕН.» и «ЗАДОЛЖ.» — разные ячейки, без
         # объединения: каждая подпись стоит над своей колонкой.
         if self.kind == "supplier":
             # v0.16.0: три итоговые колонки объединены одной шапкой
-            # «ЗАДОЛЖЕННОСТЬ НА СЕГОДНЯ», а их смысловые подписи стоят
-            # строкой ниже («на сегодня», «за неделю», «просрочено»).
-            put(1, 1, "ЗАДОЛЖЕННОСТЬ НА СЕГОДНЯ", bold=True, size=styles.fs(12),
+            # «ЗАДОЛЖЕННОСТЬ», а их смысловые подписи стоят строкой
+            # ниже («просрочено», «на сегодня», «за неделю»).
+            put(1, 1, "ЗАДОЛЖЕННОСТЬ", bold=True, size=styles.fs(12),
                 center=False)
             table.setSpan(1, 1, 1, lead)
         else:
@@ -745,15 +747,15 @@ class WeekView(QWidget):
         for i, day in enumerate(days):
             c = self._day_column(i, 0)
             put(1, c, f"{day.day}  {WEEKDAYS_RU_SHORT[day.weekday()]}",
-                bg=day_header_bg(day), bold=True, size=13)
+                bg=day_header_bg(day), bold=True, size=styles.fs(12))
             table.setSpan(1, c, 1, self.columns_per_day)
 
         # Строка 2: подзаголовки; выходные розовые, сегодня здесь без заливки.
         put(2, 0, "")
         if self.kind == "supplier":
-            put(2, 1, "на сегодня", bold=True, size=styles.fs(12))
-            put(2, 2, "за неделю", bold=True, size=styles.fs(12))
-            put(2, 3, "просрочено", bold=True, size=styles.fs(12))
+            put(2, 1, "просрочено", bold=True, size=styles.fs(12))
+            put(2, 2, "на сегодня", bold=True, size=styles.fs(12))
+            put(2, 3, "за неделю", bold=True, size=styles.fs(12))
         else:
             # v0.15.0: у покупателей итоговая колонка одна — «Всего».
             put(2, 1, "Всего", bold=True, size=styles.fs(12))
@@ -792,14 +794,16 @@ class WeekView(QWidget):
                 for partner in partners
             ]
             total_customer_debt = sum(customer_debts, ZERO)
-        put(TOTAL_ROW, 0, "ВСЕГО", bold=True, center=False)
+        put(TOTAL_ROW, 0, "ВСЕГО", bold=True, center=False,
+            size=styles.fs(12))
         total_columns = (
-            ((1, total_overdue), (2, total_week), (3, total_late))
+            ((1, total_late), (2, total_overdue), (3, total_week))
             if self.kind == "supplier"
             else ((1, total_customer_debt),)
         )
         for col_idx, amount in total_columns:
-            cell = put(TOTAL_ROW, col_idx, _money_text(amount), bold=True, size=styles.fs(11))
+            cell = put(TOTAL_ROW, col_idx, _money_text(amount), bold=True,
+                       size=styles.fs(12))
             cell.setTextAlignment(
                 Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter
             )
@@ -823,7 +827,8 @@ class WeekView(QWidget):
             due_map = due_maps[r]
             overdue, week, late = debt_columns[r]
             name_item = put(row, 0, partner.name, center=False,
-                            color=styles.LINK_BLUE, underline=True)
+                            color=styles.LINK_BLUE, underline=True,
+                            size=styles.fs(12))
             name_item.setData(Qt.ItemDataRole.UserRole, partner.id)
             if self.kind == "supplier":
                 name_item.setToolTip(
@@ -838,12 +843,13 @@ class WeekView(QWidget):
             # Просрочено «на сегодня» / задолженность «за неделю» (calc);
             # у покупателей — одна колонка «Всего» = Реализация − Оплата.
             if self.kind == "supplier":
-                # v0.16.0: третий столбец — просроченный платёж.
-                lead_amounts = ((1, overdue), (2, week), (3, late))
+                # v0.16.0: «просрочено» стоит слева от «на сегодня».
+                lead_amounts = ((1, late), (2, overdue), (3, week))
             else:
                 lead_amounts = ((1, customer_debts[r]),)
             for col_idx, amount in lead_amounts:
-                cell = put(row, col_idx, _money_text(amount), size=styles.fs(11))
+                cell = put(row, col_idx, _money_text(amount),
+                           size=styles.fs(12))
                 cell.setTextAlignment(
                     Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter
                 )
