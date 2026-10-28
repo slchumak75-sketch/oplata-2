@@ -149,11 +149,21 @@ jobs:
       - name: Build Windows installer
         shell: pwsh
         run: |
-          & "$env:ISCC" "/DMyAppVersion=${{ steps.version.outputs.version }}" ".\packaging\windows\installer.iss"
-          if ($LASTEXITCODE -ne 0) { throw "Installer build failed, exit code $LASTEXITCODE" }
+          # Вывод ISCC пишем в файл: при падении шага он уходит в артефакт
+          # installer-build-log (логи запуска из песочницы недоступны).
+          & "$env:ISCC" "/DMyAppVersion=${{ steps.version.outputs.version }}" ".\packaging\windows\installer.iss" 2>&1 | Tee-Object -FilePath ".\installer-build.log"
+          $code = $LASTEXITCODE
+          if ($code -ne 0) {
+            "ISCC exit code: $code" | Add-Content ".\installer-build.log"
+          }
 
           $setup = Get-ChildItem -Path "." -Recurse -Filter "Oplata-*-Setup.exe" | Select-Object -First 1
-          if (-not $setup) { throw "Installer was not created (Oplata-*-Setup.exe not found)" }
+          if (-not $setup) {
+            "Setup.exe not found. Содержимое package-folder:" | Add-Content ".\installer-build.log"
+            Get-ChildItem -Path ".\package-folder" -Recurse | Select-Object -First 20 | Out-String | Add-Content ".\installer-build.log"
+            Get-Content ".\installer-build.log"
+            throw "Installer was not created (Oplata-*-Setup.exe not found)"
+          }
           Write-Host "Installer: $($setup.FullName) ($($setup.Length) bytes)"
 
           # Тихая установка во временную папку и запуск EXE с --self-test:
@@ -265,6 +275,14 @@ jobs:
           name: Oplata-windows-folder-v${{ steps.version.outputs.version }}
           path: package-folder/**
           if-no-files-found: error
+
+      - name: Upload installer build log
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: installer-build-log
+          path: installer-build.log
+          if-no-files-found: warn
 
       - name: Upload installer artifact
         uses: actions/upload-artifact@v4

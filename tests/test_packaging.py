@@ -80,7 +80,7 @@ def test_inno_setup_script_is_present_and_consistent():
     # В установку попадает folder-сборка PyInstaller целиком, а готовый
     # Setup.exe выводится в корень репозитория (OutputDir в Inno считается
     # относительно каталога скрипта packaging\windows).
-    assert "dist\\Oplata\\*" in text
+    assert "package-folder\\Oplata\\*" in text
     assert "OutputDir=..\\..\\installer" in text
 
 

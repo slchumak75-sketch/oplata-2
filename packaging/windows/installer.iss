@@ -11,7 +11,9 @@
 ;
 ; Перед сборкой установщика должна быть готова folder-сборка PyInstaller:
 ;     pyinstaller --noconfirm --clean oplata.spec   (OPLATA_PACKAGE_MODE=folder)
-; Она лежит в dist\Oplata и копируется в установку целиком.
+; В CI она копируется в package-folder\Oplata (папка dist к этому моменту
+; уже удалена), поэтому файлы берутся оттуда; при ручной сборке можно
+; указывать dist\Oplata, если папка ещё на месте.
 
 #ifndef MyAppVersion
   #define MyAppVersion "0.0.0"
@@ -67,7 +69,7 @@ Name: "desktopicon"; Description: "{cm:CreateDesktopIcon}"; GroupDescription: "{
 
 [Files]
 ; Вся folder-сборка PyInstaller: EXE, DLL и служебные файлы _internal.
-Source: "..\..\dist\Oplata\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs
+Source: "..\..\package-folder\Oplata\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs
 Source: "..\START_HERE_RU.txt"; DestDir: "{app}"; Flags: ignoreversion
 
 [Icons]
