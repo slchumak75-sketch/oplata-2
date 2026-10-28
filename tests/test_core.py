@@ -229,13 +229,17 @@ def test_due_date_rules():
     overrides = {"2026-11-02": "off"}
     assert calc.payment_due_date(date(2026, 10, 29), deferred2, overrides) == date(2026, 11, 3)
 
-    # Пример пользователя: приход 27.10 с отсрочкой 11 дней -> срок
-    # Сб 07.11 (выходной) -> перенос на ближайший рабочий Пн 09.11.
-    deferred3 = Counterparty(name="W", deferment_days=11)
-    assert calc.raw_due_date(date(2026, 10, 27), deferred3) == date(2026, 11, 7)
+    # Пример пользователя (отсрочка 10 дней, срок выпал на выходной):
+    # приход 28.10 + 10 дней = Сб 07.11 -> перенос на Пн 09.11.
+    ten_days = Counterparty(name="W", deferment_days=10)
+    assert calc.raw_due_date(date(2026, 10, 28), ten_days) == date(2026, 11, 7)
     assert date(2026, 11, 7).weekday() == 5  # суббота
-    assert calc.payment_due_date(date(2026, 10, 27), deferred3, {}) == date(
+    assert calc.payment_due_date(date(2026, 10, 28), ten_days, {}) == date(
         2026, 11, 9
+    )
+    # Приход 27.10 с той же отсрочкой: срок Пт 06.11 — рабочий, переноса нет.
+    assert calc.payment_due_date(date(2026, 10, 27), ten_days, {}) == date(
+        2026, 11, 6
     )
 
     # Предоплата: отсрочка не применяется, но перенос с выходного работает
