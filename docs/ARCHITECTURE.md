@@ -45,7 +45,7 @@ oplata-2/
     views/
       summary_view.py           # Сводка + снимок значений и QPrintPreviewDialog
       week_view.py              # Поставщики и Покупатели (kind="supplier"/"customer")
-      receipts_view.py          # Поступление и оплаты (блоки, строки, всплывающие окна сумм)
+      receipts_view.py          # Поступление и оплаты (блоки-таблицы, ввод в ячейки, окно справа)
       operations_view.py        # Журнал операций (окно из карточки контрагента)
       data_view.py              # Данные: «Настройка календаря» + «Администрирование»
     dialogs/

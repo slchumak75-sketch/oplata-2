@@ -79,7 +79,7 @@ class Operation:
         )
 
 
-CASH_SOURCE = "cash"   # «Внесение наличными»
+CASH_SOURCE = "cash"   # «Поступление наличными»
 CARD_SOURCE = "card"   # «Поступление по картам»
 
 
@@ -88,7 +88,7 @@ class CashReceipt:
     """Поступление денег в кассу/на карту без привязки к покупателю.
 
     Появилось на экране «Поступление и оплаты» (v0.9.0): строки
-    «Внесение наличными» и «Поступление по картам». Это отдельная запись,
+    «Поступление наличными» и «Поступление по картам». Это отдельная запись,
     а не операция контрагента, поэтому в недельных таблицах она не
     участвует — показывается только итогом дня на своём экране.
     """
@@ -381,7 +381,7 @@ def add_cash_receipt(
     amount: Decimal,
     comment: str = "",
 ) -> CashReceipt:
-    """Добавить «Внесение наличными» / «Поступление по картам» за дату."""
+    """Добавить «Поступление наличными» / «Поступление по картам» за дату."""
 
     receipt = CashReceipt(
         date=receipt_date_iso,
@@ -391,3 +391,36 @@ def add_cash_receipt(
     )
     data.cash_receipts.append(receipt)
     return receipt
+
+
+def set_daily_cash_receipt(
+    data: AppData,
+    source: str,
+    date_iso: str,
+    amount: Decimal | None,
+) -> None:
+    """Задать итог дня для «Поступление наличными»/«Поступление по картам».
+
+    Сумма вводится прямо в ячейку таблицы (v0.10.0), поэтому день хранит
+    **одну** запись на каждый источник: при повторном вводе она
+    обновляется на месте. ``None`` или 0 — убрать запись дня.
+    """
+
+    def matches(item: CashReceipt) -> bool:
+        return item.date == date_iso and item.source == source
+
+    if amount is None or amount == 0:
+        data.cash_receipts = [r for r in data.cash_receipts if not matches(r)]
+        return
+
+    amount_text = f"{amount.quantize(Decimal('0.01')):.2f}"
+    existing = [r for r in data.cash_receipts if matches(r)]
+    if existing:
+        existing[0].amount = amount_text
+        # Лишние записи того же дня и источника сводим в одну.
+        for extra in existing[1:]:
+            data.cash_receipts.remove(extra)
+        return
+    data.cash_receipts.append(
+        CashReceipt(date=date_iso, source=source, amount=amount_text)
+    )

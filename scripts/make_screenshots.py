@@ -118,13 +118,17 @@ def main() -> int:
                     document="Реализация 3",
                 ),
             ])
-            # Экран «Поступление и оплаты»: суммы за 27.10.2026.
+            # Экран «Поступление и оплаты»: суммы за 27.10.2026 плюс
+            # более ранние дни, чтобы были видны итоги «Неделя/Месяц/Год».
             from oplata.models import add_cash_receipt
 
             receipts = window.receipts_view
             receipts.set_date(date(2026, 10, 27))
             add_cash_receipt(store.data, "cash", "2026-10-27", Decimal("15000"))
             add_cash_receipt(store.data, "card", "2026-10-27", Decimal("42500.50"))
+            add_cash_receipt(store.data, "cash", "2026-10-26", Decimal("9800"))
+            add_cash_receipt(store.data, "card", "2026-10-21", Decimal("31400"))
+            add_cash_receipt(store.data, "cash", "2026-10-05", Decimal("120000"))
             store.data.operations.append(
                 Operation(
                     kind="Оплата",
@@ -134,14 +138,23 @@ def main() -> int:
                     comment="Поступление от покупателя",
                 )
             )
-            store.data.operations.append(
-                Operation(
-                    kind="Оплата",
-                    counterparty_id=ggg.id,
-                    date="2026-10-27",
-                    amount="10000.00",
-                    comment="Оплата поставщику",
-                )
+            store.data.operations.extend(
+                [
+                    Operation(
+                        kind="Оплата",
+                        counterparty_id=ggg.id,
+                        date="2026-10-27",
+                        amount="10000.00",
+                        comment="Оплата поставщику",
+                    ),
+                    Operation(
+                        kind="Оплата",
+                        counterparty_id=eee.id,
+                        date="2026-10-23",
+                        amount="25000.00",
+                        comment="Оплата поставщику",
+                    ),
+                ]
             )
             store.save()
             receipts.refresh()
@@ -150,8 +163,8 @@ def main() -> int:
             window.grab().save(str(OUT / "receipts.png"))
             print("saved receipts")
 
-            # Выпадающее окно покупателей с полем суммы.
-            popup = receipts.open_row_popup("customers")
+            # Окно покупателей всплывает справа от строки таблицы.
+            popup = receipts.open_popup("customers", row=2)
             popup.edits[buyer.id].setText("12 345,67")
             app.processEvents()
             popup.grab().save(str(OUT / "receipts-customers-popup.png"))

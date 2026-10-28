@@ -42,13 +42,25 @@ def test_main_window_all_pages(qt_app, store):
         "Данные",
     ]
     assert window.stack.count() == 5
-    # Вкладка «Поступление и оплаты» — два блока ввода сумм за дату.
-    assert list(window.receipts_view.incoming.rows) == [
-        "cash",
-        "card",
-        "customers",
+    # Вкладка «Поступление и оплаты»: два блока один под другим, в каждом
+    # таблица со столбцами «Сумма/Неделя/Месяц/Год».
+    view = window.receipts_view
+    assert [view.incoming.table.item(row, 0).text() for row in range(3)] == [
+        "Поступление наличными",
+        "Поступление по картам",
+        "Покупатели",
     ]
-    assert list(window.receipts_view.outgoing.rows) == ["suppliers"]
+    assert view.outgoing.table.item(0, 0).text() == "Поставщики"
+    assert [view.incoming.table.horizontalHeaderItem(c).text() for c in range(5)] == [
+        "",
+        "Сумма",
+        "Неделя",
+        "Месяц",
+        "Год",
+    ]
+    # Блок «Оплата» стоит под блоком «Поступление».
+    layout = view.layout()
+    assert layout.indexOf(view.outgoing) > layout.indexOf(view.incoming)
     assert not hasattr(window, "operations_view")
     for index in range(5):
         window.show_page(index)
@@ -134,9 +146,7 @@ def test_week_table_income_and_payment_input(qt_app, store):
     assert table.item(TOTAL_ROW, 5).text() == "200,00"  # ВСЕГО обновилось
     # Блок «Оплата» вкладки «Поступление и оплаты» видит итог этого дня.
     window.receipts_view.outgoing.set_date(monday)
-    assert window.receipts_view.outgoing.rows["suppliers"].amount_label.text() == (
-        "200,00"
-    )
+    assert window.receipts_view.outgoing.amount_text("suppliers") == "200,00"
 
     payment.setText("")  # очистка ячейки удаляет только операцию оплаты
     assert [op.kind for op in store.data.operations] == ["Приход"]
@@ -269,9 +279,7 @@ def test_operation_dialog_and_journal_crud(qt_app, store):
 
     # Блок «Оплата» показывает ту же оплату поставщику за 27.10.
     window.receipts_view.outgoing.set_date(date(2026, 10, 27))
-    assert window.receipts_view.outgoing.rows["suppliers"].amount_label.text() == (
-        "200,00"
-    )
+    assert window.receipts_view.outgoing.amount_text("suppliers") == "200,00"
 
     # Поставка по-прежнему даёт долг на сроке 26.11 (чт). Удаление оплаты
     # из журнала его не меняет: оплата архивный долг пока не уменьшает.
@@ -560,77 +568,132 @@ def test_realization_dialog_saves_without_due_date(qt_app, store):
     dialog.close()
 
 
-def test_receipts_blocks_save_cash_card_and_customer(qt_app, store):
-    """Блок «Поступление»: дата, наличные/карты, окно покупателей."""
+def test_receipts_table_direct_input_and_totals(qt_app, store):
+    """Таблица «Поступление»: ввод в ячейку и нарастающие итоги."""
+    from datetime import date
+
+    from oplata.app import MainWindow
+    from oplata.views.receipts_view import (
+        COL_AMOUNT,
+        COL_MONTH,
+        COL_WEEK,
+        COL_YEAR,
+    )
+
+    window = MainWindow(store)
+    view = window.receipts_view
+    incoming = view.incoming
+
+    # Заголовок блока и строка даты идут в одну строчку.
+    assert incoming.date_edit.calendarPopup()
+    assert incoming.date_edit.minimumWidth() >= 138
+    assert incoming.today_btn.text() == "Сегодня"
+    assert incoming.prev_btn.text() == "←" and incoming.next_btn.text() == "→"
+    assert incoming.date_edit.y() <= incoming.today_btn.y() + 4
+
+    incoming.set_date(date(2026, 10, 27))
+    incoming.next_btn.click()
+    assert incoming.current_date() == date(2026, 10, 28)
+    incoming.prev_btn.click()
+    incoming.prev_btn.click()
+    assert incoming.current_date() == date(2026, 10, 26)
+    view.set_date(date(2026, 10, 27))
+
+    # Наличные и карты вводятся прямо в ячейку таблицы.
+    incoming.table.item(0, COL_AMOUNT).setText("1 500,75")
+    assert [(r.source, r.date, r.amount) for r in store.data.cash_receipts] == [
+        ("cash", "2026-10-27", "1500.75")
+    ]
+    assert incoming.amount_text("cash") == "1 500,75"
+    incoming.table.item(1, COL_AMOUNT).setText("2 000")
+    assert [(r.source, r.amount) for r in store.data.cash_receipts] == [
+        ("cash", "1500.75"),
+        ("card", "2000.00"),
+    ]
+    assert incoming.amount_text("card") == "2 000,00"
+
+    # Нарастающий итог: неделя (с Пн 26.10), месяц, год — по выбранную дату.
+    incoming.table.item(0, COL_AMOUNT).setText("1 000")
+    assert incoming.amount_text("cash", COL_AMOUNT) == "1 000,00"
+    assert incoming.amount_text("cash", COL_WEEK) == "1 000,00"
+    assert incoming.amount_text("cash", COL_MONTH) == "1 000,00"
+    assert incoming.amount_text("cash", COL_YEAR) == "1 000,00"
+
+    # Сумма предыдущего дня этой же недели входит в итог недели.
+    view.incoming.set_date(date(2026, 10, 26))
+    view.incoming.table.item(0, COL_AMOUNT).setText("500")
+    assert view.incoming.amount_text("cash", COL_AMOUNT) == "500,00"
+    view.incoming.set_date(date(2026, 10, 27))
+    assert view.incoming.amount_text("cash", COL_AMOUNT) == "1 000,00"
+    assert view.incoming.amount_text("cash", COL_WEEK) == "1 500,00"
+    assert view.incoming.amount_text("cash", COL_MONTH) == "1 500,00"
+    assert view.incoming.amount_text("cash", COL_YEAR) == "1 500,00"
+    assert view.incoming.amount_text("card", COL_WEEK) == "2 000,00"
+
+    # Пустая ячейка убирает запись дня (только по своему источнику).
+    view.incoming.table.item(0, COL_AMOUNT).setText("")
+    assert view.incoming.amount_text("cash") == ""
+    assert [(r.source, r.date) for r in store.data.cash_receipts] == [
+        ("card", "2026-10-27"),
+        ("cash", "2026-10-26"),
+    ]
+    window.close()
+
+
+def test_receipts_customers_popup_opens_right_and_sums(qt_app, store):
+    """Строка «Покупатели»: окно справа, итог по всем покупателям."""
     from datetime import date
 
     from oplata.app import MainWindow
     from oplata.models import Counterparty
 
-    buyer = Counterparty(name="Покупатель В")
-    store.data.customers.append(buyer)
+    first = Counterparty(name="Покупатель В")
+    second = Counterparty(name="Покупатель Г")
+    store.data.customers.extend([first, second])
     window = MainWindow(store)
+    window.show()
+    qt_app.processEvents()
     view = window.receipts_view
+    view.set_date(date(2026, 10, 27))
 
-    # Строка даты: стрелки, «Сегодня» и выпадающий календарь.
-    assert view.incoming.date_edit.calendarPopup()
-    assert view.incoming.date_edit.minimumWidth() >= 138
-    view.incoming.set_date(date(2026, 10, 27))
-    view.incoming.next_btn.click()
-    assert view.incoming.current_date() == date(2026, 10, 28)
-    view.incoming.prev_btn.click()
-    view.incoming.prev_btn.click()
-    assert view.incoming.current_date() == date(2026, 10, 26)
-    view.incoming.today_btn.click()
-    assert view.incoming.current_date() == date.today()
+    popup = view.open_popup("customers", row=2)
+    assert popup is not None
+    assert list(popup.edits) == [first.id, second.id]
+    # Окно всплывает справа от таблицы, а не под строкой.
+    table_right = view.incoming.table.mapToGlobal(
+        view.incoming.table.rect().topRight()
+    ).x()
+    assert popup.x() > table_right - popup.width()
 
-    day = date(2026, 10, 27)
-    view.set_date(day)
+    # Итог пересчитывается по мере ввода и до сохранения.
+    assert popup.total_label.text() == "0,00"
+    popup.edits[first.id].setText("3 000")
+    assert popup.total_label.text() == "3 000,00"
+    popup.edits[second.id].setText("1 250,50")
+    assert popup.total_label.text() == "4 250,50"
+    popup._save()
 
-    # Наличные и карты — отдельные записи без контрагента.
-    cash_popup = view.open_row_popup("cash")
-    assert list(cash_popup.edits) == [""]
-    cash_popup.edits[""].setText("1 500,75")
-    cash_popup._save()
-    card_popup = view.open_row_popup("card")
-    card_popup.edits[""].setText("2 000")
-    card_popup._save()
-    assert [(r.source, r.date, r.amount) for r in store.data.cash_receipts] == [
-        ("cash", "2026-10-27", "1500.75"),
-        ("card", "2026-10-27", "2000.00"),
+    assert [
+        (op.kind, op.counterparty_id, op.date, op.amount, op.due_date)
+        for op in store.data.operations
+        if op.kind == "Оплата"
+    ] == [
+        ("Оплата", first.id, "2026-10-27", "3000.00", ""),
+        ("Оплата", second.id, "2026-10-27", "1250.50", ""),
     ]
-    assert view.incoming.rows["cash"].amount_label.text() == "1 500,75"
-    assert view.incoming.rows["card"].amount_label.text() == "2 000,00"
-
-    # Окно покупателей: список с полем суммы, сумма уходит в «Оплату».
-    customers_popup = view.open_row_popup("customers")
-    assert list(customers_popup.edits) == [buyer.id]
-    customers_popup.edits[buyer.id].setText("3 000")
-    customers_popup._save()
-    (op,) = [o for o in store.data.operations if o.kind == "Оплата"]
-    assert (op.counterparty_id, op.date, op.amount, op.due_date) == (
-        buyer.id,
-        "2026-10-27",
-        "3000.00",
-        "",
-    )
-    assert view.incoming.rows["customers"].amount_label.text() == "3 000,00"
+    assert view.incoming.amount_text("customers") == "4 250,50"
 
     # Та же сумма видна в колонке «Оплата» недельной таблицы покупателей.
-    window.customers_view.goto_date(day)
+    window.customers_view.goto_date(date(2026, 10, 27))
     table = window.customers_view.table
-    buyer_row = 4 + [c.name for c in store.data.customers].index("Покупатель В")
-    assert table.item(buyer_row, 3 + 1 * 2 + 1).text() == "3 000,00"
-
-    # Итог дня пересчитывается при смене даты блока.
-    view.incoming.set_date(date(2026, 10, 28))
-    assert view.incoming.rows["cash"].amount_label.text() == "0,00"
-    assert view.incoming.rows["customers"].amount_label.text() == "0,00"
+    names = [c.name for c in store.data.customers]
+    assert table.item(4 + names.index(first.name), 3 + 1 * 2 + 1).text() == "3 000,00"
+    assert table.item(4 + names.index(second.name), 3 + 1 * 2 + 1).text() == "1 250,50"
     window.close()
 
 
 def test_receipts_outgoing_block_saves_supplier_payment(qt_app, store):
-    """Блок «Оплата»: окно поставщиков с полем суммы."""
+    """Блок «Оплата» под «Поступлением»: окно поставщиков с полями сумм."""
     from datetime import date
 
     from oplata.app import MainWindow
@@ -638,11 +701,15 @@ def test_receipts_outgoing_block_saves_supplier_payment(qt_app, store):
     supplier = next(s for s in store.data.suppliers if s.name == "ббб")
     window = MainWindow(store)
     view = window.receipts_view
+    # Блок «Оплата» расположен под блоком «Поступление».
+    layout = view.layout()
+    assert layout.indexOf(view.outgoing) > layout.indexOf(view.incoming)
     view.outgoing.set_date(date(2026, 10, 27))
 
-    popup = view.open_row_popup("suppliers")
+    popup = view.open_popup("suppliers", row=0)
     assert supplier.id in popup.edits
     popup.edits[supplier.id].setText("4 500")
+    assert popup.total_label.text() == "4 500,00"
     popup._save()
     (op,) = store.data.operations
     assert (op.kind, op.counterparty_id, op.date, op.amount) == (
@@ -651,7 +718,7 @@ def test_receipts_outgoing_block_saves_supplier_payment(qt_app, store):
         "2026-10-27",
         "4500.00",
     )
-    assert view.outgoing.rows["suppliers"].amount_label.text() == "4 500,00"
+    assert view.outgoing.amount_text("suppliers") == "4 500,00"
 
     # Недельная таблица поставщиков показывает ту же оплату в своей ячейке.
     window.suppliers_view.goto_date(date(2026, 10, 27))
