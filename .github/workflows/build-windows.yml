@@ -178,6 +178,12 @@ jobs:
           if ($install.ExitCode -ne 0) { throw "Silent install failed, exit code $($install.ExitCode)" }
           $installed = Join-Path $target "Oplata.exe"
           if (-not (Test-Path $installed)) { throw "Installer did not create $installed" }
+
+          # Сводка о составе установленной копии: уходит в лог шага и в
+          # commit status (логи запуска извне не всегда доступны).
+          $files = Get-ChildItem -Path $target -Recurse -File
+          $summary = "installed: $($files.Count) files; has Oplata.exe: $(Test-Path (Join-Path $target 'Oplata.exe')); has _internal: $(Test-Path (Join-Path $target '_internal'))"
+          $summary | Tee-Object -FilePath ".\installer-build.log" -Append
           $p = Start-Process -FilePath $installed -ArgumentList "--self-test" -Wait -PassThru
           if ($p.ExitCode -ne 0) { throw "Installed app smoke test failed, exit code $($p.ExitCode)" }
           Write-Host "Installer smoke test OK"
@@ -294,7 +300,10 @@ jobs:
           $log = ".\installer-build.log"
           $desc = "installer: unknown status"
           if (Test-Path $log) {
-            $line = Get-Content $log | Where-Object { $_ -match "Error|error|Exception|not found|failed" } | Select-Object -First 1
+            $line = Get-Content $log | Where-Object { $_ -match "installed: " } | Select-Object -First 1
+            if (-not $line) {
+              $line = Get-Content $log | Where-Object { $_ -match "Error|error|Exception|not found|failed" } | Select-Object -First 1
+            }
             if (-not $line) { $line = (Get-Content $log | Select-Object -First 1) }
             if ($line) {
               $desc = $line.Trim() -replace '\s+', ' '
