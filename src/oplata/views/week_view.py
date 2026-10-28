@@ -69,6 +69,7 @@ from ..models import (
 from ..storage import DataStore
 from ..widgets import (
     AmountLineEdit,
+    FlowLayout,
     danger_button,
     date_edit_value,
     make_date_edit,
@@ -248,9 +249,11 @@ class WeekView(QWidget):
         self.refresh()
 
     # ------------------------------------------------------------------ UI
-    def _build_toolbar(self) -> QHBoxLayout:
-        bar = QHBoxLayout()
-        bar.setSpacing(8)
+    def _build_toolbar(self) -> FlowLayout:
+        # Тулбар переносится по строкам (v0.15.0): кнопок и подписей
+        # много, и при узком окне они уходят на следующую строку, а не
+        # за край окна.
+        bar = FlowLayout(spacing=8)
 
         self.prev_week_btn = arrow_button("← Неделя", "Неделя назад")
         self.prev_week_btn.clicked.connect(lambda: self._shift_week(-7))
@@ -276,7 +279,12 @@ class WeekView(QWidget):
         go_btn.clicked.connect(self._go_to_date)
         bar.addWidget(go_btn)
 
-        bar.addStretch(1)
+        # Переносимый тулбар не поддерживает растяжку: разрыв между
+        # левой группой (неделя/дата) и правой (кнопки справа) делает
+        # невидимый разделитель.
+        spacer = QLabel("")
+        spacer.setFixedWidth(24)
+        bar.addWidget(spacer)
 
         # Кнопка карточки живёт в панели таблицы (с v0.11.0), а не в шапке
         # окна: пользователь просил перенести её слева от «Очистить суммы».
