@@ -152,8 +152,8 @@ jobs:
           & "$env:ISCC" "/DMyAppVersion=${{ steps.version.outputs.version }}" ".\packaging\windows\installer.iss"
           if ($LASTEXITCODE -ne 0) { throw "Installer build failed, exit code $LASTEXITCODE" }
 
-          $setup = Get-ChildItem -Path ".\installer" -Filter "Oplata-*-Setup.exe" | Select-Object -First 1
-          if (-not $setup) { throw "Installer was not created in .\installer" }
+          $setup = Get-ChildItem -Path "." -Recurse -Filter "Oplata-*-Setup.exe" | Select-Object -First 1
+          if (-not $setup) { throw "Installer was not created (Oplata-*-Setup.exe not found)" }
           Write-Host "Installer: $($setup.FullName) ($($setup.Length) bytes)"
 
           # Тихая установка во временную папку и запуск EXE с --self-test:
@@ -222,7 +222,7 @@ jobs:
             $summary += "| ``$exe`` | ``$hash`` |"
             Write-Host "SHA256 $hash  $exe"
           }
-          $setup = Get-ChildItem -Path ".\installer" -Filter "Oplata-*-Setup.exe" | Select-Object -First 1
+          $setup = Get-ChildItem -Path "." -Recurse -Filter "Oplata-*-Setup.exe" | Select-Object -First 1
           if ($setup) {
             $hash = (Get-FileHash $setup.FullName -Algorithm SHA256).Hash.ToLowerInvariant()
             $summary += "| ``$($setup.Name)`` | ``$hash`` |"
@@ -241,7 +241,7 @@ jobs:
           Compress-Archive -Path ".\package-folder\*" -DestinationPath $folderZip
           Compress-Archive -Path ".\package-single\*" -DestinationPath $singleZip
 
-          $setupExe = Get-ChildItem -Path ".\installer" -Filter "Oplata-*-Setup.exe" | Select-Object -First 1
+          $setupExe = Get-ChildItem -Path "." -Recurse -Filter "Oplata-*-Setup.exe" | Select-Object -First 1
           if (-not $setupExe) { throw "Installer not found for release" }
           $setupName = "Oplata-v$version-windows-setup.exe"
           Copy-Item $setupExe.FullName ".\$setupName"
@@ -270,7 +270,7 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: Oplata-windows-setup-v${{ steps.version.outputs.version }}
-          path: installer/*.exe
+          path: "**/Oplata-*-Setup.exe"
           if-no-files-found: error
 
       - name: Upload single-file artifact (fallback)

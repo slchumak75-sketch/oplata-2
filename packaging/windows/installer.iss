@@ -37,14 +37,13 @@ AppUpdatesURL={#MyAppURL}
 VersionInfoVersion={#MyAppVersion}
 VersionInfoCompany={#MyAppPublisher}
 VersionInfoDescription={#MyAppName}: учёт поставок, долгов и оплат
-VersionInfoProductName={#MyAppName}
 DefaultDirName={userpf}\Oplata
 DefaultGroupName={#MyAppName}
 ; По умолчанию ставим без прав администратора (в папку пользователя).
 ; При запуске от администратора будет предложено поставить для всех.
 PrivilegesRequired=lowest
 PrivilegesRequiredOverridesAllowed=dialog
-OutputDir=installer
+OutputDir=..\..\installer
 OutputBaseFilename=Oplata-{#MyAppVersion}-Setup
 Compression=lzma2/max
 SolidCompression=yes
