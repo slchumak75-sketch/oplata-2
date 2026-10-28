@@ -522,6 +522,10 @@ class DataView(QWidget):
         if old is not None:
             old.deleteLater()
         self.scroll.setWidget(container)
+        # v0.17.0: путь к файлу и незакоммиченные правки календаря —
+        # от активной базы (после переключения МИР <-> КОРЕЛИЧИ).
+        self.path_label.setText(str(self.store.path))
+        self._pending_overrides = dict(self.store.data.day_overrides)
         self._fill_year_start_tables()
         self._update_admin_stats()
         self._update_save_state()

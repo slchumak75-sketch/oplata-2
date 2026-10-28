@@ -1730,3 +1730,50 @@ def test_week_table_fonts_are_uniform(qt_app, store):
         assert view.week_label.font().pixelSize() == styles.fs(14)
         assert view.right_value_label.font().pixelSize() == styles.fs(14)
     window.close()
+
+
+def test_base_switch_button_changes_database_and_header(qt_app, store, monkeypatch, tmp_path):
+    """v0.17.0: кнопка МИР/КОРЕЛИЧИ — две не связанные базы."""
+    from oplata import storage, styles
+    from oplata.app import MainWindow
+    from oplata.models import Counterparty
+
+    # Данные теста целиком во временном каталоге: переключение базы не
+    # должно трогать настоящий каталог данных пользователя.
+    monkeypatch.setattr(storage, "data_dir", lambda: tmp_path)
+
+    window = MainWindow(store)
+    window.show()
+    qt_app.processEvents()
+
+    # Кнопка стоит в шапке и вдвое крупнее вкладок («Конфигурация»).
+    nav_font = window.nav_buttons[-1].font().pixelSize()
+    assert window.base_button.text() == storage.BASE_TITLES[store.base_key]
+    assert window.base_button.font().pixelSize() == nav_font * 2
+
+    mir_path = store.path
+    store.data.suppliers.append(Counterparty(name="Поставщик МИР"))
+    store.save()
+
+    window.base_button.click()
+    qt_app.processEvents()
+    assert window.base_button.text() == "КОРЕЛИЧИ"
+    assert styles.MAROON in window.header.styleSheet()  # шапка вишнёвая
+    assert store.path == tmp_path / "data-korelichi.json"
+    assert not any(s.name == "Поставщик МИР" for s in store.data.suppliers)
+    # Выбор базы запоминается для следующего запуска.
+    assert storage.load_active_base() == storage.BASE_KORELICHI
+
+    window.base_button.click()
+    qt_app.processEvents()
+    assert window.base_button.text() == "МИР"
+    assert styles.NAVY in window.header.styleSheet()  # шапка снова синяя
+    assert store.path == mir_path
+    assert any(s.name == "Поставщик МИР" for s in store.data.suppliers)
+    # Таблица поставщиков перерисована по активной базе.
+    names = [
+        window.suppliers_view.table.item(row, 0).text()
+        for row in range(4, window.suppliers_view.table.rowCount())
+    ]
+    assert "Поставщик МИР" in names
+    window.close()

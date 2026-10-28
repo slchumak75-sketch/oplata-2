@@ -39,7 +39,7 @@ oplata-2/
     widgets.py                  # панели, цветные кнопки, поля даты/сумм, KPI-карточки
     dates.py       [без Qt]     # недели Пн–Вс, русские месяцы, формат сумм
     models.py      [без Qt]     # Counterparty, Operation, CashReceipt, AppData, YearStart, seed_data()
-    storage.py     [без Qt]     # DataStore: JSON в %APPDATA%\OplataStroymarket\data.json
+    storage.py     [без Qt]     # DataStore: JSON, две базы (МИР/КОРЕЛИЧИ)
     styles.py      [без Qt]     # цвета и QSS; FONT_SCALE — шрифты интерфейса +30% (v0.12.0)
     widgets.py                 # AmountLineEdit, CollapsiblePanel, RowHoverMixin (подсветка строки v0.13.0), arrow_button
     calc.py        [без Qt]     # срок/долг поставщиков; блоки «Сводки» (средства, долги, месяц)
@@ -108,7 +108,8 @@ data.json ──DataStore──> AppData ──> экраны (views) ──кл
 }
 ```
 
-Путь: Windows `%APPDATA%\OplataStroymarket\data.json`; переопределение —
+Путь: Windows `%APPDATA%\OplataStroymarket\data.json` (база МИР) и
+`data-korelichi.json` (база КОРЕЛИЧИ); переопределение —
 переменная `OPLATA_DATA_DIR` (используется в тестах/отладке).
 
 ## Контракт calc.py

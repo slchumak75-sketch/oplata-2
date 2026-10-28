@@ -29,7 +29,13 @@ from .dialogs.counterparty_card import CounterpartyCardDialog
 from .dialogs.delivery_dialog import DeliveryDialog
 from .dialogs.operations_journal_dialog import OperationsJournalDialog
 from .dialogs.realization_dialog import RealizationDialog
-from .storage import DataStore
+from .storage import (
+    BASE_KORELICHI,
+    BASE_MIR,
+    BASE_TITLES,
+    OTHER_BASE,
+    DataStore,
+)
 from .views.data_view import DataView
 from .views.receipts_view import ReceiptsView
 from .views.summary_view import SummaryView
@@ -42,6 +48,10 @@ NAV_TITLES = (
     "Конфигурация",  # v0.14.0: прежняя вкладка «Данные»
 )
 IDX_RECEIPTS, IDX_SUPPLIERS, IDX_CUSTOMERS, IDX_DATA = range(4)
+
+# v0.17.0: цвет шапки показывает, какая база открыта — синяя «МИР»,
+# вишнёвая «КОРЕЛИЧИ».
+BASE_HEADER_COLORS = {BASE_MIR: styles.NAVY, BASE_KORELICHI: styles.MAROON}
 
 
 class MainWindow(QMainWindow):
@@ -115,8 +125,8 @@ class MainWindow(QMainWindow):
     # ------------------------------------------------------------------ шапка
     def _build_header(self) -> QFrame:
         header = QFrame()
-        header.setFixedHeight(64)
-        header.setStyleSheet(f"QFrame{{background:{styles.NAVY}}}")
+        self.header = header
+        header.setFixedHeight(70)  # v0.17.0: место под крупную кнопку базы
         layout = QHBoxLayout(header)
         layout.setContentsMargins(14, 6, 14, 6)
         layout.setSpacing(10)
@@ -139,26 +149,74 @@ class MainWindow(QMainWindow):
         self.nav_group = QButtonGroup(self)
         self.nav_group.setExclusive(True)
         self.nav_buttons: list[QPushButton] = []
-        nav_style = (
-            "QPushButton{background:transparent;color:#ffffff;border:none;"
-            "border-radius:8px;padding:7px 16px;font-weight:700;"
-            f"font-size:{styles.fs(14)}px}}"
-            "QPushButton:hover{background:rgba(255,255,255,0.14)}"
-            f"QPushButton:checked{{background:#ffffff;color:{styles.NAVY}}}"
-        )
         for index, title in enumerate(NAV_TITLES):
             btn = QPushButton(title)
             btn.setCheckable(True)
-            btn.setStyleSheet(nav_style)
             btn.clicked.connect(lambda _checked=False, i=index: self.show_page(i))
             self.nav_group.addButton(btn)
             self.nav_buttons.append(btn)
             layout.addWidget(btn)
 
+        layout.addSpacing(28)
+        # v0.17.0: переключатель базы — на свободном поле справа от
+        # вкладок. Шрифт вдвое крупнее, чем у вкладок («Конфигурация»);
+        # нажатие меняет базу МИР <-> КОРЕЛИЧИ вместе с цветом шапки.
+        self.base_button = QPushButton(BASE_TITLES[self.store.base_key])
+        self.base_button.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.base_button.clicked.connect(self.toggle_base)
+        layout.addWidget(self.base_button)
+        self._apply_base_style()
+
         layout.addStretch(1)
         # Кнопки «Карточка поставщика»/«Карточка покупателя» с v0.11.0
         # живут в панелях таблиц — там же, где «Очистить суммы».
         return header
+
+    def _apply_base_style(self) -> None:
+        """Перекрасить шапку под активную базу (МИР — синяя, КОРЕЛИЧИ — вишнёвая)."""
+        header_bg = BASE_HEADER_COLORS[self.store.base_key]
+        nav_font = styles.fs(14)
+        self.header.setStyleSheet(f"QFrame{{background:{header_bg}}}")
+        nav_style = (
+            "QPushButton{background:transparent;color:#ffffff;border:none;"
+            "border-radius:8px;padding:7px 16px;font-weight:700;"
+            f"font-size:{nav_font}px}}"
+            "QPushButton:hover{background:rgba(255,255,255,0.14)}"
+            f"QPushButton:checked{{background:#ffffff;color:{header_bg}}}"
+        )
+        for btn in self.nav_buttons:
+            btn.setStyleSheet(nav_style)
+        self.base_button.setStyleSheet(
+            "QPushButton{background:#ffffff;"
+            f"color:{header_bg};"
+            "border:2px solid #ffffff;border-radius:10px;padding:0px 20px;"
+            "font-weight:800;"
+            f"font-size:{nav_font * 2}px}}"  # вдвое крупнее вкладок
+            "QPushButton:hover{background:#f0f3fa}"
+        )
+
+    def toggle_base(self) -> None:
+        """Переключить базу: МИР <-> КОРЕЛИЧИ (v0.17.0)."""
+        # Журналы операций показывают данные конкретной базы — закрываем,
+        # чтобы в окне не остались строки из другой базы.
+        for dialog in list(self._journal_dialogs):
+            dialog.close()
+        self._journal_dialogs.clear()
+        self.store.switch_base(OTHER_BASE[self.store.base_key])
+        self.base_button.setText(BASE_TITLES[self.store.base_key])
+        self._apply_base_style()
+        self.refresh_all_views()
+
+    def refresh_all_views(self) -> None:
+        """Перерисовать все экраны после смены базы (v0.17.0)."""
+        # Состав строк «Поступление»/«Оплата» в каждой базе свой
+        # (добавленные «прочие»), поэтому сначала перечитываем строки.
+        self.receipts_view.refresh_rows()
+        self.receipts_view.refresh()
+        self.suppliers_view.refresh()
+        self.customers_view.refresh()
+        self.summary_view.refresh()
+        self.data_view.refresh()
 
     # -------------------------------------------------------------- навигация
     def show_page(self, index: int) -> None:

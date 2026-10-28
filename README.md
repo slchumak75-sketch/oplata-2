@@ -116,4 +116,7 @@ python -m venv .venv && .venv/bin/pip install -r requirements-dev.txt
 Стек: Python 3.11+ · PySide6 (Qt) · PyInstaller → основная сборка папкой
 (`Oplata\Oplata.exe` + DLL) и запасная одним файлом; обе собираются
 автоматически в GitHub Actions на `windows-latest`.
-Данные: `%APPDATA%\OplataStroymarket\data.json`.
+Две независимые базы — **МИР** и **КОРЕЛИЧИ** — переключаются кнопкой в шапке
+(синяя шапка — МИР, вишнёвая — КОРЕЛИЧИ); у каждой свои поставщики,
+покупатели и операции. Данные: `%APPDATA%\OplataStroymarket\data.json`
+(МИР) и `data-korelichi.json` (КОРЕЛИЧИ); активная база запоминается.
