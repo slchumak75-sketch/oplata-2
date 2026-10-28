@@ -12,6 +12,7 @@ from PySide6.QtWidgets import (
     QLabel,
     QLineEdit,
     QPushButton,
+    QSizePolicy,
     QVBoxLayout,
     QWidget,
 )
@@ -27,6 +28,83 @@ def make_panel() -> tuple[QFrame, QVBoxLayout]:
     layout.setContentsMargins(14, 12, 14, 12)
     layout.setSpacing(10)
     return frame, layout
+
+
+class CollapsiblePanel(QFrame):
+    """Белая панель со строкой-заголовком, которая раскрывает содержимое.
+
+    Запрос пользователя v0.9.0: на экране «Данные» плашку с календарём
+    сделать раскрывающейся с названием «Настройка календаря». Свёрнутая
+    панель показывает только заголовок со стрелкой ▸/▾; содержимое
+    добавляют в ``content_layout``.
+    """
+
+    def __init__(
+        self,
+        title: str,
+        expanded: bool = False,
+        parent: QWidget | None = None,
+    ) -> None:
+        super().__init__(parent)
+        self.setObjectName("Panel")
+        self._expanded = expanded
+
+        root = QVBoxLayout(self)
+        root.setContentsMargins(14, 10, 14, 10)
+        root.setSpacing(8)
+
+        self.toggle = QPushButton()
+        self.toggle.setStyleSheet(
+            "QPushButton{background:transparent;border:none;text-align:left;"
+            f"padding:2px 0;font-weight:800;font-size:14px;color:{styles.TEXT}}}"
+            "QPushButton:hover{background:transparent}"
+        )
+        self.toggle.clicked.connect(self.toggle_expanded)
+        root.addWidget(self.toggle)
+
+        self.content = QWidget()
+        self.content_layout = QVBoxLayout(self.content)
+        self.content_layout.setContentsMargins(0, 0, 0, 0)
+        self.content_layout.setSpacing(10)
+        root.addWidget(self.content)
+
+        self._title = title
+        self._apply_state()
+
+    # ------------------------------------------------------------------ вид
+    @property
+    def title(self) -> str:
+        return self._title
+
+    def set_title(self, title: str) -> None:
+        self._title = title
+        self._apply_state()
+
+    def is_expanded(self) -> bool:
+        return self._expanded
+
+    def set_expanded(self, expanded: bool) -> None:
+        self._expanded = bool(expanded)
+        self._apply_state()
+
+    def toggle_expanded(self) -> None:
+        self.set_expanded(not self._expanded)
+
+    def _apply_state(self) -> None:
+        arrow = "▾" if self._expanded else "▸"
+        # Свёрнутая панель не должна растягиваться по высоте: иначе она
+        # занимает весь экран и «Администрирование» уезжает вниз.
+        vertical = (
+            QSizePolicy.Policy.Preferred
+            if self._expanded
+            else QSizePolicy.Policy.Maximum
+        )
+        self.setSizePolicy(QSizePolicy.Policy.Expanding, vertical)
+        self.toggle.setText(f"{arrow}  {self._title}")
+        self.toggle.setToolTip(
+            "Свернуть" if self._expanded else "Развернуть"
+        )
+        self.content.setVisible(self._expanded)
 
 
 def _is_zero_amount_text(text: str) -> bool:

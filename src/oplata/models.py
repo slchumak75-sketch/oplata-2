@@ -48,7 +48,7 @@ class Counterparty:
 
 @dataclass
 class Operation:
-    """Операция недельных таблиц и экрана «Оплаты».
+    """Операция недельных таблиц и журнала операций.
 
     Типы: «Приход» (поставка поставщика), «Реализация» (покупатель) и
     «Оплата». Срок ``due_date`` есть только у «Прихода» и рассчитывается
@@ -79,6 +79,47 @@ class Operation:
         )
 
 
+CASH_SOURCE = "cash"   # «Внесение наличными»
+CARD_SOURCE = "card"   # «Поступление по картам»
+
+
+@dataclass
+class CashReceipt:
+    """Поступление денег в кассу/на карту без привязки к покупателю.
+
+    Появилось на экране «Поступление и оплаты» (v0.9.0): строки
+    «Внесение наличными» и «Поступление по картам». Это отдельная запись,
+    а не операция контрагента, поэтому в недельных таблицах она не
+    участвует — показывается только итогом дня на своём экране.
+    """
+
+    date: str = ""             # ISO ``YYYY-MM-DD``
+    source: str = CASH_SOURCE  # CASH_SOURCE | CARD_SOURCE
+    amount: str = "0"          # Decimal строкой
+    comment: str = ""
+    id: str = field(default_factory=new_id)
+
+    @classmethod
+    def from_dict(cls, data: dict) -> "CashReceipt":
+        source = str(data.get("source", CASH_SOURCE))
+        return cls(
+            date=str(data.get("date", "")),
+            source=source if source in (CASH_SOURCE, CARD_SOURCE) else CASH_SOURCE,
+            amount=str(data.get("amount", "0")),
+            comment=str(data.get("comment", "")),
+            id=str(data.get("id") or new_id()),
+        )
+
+
+def cash_receipt_amount(receipt: CashReceipt) -> Decimal:
+    """Сумма поступления как Decimal (битая строка трактуется как 0)."""
+
+    try:
+        return Decimal(receipt.amount or "0")
+    except InvalidOperation:
+        return Decimal("0")
+
+
 @dataclass
 class AppData:
     """Весь сохраняемый набор данных (один JSON-файл, см. storage.py)."""
@@ -86,6 +127,10 @@ class AppData:
     suppliers: list[Counterparty] = field(default_factory=list)
     customers: list[Counterparty] = field(default_factory=list)
     operations: list[Operation] = field(default_factory=list)
+    # Поступления наличными/по картам без контрагента (экран
+    # «Поступление и оплаты»). Поле добавлено в v0.9.0, в старых файлах
+    # его нет — from_dict подставит пустой список.
+    cash_receipts: list[CashReceipt] = field(default_factory=list)
     # Ручные отметки календаря «Выходные и рабочие дни»:
     # "YYYY-MM-DD" -> "off" (выходной) | "work" (рабочий).
     # Без отметки Сб/Вс считаются выходными, Пн–Пт — рабочими.
@@ -97,6 +142,7 @@ class AppData:
             "suppliers": [asdict(s) for s in self.suppliers],
             "customers": [asdict(c) for c in self.customers],
             "operations": [asdict(o) for o in self.operations],
+            "cash_receipts": [asdict(r) for r in self.cash_receipts],
             "day_overrides": dict(self.day_overrides),
         }
 
@@ -106,6 +152,9 @@ class AppData:
             suppliers=[Counterparty.from_dict(x) for x in data.get("suppliers", [])],
             customers=[Counterparty.from_dict(x) for x in data.get("customers", [])],
             operations=[Operation.from_dict(x) for x in data.get("operations", [])],
+            cash_receipts=[
+                CashReceipt.from_dict(x) for x in data.get("cash_receipts", [])
+            ],
             day_overrides={
                 str(k): str(v) for k, v in data.get("day_overrides", {}).items()
             },
@@ -274,3 +323,71 @@ def add_realization(
     )
     data.operations.append(op)
     return op
+
+
+def add_customer_receipt(
+    data: AppData,
+    counterparty_id: str,
+    receipt_date_iso: str,
+    amount: Decimal,
+) -> Operation:
+    """Добавить поступление от покупателя на выбранную дату.
+
+    В существующих данных это операция «Оплата» покупателя — ровно то,
+    что показывает колонка «Оплата» недельной таблицы покупателей. В
+    отличие от ввода итога дня в ячейку, каждое сохранение из окна
+    покупателей — отдельная операция, поэтому несколько сумм одного дня
+    складываются, а не заменяют друг друга.
+    """
+    op = Operation(
+        kind=KIND_PAYMENT,
+        counterparty_id=counterparty_id,
+        date=receipt_date_iso,
+        amount=f"{amount.quantize(Decimal('0.01')):.2f}",
+        comment="Поступление от покупателя",
+        due_date="",
+    )
+    data.operations.append(op)
+    return op
+
+
+def add_supplier_payment(
+    data: AppData,
+    counterparty_id: str,
+    payment_date_iso: str,
+    amount: Decimal,
+) -> Operation:
+    """Добавить оплату поставщику на выбранную дату (блок «Оплата»).
+
+    Тип тот же «Оплата», что и при вводе в ячейку недельной таблицы
+    поставщиков, — новые формулы не вводятся (см. ADR-016).
+    """
+    op = Operation(
+        kind=KIND_PAYMENT,
+        counterparty_id=counterparty_id,
+        date=payment_date_iso,
+        amount=f"{amount.quantize(Decimal('0.01')):.2f}",
+        comment="Оплата поставщику",
+        due_date="",
+    )
+    data.operations.append(op)
+    return op
+
+
+def add_cash_receipt(
+    data: AppData,
+    source: str,
+    receipt_date_iso: str,
+    amount: Decimal,
+    comment: str = "",
+) -> CashReceipt:
+    """Добавить «Внесение наличными» / «Поступление по картам» за дату."""
+
+    receipt = CashReceipt(
+        date=receipt_date_iso,
+        source=source,
+        amount=f"{amount.quantize(Decimal('0.01')):.2f}",
+        comment=comment,
+    )
+    data.cash_receipts.append(receipt)
+    return receipt

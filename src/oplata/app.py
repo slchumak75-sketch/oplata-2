@@ -1,9 +1,11 @@
 """Главное окно: тёмно-синяя шапка + 5 экранов (QStackedWidget).
 
 Шапка: слева «▦ Оплаты / Строймаркет», далее вкладки
-Сводка | Оплаты | Поставщики | Покупатели | Данные, справа кнопки
-«Карточка поставщика» и «Карточка покупателя». Вкладки «Операции»
-с v0.8.0 нет по запросу пользователя.
+Сводка | Поступление и оплаты | Поставщики | Покупатели | Данные, справа
+кнопки «Карточка поставщика» и «Карточка покупателя». Вкладки «Операции»
+нет, а журнал операций с v0.9.0 открывается окном из карточки контрагента
+(кнопка «Операции и долги»), потому что вкладка занята блоками
+«Поступление» и «Оплата».
 """
 
 from __future__ import annotations
@@ -24,22 +26,31 @@ from PySide6.QtWidgets import (
 from . import __app_name__, __version__, styles
 from .dialogs.counterparty_card import CounterpartyCardDialog
 from .dialogs.delivery_dialog import DeliveryDialog
+from .dialogs.operations_journal_dialog import OperationsJournalDialog
 from .dialogs.realization_dialog import RealizationDialog
-from .models import KIND_PAYMENT
 from .storage import DataStore
 from .views.data_view import DataView
-from .views.operations_view import OperationsView
+from .views.receipts_view import ReceiptsView
 from .views.summary_view import SummaryView
 from .views.week_view import WeekView
 
-NAV_TITLES = ("Сводка", "Оплаты", "Поставщики", "Покупатели", "Данные")
-IDX_SUMMARY, IDX_PAYMENTS, IDX_SUPPLIERS, IDX_CUSTOMERS, IDX_DATA = range(5)
+NAV_TITLES = (
+    "Сводка",
+    "Поступление и оплаты",
+    "Поставщики",
+    "Покупатели",
+    "Данные",
+)
+IDX_SUMMARY, IDX_RECEIPTS, IDX_SUPPLIERS, IDX_CUSTOMERS, IDX_DATA = range(5)
 
 
 class MainWindow(QMainWindow):
     def __init__(self, store: DataStore) -> None:
         super().__init__()
         self.store = store
+        # Открытые окна журналов операций держим, чтобы они не закрывались
+        # сборщиком мусора (окна немодальные).
+        self._journal_dialogs: list[OperationsJournalDialog] = []
         self.setWindowTitle(f"{__app_name__}  v{__version__}")
         self.resize(1440, 860)
         self.setMinimumSize(1100, 640)
@@ -69,10 +80,9 @@ class MainWindow(QMainWindow):
             on_data_changed=self.refresh_after_week_edit,
             on_open_realization=self.open_realization_dialog,
         )
-        self.payments_view = OperationsView(
-            store,
-            on_data_changed=self.refresh_after_operation_change,
-            fixed_kind=KIND_PAYMENT,
+        # Вкладка «Поступление и оплаты»: два блока ввода сумм за дату.
+        self.receipts_view = ReceiptsView(
+            store, on_data_changed=self.refresh_after_operation_change
         )
         self.data_view = DataView(
             store, on_calendar_saved=self.refresh_after_calendar_change
@@ -81,7 +91,7 @@ class MainWindow(QMainWindow):
         self.stack = QStackedWidget()
         for view in (
             self.summary_view,
-            self.payments_view,
+            self.receipts_view,
             self.suppliers_view,
             self.customers_view,
             self.data_view,
@@ -175,7 +185,7 @@ class MainWindow(QMainWindow):
         )
         dialog.exec()
         if dialog.changed:
-            self.payments_view.refresh()
+            self.receipts_view.refresh()
             self.summary_view.refresh()
             if dialog.saved_due_date is not None:
                 self.suppliers_view.goto_date(dialog.saved_due_date)
@@ -196,7 +206,7 @@ class MainWindow(QMainWindow):
         )
         dialog.exec()
         if dialog.changed:
-            self.payments_view.refresh()
+            self.receipts_view.refresh()
             self.summary_view.refresh()
             if dialog.saved_date is not None:
                 self.customers_view.goto_date(dialog.saved_date)
@@ -209,17 +219,28 @@ class MainWindow(QMainWindow):
             self.store,
             kind,
             selected_id=selected_id,
-            on_open_operations=self._go_to_payments,
+            on_open_operations=self.open_operations_journal,
             parent=self,
         )
         dialog.exec()
         if dialog.changed:
             self.refresh_all()
 
-    def _go_to_payments(self, kind: str, counterparty_id: str) -> None:
-        self.show_page(IDX_PAYMENTS)
-        if kind == "supplier" and counterparty_id:
-            self.payments_view.set_supplier_filter(counterparty_id)
+    def open_operations_journal(self, kind: str, counterparty_id: str) -> None:
+        """Окно «Операции контрагента» по кнопке «Операции и долги»."""
+
+        dialog = OperationsJournalDialog(
+            self.store,
+            kind,
+            counterparty_id=counterparty_id,
+            on_data_changed=self.refresh_after_operation_change,
+            parent=self,
+        )
+        dialog.show()  # немодально: журнал часто смотрят рядом с таблицами
+        self._journal_dialogs.append(dialog)
+        dialog.finished.connect(
+            lambda *_: self._forget_journal_dialog(dialog)
+        )
 
     def refresh_after_week_edit(self) -> None:
         """После ввода суммы в недельной таблице обновить зависимые экраны.
@@ -227,7 +248,7 @@ class MainWindow(QMainWindow):
         Саму недельную таблицу не трогаем — она уже показала введённое
         и пересчитала свою строку «ВСЕГО».
         """
-        self.payments_view.refresh()
+        self.receipts_view.refresh()
         self.summary_view.refresh()
 
     def refresh_after_operation_change(self) -> None:
@@ -246,11 +267,14 @@ class MainWindow(QMainWindow):
         self.customers_view.refresh()
         self.summary_view.refresh()
 
+    def _forget_journal_dialog(self, dialog: OperationsJournalDialog) -> None:
+        if dialog in self._journal_dialogs:
+            self._journal_dialogs.remove(dialog)
+
     def refresh_all(self) -> None:
         """Перечитать все экраны после изменения списков контрагентов."""
         self.summary_view.refresh()
         self.suppliers_view.refresh()
         self.customers_view.refresh()
-        self.payments_view.refresh_supplier_filter()
-        self.payments_view.refresh()
+        self.receipts_view.refresh()
         # DataView от контрагентов не зависит — не трогаем, чтобы не сбрасывать год.

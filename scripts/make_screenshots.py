@@ -13,6 +13,7 @@ from __future__ import annotations
 import sys
 import tempfile
 from datetime import date, datetime
+from decimal import Decimal
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -30,10 +31,11 @@ from oplata.dialogs.delivery_dialog import DeliveryDialog  # noqa: E402
 from oplata.dialogs.operation_dialog import OperationDialog  # noqa: E402
 from oplata.dialogs.realization_dialog import RealizationDialog  # noqa: E402
 from oplata.models import Counterparty, Operation  # noqa: E402
+
 from oplata.storage import DataStore  # noqa: E402
 
 OUT = ROOT / "docs" / "screenshots"
-PAGES = ["summary", "payments", "suppliers", "customers", "data"]
+PAGES = ["summary", "receipts", "suppliers", "customers", "data"]
 
 
 def main() -> int:
@@ -65,10 +67,15 @@ def main() -> int:
 
         def shoot(index: int = 0) -> None:
             if index < len(PAGES):
+                page = PAGES[index]
+                if page == "data":
+                    # Плашки свёрнуты по умолчанию — для снимка раскрываем.
+                    window.data_view.calendar_panel.set_expanded(True)
+                    window.data_view.admin_panel.set_expanded(True)
                 window.show_page(index)
                 app.processEvents()
-                window.grab().save(str(OUT / f"{PAGES[index]}.png"))
-                print("saved", PAGES[index])
+                window.grab().save(str(OUT / f"{page}.png"))
+                print("saved", page)
                 QTimer.singleShot(150, lambda: shoot(index + 1))
                 return
             ggg = next(s for s in store.data.suppliers if s.name == "ггг")
@@ -111,12 +118,45 @@ def main() -> int:
                     document="Реализация 3",
                 ),
             ])
-            window.payments_view.refresh()
+            # Экран «Поступление и оплаты»: суммы за 27.10.2026.
+            from oplata.models import add_cash_receipt
+
+            receipts = window.receipts_view
+            receipts.set_date(date(2026, 10, 27))
+            add_cash_receipt(store.data, "cash", "2026-10-27", Decimal("15000"))
+            add_cash_receipt(store.data, "card", "2026-10-27", Decimal("42500.50"))
+            store.data.operations.append(
+                Operation(
+                    kind="Оплата",
+                    counterparty_id=buyer.id,
+                    date="2026-10-27",
+                    amount="12345.67",
+                    comment="Поступление от покупателя",
+                )
+            )
+            store.data.operations.append(
+                Operation(
+                    kind="Оплата",
+                    counterparty_id=ggg.id,
+                    date="2026-10-27",
+                    amount="10000.00",
+                    comment="Оплата поставщику",
+                )
+            )
+            store.save()
+            receipts.refresh()
             window.show_page(1)
-            window.payments_view.table.selectRow(0)
             app.processEvents()
-            window.grab().save(str(OUT / "payments.png"))
-            print("saved payments")
+            window.grab().save(str(OUT / "receipts.png"))
+            print("saved receipts")
+
+            # Выпадающее окно покупателей с полем суммы.
+            popup = receipts.open_row_popup("customers")
+            popup.edits[buyer.id].setText("12 345,67")
+            app.processEvents()
+            popup.grab().save(str(OUT / "receipts-customers-popup.png"))
+            print("saved receipts-customers-popup")
+            popup.close()
             window.customers_view.refresh()
             window.customers_view.goto_date(date(2026, 10, 28))
             window.show_page(3)

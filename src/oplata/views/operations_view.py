@@ -1,11 +1,11 @@
-"""Экран «Оплаты» — журнал оплат с фильтрами.
+"""Журнал операций: фильтры, добавление, правка и удаление.
 
-С v0.8.0 отдельная вкладка «Операции» удалена по запросу пользователя;
-этот экран открывается из вкладки «Оплаты» и показывает только операции
-типа «Оплата». Оплату можно добавить вручную, отредактировать (двойной
-клик или кнопка «Изменить») и удалить с подтверждением. Долги здесь не
-считаются: журнал показывает исходные операции, а расчёты таблицы
-поставщиков делает calc.py.
+С v0.9.0 журнал — не отдельная вкладка, а окно «Операции контрагента»,
+которое открывается кнопкой «Операции и долги» в карточке поставщика или
+покупателя (вкладка «Поступление и оплаты» занята блоками ввода сумм).
+С ``fixed_kind`` журнал показывает один тип операций (прежний экран
+«Оплаты»), без него — все типы. Долги здесь не считаются: журнал
+показывает исходные операции, расчёты делает calc.py.
 """
 
 from __future__ import annotations
@@ -36,7 +36,7 @@ from ..models import KIND_INCOME, KIND_PAYMENT, KIND_SALE, Operation
 from ..storage import DataStore
 from ..widgets import danger_button, green_button, make_panel
 
-ALL_SUPPLIERS = "— все поставщики —"
+ALL_COUNTERPARTIES = "— все контрагенты —"
 ALL_OPERATIONS = "Все операции"
 
 
@@ -95,6 +95,7 @@ class OperationsView(QWidget):
         filters = QHBoxLayout()
         filters.setSpacing(8)
         self.supplier_filter = QComboBox()
+        self.supplier_filter.setMinimumWidth(220)
         self.supplier_filter.currentIndexChanged.connect(lambda *_: self.refresh())
         filters.addWidget(self.supplier_filter)
 
@@ -104,7 +105,7 @@ class OperationsView(QWidget):
                 [ALL_OPERATIONS, KIND_INCOME, KIND_SALE, KIND_PAYMENT]
             )
         else:
-            # Экран «Оплаты» всегда показывает один фиксированный тип.
+            # Фиксированный тип — как было на прежнем экране «Оплаты».
             self.kind_filter.addItems([self.fixed_kind])
             self.kind_filter.setVisible(False)
         self.kind_filter.currentIndexChanged.connect(lambda *_: self.refresh())
@@ -129,7 +130,9 @@ class OperationsView(QWidget):
         filters.addWidget(self.date_to)
 
         self.search = QLineEdit()
-        self.search.setPlaceholderText("Поиск: поставщик, документ, комментарий…")
+        self.search.setPlaceholderText(
+            "Поиск: контрагент, документ, комментарий…"
+        )
         self.search.setMinimumWidth(260)
         self.search.setMaximumWidth(560)
         self.search.textChanged.connect(lambda *_: self.refresh())
@@ -165,7 +168,7 @@ class OperationsView(QWidget):
 
         self.table = QTableWidget(0, 6)
         self.table.setHorizontalHeaderLabels(
-            ["Тип", "Поставщик", "Дата", "Сумма", "Документ", "Комментарий"]
+            ["Тип", "Контрагент", "Дата", "Сумма", "Документ", "Комментарий"]
         )
         self.table.verticalHeader().setVisible(False)
         self.table.setSelectionBehavior(
@@ -189,25 +192,36 @@ class OperationsView(QWidget):
         panel_layout.addWidget(self.table)
         root.addWidget(panel, stretch=1)
 
-        self.refresh_supplier_filter()
+        self.refresh_counterparty_filter()
         self.refresh()
 
     # --------------------------------------------------------------- фильтры
-    def refresh_supplier_filter(self) -> None:
+    def refresh_counterparty_filter(self) -> None:
+        """Список фильтра: поставщики и покупатели (ввод есть в обеих таблицах)."""
+
         current_id = self.supplier_filter.currentData()
         self.supplier_filter.blockSignals(True)
         self.supplier_filter.clear()
-        self.supplier_filter.addItem(ALL_SUPPLIERS, "")
+        self.supplier_filter.addItem(ALL_COUNTERPARTIES, "")
         for supplier in self.store.data.suppliers:
             self.supplier_filter.addItem(supplier.name, supplier.id)
+        for customer in self.store.data.customers:
+            self.supplier_filter.addItem(customer.name, customer.id)
         index = self.supplier_filter.findData(current_id or "")
         self.supplier_filter.setCurrentIndex(max(index, 0))
         self.supplier_filter.blockSignals(False)
 
-    def set_supplier_filter(self, supplier_id: str) -> None:
-        index = self.supplier_filter.findData(supplier_id)
+    # Прежнее имя сохранено: экран и тесты могут обновлять фильтр по-старому.
+    refresh_supplier_filter = refresh_counterparty_filter
+
+    def set_counterparty_filter(self, counterparty_id: str) -> None:
+        index = self.supplier_filter.findData(counterparty_id)
         if index >= 0:
             self.supplier_filter.setCurrentIndex(index)
+            self.refresh()
+
+    def set_supplier_filter(self, supplier_id: str) -> None:
+        self.set_counterparty_filter(supplier_id)
 
     def reset_filters(self) -> None:
         self.supplier_filter.setCurrentIndex(0)

@@ -1,4 +1,9 @@
-"""Экран «Данные» — календарь «Выходные и рабочие дни» (макет 05).
+"""Экран «Данные» — «Настройка календаря» и «Администрирование» (макет 05).
+
+С v0.9.0 календарь живёт в раскрывающейся плашке «Настройка календаря»
+(свёрнута по умолчанию: экран нужен редко, а места занимает много). Рядом
+добавлена плашка «Администрирование» — путь к файлу данных, копия данных
+и счётчики.
 
 Алгоритм пользователя (v0.6.0):
 
@@ -29,7 +34,7 @@ import calendar as calendar_module
 from collections.abc import Callable
 from datetime import date
 
-from PySide6.QtCore import Qt
+from PySide6.QtCore import QUrl, Qt
 from PySide6.QtWidgets import (
     QButtonGroup,
     QCheckBox,
@@ -46,7 +51,7 @@ from PySide6.QtWidgets import (
 from .. import styles
 from ..dates import MONTHS_RU, WEEKDAYS_RU_TITLE
 from ..storage import DataStore
-from ..widgets import blue_button, make_panel
+from ..widgets import CollapsiblePanel, blue_button
 
 MONTHS_PER_ROW = 5  # как на макете: Январь–Май в первой строке
 
@@ -71,7 +76,9 @@ class DataView(QWidget):
         root.setContentsMargins(10, 10, 10, 10)
         root.setSpacing(12)
 
-        panel, panel_layout = make_panel()
+        # --- раскрывающаяся плашка «Настройка календаря» ---
+        self.calendar_panel = CollapsiblePanel("Настройка календаря", expanded=False)
+        panel_layout = self.calendar_panel.content_layout
 
         title = QLabel("📅  Выходные и рабочие дни")
         title.setObjectName("PanelTitle")
@@ -129,29 +136,102 @@ class DataView(QWidget):
         # --- сетка из 12 мини-календарей ---
         self.scroll = QScrollArea()
         self.scroll.setWidgetResizable(True)
+        self.scroll.setMinimumHeight(420)
         panel_layout.addWidget(self.scroll, stretch=1)
-        root.addWidget(panel, stretch=1)
+        root.addWidget(self.calendar_panel, stretch=1)
 
-        # --- служебный блок: где лежит файл данных ---
-        info_panel, info_layout = make_panel()
-        info_title = QLabel("Файл данных")
-        info_title.setObjectName("PanelTitle")
-        info_layout.addWidget(info_title)
+        # --- раскрывающаяся плашка «Администрирование» ---
+        self.admin_panel = CollapsiblePanel("Администрирование", expanded=False)
+        admin_layout = self.admin_panel.content_layout
+
         self.path_label = QLabel(str(self.store.path))
         self.path_label.setObjectName("Muted")
         self.path_label.setTextInteractionFlags(
             Qt.TextInteractionFlag.TextSelectableByMouse
         )
-        info_layout.addWidget(self.path_label)
-        info_hint = QLabel(
-            "Импорт / экспорт / резервные копии — позже (см. docs/ROADMAP.md)."
+        admin_layout.addWidget(self.path_label)
+
+        admin_buttons = QHBoxLayout()
+        admin_buttons.setSpacing(8)
+        self.open_folder_button = QPushButton("Открыть папку данных")
+        self.open_folder_button.clicked.connect(self._open_data_folder)
+        admin_buttons.addWidget(self.open_folder_button)
+        self.backup_button = QPushButton("Создать резервную копию")
+        self.backup_button.clicked.connect(self._make_backup)
+        admin_buttons.addWidget(self.backup_button)
+        self.reload_button = QPushButton("Перечитать файл")
+        self.reload_button.setToolTip(
+            "Заново прочитать data.json; несохранённые правки пропадут."
         )
-        info_hint.setObjectName("Muted")
-        info_layout.addWidget(info_hint)
-        root.addWidget(info_panel)
+        self.reload_button.clicked.connect(self._reload_file)
+        admin_buttons.addWidget(self.reload_button)
+        admin_buttons.addStretch(1)
+        admin_layout.addLayout(admin_buttons)
+
+        self.stats_label = QLabel("")
+        self.stats_label.setObjectName("Muted")
+        self.stats_label.setWordWrap(True)
+        admin_layout.addWidget(self.stats_label)
+
+        self.admin_status_label = QLabel("")
+        self.admin_status_label.setObjectName("Muted")
+        self.admin_status_label.setWordWrap(True)
+        admin_layout.addWidget(self.admin_status_label)
+
+        admin_hint = QLabel(
+            "Импорт / экспорт и права пользователей — позже (см. docs/ROADMAP.md)."
+        )
+        admin_hint.setObjectName("Muted")
+        admin_hint.setWordWrap(True)
+        admin_layout.addWidget(admin_hint)
+        root.addWidget(self.admin_panel)
+        root.addStretch(1)  # плашки прижаты к верху, лишнее место — внизу
 
         self.refresh()
         self._update_save_state()
+
+    # ------------------------------------------------------- администрирование
+    def _open_data_folder(self) -> None:
+        """Открыть папку с data.json средствами системы."""
+
+        from PySide6.QtGui import QDesktopServices
+
+        QDesktopServices.openUrl(QUrl.fromLocalFile(str(self.store.path.parent)))
+
+    def _make_backup(self) -> None:
+        """Скопировать data.json рядом, с датой и временем в имени."""
+
+        from datetime import datetime
+
+        stamp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
+        target = self.store.path.with_name(f"data-backup-{stamp}.json")
+        try:
+            target.write_bytes(self.store.path.read_bytes())
+        except OSError as error:
+            self.admin_status_label.setText(f"Не удалось скопировать: {error}")
+            return
+        self.admin_status_label.setText(f"Копия создана: {target.name}")
+
+    def _reload_file(self) -> None:
+        """Перечитать файл данных (для ручной правки/восстановления копии)."""
+
+        self.store.data = self.store._load()  # noqa: SLF001 - тот же путь загрузки
+        self._pending_overrides = dict(self.store.data.day_overrides)
+        self.refresh()
+        self._update_admin_stats("Файл перечитан")
+        if self.on_calendar_saved is not None:
+            self.on_calendar_saved()
+
+    def _update_admin_stats(self, message: str = "") -> None:
+        data = self.store.data
+        self.stats_label.setText(
+            f"Поставщиков: {len(data.suppliers)} · "
+            f"Покупателей: {len(data.customers)} · "
+            f"Операций: {len(data.operations)} · "
+            f"Поступлений наличными/по картам: {len(data.cash_receipts)} · "
+            f"Отметок календаря: {len(data.day_overrides)}"
+        )
+        self.admin_status_label.setText(message)
 
     # ------------------------------------------------------------ навигация
     def _shift_year(self, delta: int) -> None:
@@ -174,6 +254,7 @@ class DataView(QWidget):
         if old is not None:
             old.deleteLater()
         self.scroll.setWidget(container)
+        self._update_admin_stats()
         self._update_save_state()
 
     def _build_month(self, year: int, month: int) -> QFrame:

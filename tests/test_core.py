@@ -8,12 +8,19 @@ import pytest
 from oplata import calc
 from oplata.dates import fmt_date, fmt_money, month_title, parse_money, week_days, week_monday
 from oplata.models import (
+    CARD_SOURCE,
+    CASH_SOURCE,
     KIND_INCOME,
     KIND_PAYMENT,
     AppData,
+    CashReceipt,
     Counterparty,
     Operation,
+    add_cash_receipt,
+    add_customer_receipt,
     add_delivery,
+    add_supplier_payment,
+    cash_receipt_amount,
     daily_operation_total,
     seed_data,
     set_daily_operation,
@@ -257,3 +264,62 @@ def test_debt_is_archival_payment_does_not_reduce_it():
     assert calc.week_debt(date(2026, 11, 2), data, [supplier]) == Decimal("0")
     assert calc.overdue_amount(data, supplier, date(2026, 10, 27)) == Decimal("1000")  # срок 26.10 уже прошёл
     assert calc.overdue_amount(data, supplier, date(2026, 10, 28)) == Decimal("1500")
+
+
+def test_cash_receipts_round_trip_and_old_files(tmp_path):
+    """Наличные/карты: новое поле данных переживает перезапись файла.
+
+    Поле ``cash_receipts`` добавлено в v0.9.0; в файлах более старых
+    версий его нет — такие данные должны читаться с пустым списком.
+    """
+    path = tmp_path / "data.json"
+    store = DataStore(path)
+    add_cash_receipt(store.data, CASH_SOURCE, "2026-10-27", Decimal("1500.75"))
+    add_cash_receipt(store.data, CARD_SOURCE, "2026-10-27", Decimal("2000"))
+    store.save()
+
+    reloaded = DataStore(path)
+    assert [(r.source, r.date, r.amount) for r in reloaded.data.cash_receipts] == [
+        ("cash", "2026-10-27", "1500.75"),
+        ("card", "2026-10-27", "2000.00"),
+    ]
+    assert sum(cash_receipt_amount(r) for r in reloaded.data.cash_receipts) == (
+        Decimal("3500.75")
+    )
+
+    # Старый файл без нового поля читается без ошибок.
+    old_file = tmp_path / "old.json"
+    old_file.write_text(
+        '{"schema": 1, "suppliers": [], "customers": [], "operations": [],'
+        ' "day_overrides": {}}',
+        encoding="utf-8",
+    )
+    assert DataStore(old_file).data.cash_receipts == []
+
+    # Битый source не проходит дальше модели.
+    broken = CashReceipt.from_dict({"source": "кэш", "amount": "10"})
+    assert broken.source == CASH_SOURCE
+
+
+def test_receipts_helpers_write_expected_operations():
+    """Поступление покупателя и оплата поставщику — операции «Оплата»."""
+    customer = Counterparty(name="Покупатель")
+    supplier = Counterparty(name="Поставщик")
+    data = AppData(customers=[customer], suppliers=[supplier])
+
+    add_customer_receipt(data, customer.id, "2026-10-27", Decimal("3000"))
+    add_supplier_payment(data, supplier.id, "2026-10-27", Decimal("4500.5"))
+
+    assert [(op.kind, op.date, op.amount, op.due_date) for op in data.operations] == [
+        ("Оплата", "2026-10-27", "3000.00", ""),
+        ("Оплата", "2026-10-27", "4500.50", ""),
+    ]
+    assert daily_operation_total(
+        data.operations, customer.id, "2026-10-27", KIND_PAYMENT
+    ) == Decimal("3000")
+    assert daily_operation_total(
+        data.operations, supplier.id, "2026-10-27", KIND_PAYMENT
+    ) == Decimal("4500.50")
+    # Срока оплаты у оплат нет — календарь их не сдвигает.
+    assert calc.operation_due_date(data.operations[0], customer, {}) is None
+    assert calc.operation_due_date(data.operations[1], supplier, {}) is None

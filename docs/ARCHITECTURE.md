@@ -38,23 +38,26 @@ oplata-2/
     styles.py                   # цвета по макетам + QSS
     widgets.py                  # панели, цветные кнопки, поля даты/сумм, KPI-карточки
     dates.py       [без Qt]     # недели Пн–Вс, русские месяцы, формат сумм
-    models.py      [без Qt]     # Counterparty, Operation, AppData, seed_data()
+    models.py      [без Qt]     # Counterparty, Operation, CashReceipt, AppData, seed_data()
     storage.py     [без Qt]     # DataStore: JSON в %APPDATA%\OplataStroymarket\data.json
     calc.py        [без Qt]     # срок/долг поставщиков; «Сводка» пока заглушки
     reports.py     [без Qt]     # HTML печатной формы «Сводки» из экранного снимка
     views/
       summary_view.py           # Сводка + снимок значений и QPrintPreviewDialog
       week_view.py              # Поставщики и Покупатели (kind="supplier"/"customer")
-      operations_view.py        # Оплаты (OperationsView с fixed_kind="Оплата")
-      data_view.py              # Данные (черновик календаря на год + явное «Сохранить»)
+      receipts_view.py          # Поступление и оплаты (блоки, строки, всплывающие окна сумм)
+      operations_view.py        # Журнал операций (окно из карточки контрагента)
+      data_view.py              # Данные: «Настройка календаря» + «Администрирование»
     dialogs/
       counterparty_card.py      # Карточки поставщика/покупателя
+      operations_journal_dialog.py  # Окно «Операции контрагента» (журнал)
       delivery_dialog.py        # Окно «Поставка» (дата, сумма с НДС, срок оплаты)
       realization_dialog.py     # Окно «Реализация» покупателя (без срока)
       operation_dialog.py       # Добавление/редактирование операции/оплаты
   tests/
     test_core.py                # даты, модели, storage, срок и архивный долг
-    test_ui_smoke.py            # 5 экранов, поставка, ввод ячеек, поле суммы, календарь, CRUD, печать PDF
+    test_ui_smoke.py            # 5 экранов, поставка, ввод ячеек, поле суммы, блоки поступлений,
+                                # плашки «Данных», календарь, CRUD журнала, печать PDF
     test_reports.py             # HTML печатной «Сводки»: KPI, таблица, escaping, пустое состояние
     test_packaging.py           # Windows VS_VERSION_INFO и синхронность версий
   .github/workflows/build-windows.yml
