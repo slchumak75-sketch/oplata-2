@@ -169,9 +169,13 @@ jobs:
 
           # Тихая установка во временную папку и запуск EXE с --self-test:
           # проверяем, что всё распаковалось и программа стартует.
+          # Start-Process -Wait обязателен: установщик — GUI-приложение,
+          # обычный вызов вернул бы управление сразу.
           $target = Join-Path $env:RUNNER_TEMP "OplataInstallTest"
-          & $setup.FullName /VERYSILENT /NORESTART /SUPPRESSMSGBOXES /DIR=$target
-          if ($LASTEXITCODE -ne 0) { throw "Silent install failed, exit code $LASTEXITCODE" }
+          $install = Start-Process -FilePath $setup.FullName `
+            -ArgumentList "/VERYSILENT /NORESTART /SUPPRESSMSGBOXES /SP- /NOCANCEL /DIR=`"$target`"" `
+            -Wait -PassThru
+          if ($install.ExitCode -ne 0) { throw "Silent install failed, exit code $($install.ExitCode)" }
           $installed = Join-Path $target "Oplata.exe"
           if (-not (Test-Path $installed)) { throw "Installer did not create $installed" }
           $p = Start-Process -FilePath $installed -ArgumentList "--self-test" -Wait -PassThru
