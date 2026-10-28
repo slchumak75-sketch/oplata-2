@@ -1,11 +1,12 @@
-"""Главное окно: тёмно-синяя шапка + 5 экранов (QStackedWidget).
+"""Главное окно: тёмно-синяя шапка + 4 экрана (QStackedWidget).
 
 Шапка: слева «▦ Оплаты / Строймаркет», далее вкладки
-Сводка | Поступление и оплаты | Поставщики | Покупатели | Данные, справа
-кнопки «Карточка поставщика» и «Карточка покупателя». Вкладки «Операции»
-нет, а журнал операций с v0.9.0 открывается окном из карточки контрагента
-(кнопка «Операции и долги»), потому что вкладка занята блоками
-«Поступление» и «Оплата».
+Поступление и оплаты | Поставщики | Покупатели | Данные. С v0.11.0
+вкладки «Сводка» нет: панель «Сводка» стоит справа на вкладке
+«Поступление и оплаты» и занимает половину окна по ширине. Кнопки
+карточек перенесены в панели таблиц (слева от «Очистить суммы»).
+Журнал операций открывается окном из карточки контрагента (кнопка
+«Операции и долги»).
 """
 
 from __future__ import annotations
@@ -35,13 +36,12 @@ from .views.summary_view import SummaryView
 from .views.week_view import WeekView
 
 NAV_TITLES = (
-    "Сводка",
     "Поступление и оплаты",
     "Поставщики",
     "Покупатели",
     "Данные",
 )
-IDX_SUMMARY, IDX_RECEIPTS, IDX_SUPPLIERS, IDX_CUSTOMERS, IDX_DATA = range(5)
+IDX_RECEIPTS, IDX_SUPPLIERS, IDX_CUSTOMERS, IDX_DATA = range(4)
 
 
 class MainWindow(QMainWindow):
@@ -80,9 +80,12 @@ class MainWindow(QMainWindow):
             on_data_changed=self.refresh_after_week_edit,
             on_open_realization=self.open_realization_dialog,
         )
-        # Вкладка «Поступление и оплаты»: два блока ввода сумм за дату.
+        # «Сводка» больше не отдельная вкладка: она стоит справа на
+        # вкладке «Поступление и оплаты» (запрос пользователя v0.11.0).
         self.receipts_view = ReceiptsView(
-            store, on_data_changed=self.refresh_after_operation_change
+            store,
+            on_data_changed=self.refresh_after_operation_change,
+            summary_widget=self.summary_view,
         )
         self.data_view = DataView(
             store, on_calendar_saved=self.refresh_after_calendar_change
@@ -90,7 +93,6 @@ class MainWindow(QMainWindow):
 
         self.stack = QStackedWidget()
         for view in (
-            self.summary_view,
             self.receipts_view,
             self.suppliers_view,
             self.customers_view,
@@ -100,7 +102,7 @@ class MainWindow(QMainWindow):
 
         root_layout.addWidget(self._build_header())
         root_layout.addWidget(self.stack, stretch=1)
-        self.show_page(IDX_SUMMARY)  # стартовый экран — «Сводка»
+        self.show_page(IDX_RECEIPTS)  # стартовый экран — «Поступление и оплаты»
 
     # ------------------------------------------------------------------ шапка
     def _build_header(self) -> QFrame:
@@ -141,25 +143,8 @@ class MainWindow(QMainWindow):
             layout.addWidget(btn)
 
         layout.addStretch(1)
-
-        card_style = (
-            f"QPushButton{{background:#ffffff;color:{styles.TEXT};border:none;"
-            "border-radius:8px;padding:8px 16px;font-weight:700}"
-            "QPushButton:hover{background:#e8eefb}"
-        )
-        supplier_card_btn = QPushButton("🏭  Карточка поставщика")
-        supplier_card_btn.setStyleSheet(card_style)
-        supplier_card_btn.clicked.connect(
-            lambda: self.open_counterparty_card("supplier", None)
-        )
-        layout.addWidget(supplier_card_btn)
-
-        customer_card_btn = QPushButton("🛒  Карточка покупателя")
-        customer_card_btn.setStyleSheet(card_style)
-        customer_card_btn.clicked.connect(
-            lambda: self.open_counterparty_card("customer", None)
-        )
-        layout.addWidget(customer_card_btn)
+        # Кнопки «Карточка поставщика»/«Карточка покупателя» с v0.11.0
+        # живут в панелях таблиц — там же, где «Очистить суммы».
         return header
 
     # -------------------------------------------------------------- навигация
@@ -266,6 +251,7 @@ class MainWindow(QMainWindow):
         self.suppliers_view.refresh()
         self.customers_view.refresh()
         self.summary_view.refresh()
+        self.receipts_view.refresh()
 
     def _forget_journal_dialog(self, dialog: OperationsJournalDialog) -> None:
         if dialog in self._journal_dialogs:
@@ -276,5 +262,6 @@ class MainWindow(QMainWindow):
         self.summary_view.refresh()
         self.suppliers_view.refresh()
         self.customers_view.refresh()
+        self.receipts_view.refresh_outgoing_rows()
         self.receipts_view.refresh()
         # DataView от контрагентов не зависит — не трогаем, чтобы не сбрасывать год.

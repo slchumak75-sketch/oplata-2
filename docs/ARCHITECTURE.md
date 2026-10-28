@@ -45,7 +45,7 @@ oplata-2/
     views/
       summary_view.py           # Сводка + снимок значений и QPrintPreviewDialog
       week_view.py              # Поставщики и Покупатели (kind="supplier"/"customer")
-      receipts_view.py          # Поступление и оплаты (блоки-таблицы, ввод в ячейки, окно справа)
+      receipts_view.py          # Поступление и оплаты: слева блоки-таблицы (ввод в ячейки, окно справа), справа панель «Сводка»
       operations_view.py        # Журнал операций (окно из карточки контрагента)
       data_view.py              # Данные: «Настройка календаря» + «Администрирование»
     dialogs/
@@ -76,7 +76,8 @@ data.json ──DataStore──> AppData ──> экраны (views) ──кл
 
 - `MainWindow.refresh_all()` перестраивает экраны после правок в карточках.
 - После CRUD в журнале `OperationsView` перечитывает себя и вызывает
-  `MainWindow.refresh_after_operation_change()` (недельные таблицы + «Сводка»).
+  `MainWindow.refresh_after_operation_change()` (недельные таблицы +
+  «Сводка» + блок «Оплата» на вкладке «Поступление и оплаты»).
 - Экран «Данные» от контрагентов не зависит и при `refresh_all()` не трогается.
   Его календарные клики меняют только `_pending_overrides`; кнопка
   «Сохранить» пишет `day_overrides`, вызывает `store.save()` и через

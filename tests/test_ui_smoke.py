@@ -14,7 +14,8 @@ import pytest
 
 pytest.importorskip("PySide6")
 
-from PySide6.QtWidgets import QApplication  # noqa: E402
+from PySide6.QtCore import Qt  # noqa: E402
+from PySide6.QtWidgets import QApplication, QMessageBox  # noqa: E402
 
 
 @pytest.fixture(scope="session")
@@ -35,13 +36,12 @@ def test_main_window_all_pages(qt_app, store):
 
     window = MainWindow(store)
     assert [button.text() for button in window.nav_buttons] == [
-        "Сводка",
         "Поступление и оплаты",
         "Поставщики",
         "Покупатели",
         "Данные",
     ]
-    assert window.stack.count() == 5
+    assert window.stack.count() == 4  # вкладки «Сводка» больше нет
     # Вкладка «Поступление и оплаты»: два блока один под другим, в каждом
     # таблица со столбцами «Сумма/Неделя/Месяц/Год».
     view = window.receipts_view
@@ -58,11 +58,17 @@ def test_main_window_all_pages(qt_app, store):
         "Месяц",
         "Год",
     ]
-    # Блок «Оплата» стоит под блоком «Поступление».
-    layout = view.layout()
+    # Блок «Оплата» стоит под блоком «Поступление» (в левой колонке).
+    layout = view.left_layout
     assert layout.indexOf(view.outgoing) > layout.indexOf(view.incoming)
+    # «Сводка» — панель справа на этой же вкладке, отдельной вкладки нет.
+    assert view.summary_widget is window.summary_view
+    assert window.stack.indexOf(window.summary_view) == -1
+    # Кнопки карточек перенесены из шапки в панели таблиц.
+    assert window.suppliers_view.card_button.text() == "Карточка поставщика"
+    assert window.customers_view.card_button.text() == "Карточка покупателя"
     assert not hasattr(window, "operations_view")
-    for index in range(5):
+    for index in range(4):
         window.show_page(index)
         assert window.stack.currentIndex() == index
     # В сводке — 5 демо-поставщиков с макетов
@@ -701,8 +707,8 @@ def test_receipts_outgoing_block_saves_supplier_payment(qt_app, store):
     supplier = next(s for s in store.data.suppliers if s.name == "ббб")
     window = MainWindow(store)
     view = window.receipts_view
-    # Блок «Оплата» расположен под блоком «Поступление».
-    layout = view.layout()
+    # Блок «Оплата» расположен под блоком «Поступление» (в левой колонке).
+    layout = view.left_layout
     assert layout.indexOf(view.outgoing) > layout.indexOf(view.incoming)
     view.outgoing.set_date(date(2026, 10, 27))
 
@@ -755,4 +761,146 @@ def test_data_panels_are_collapsible(qt_app, store):
     assert str(store.path) in data.path_label.text()
     assert "Поставщиков: 5" in data.stats_label.text()
     assert data.save_button.text() == "Сохранить"
+    window.close()
+
+
+from oplata.views.receipts_view import (  # noqa: E402
+    COL_AMOUNT,
+    COL_WEEK,
+    COL_YEAR,
+)
+
+
+def test_receipts_popup_keeps_saved_amounts(qt_app, store):
+    """Повторное открытие окна показывает уже введённые суммы."""
+    from datetime import date
+
+    from oplata.app import MainWindow
+    from oplata.models import Counterparty
+
+    buyer = Counterparty(name="Покупатель Д")
+    store.data.customers.append(buyer)
+    window = MainWindow(store)
+    window.show()
+    qt_app.processEvents()
+    view = window.receipts_view
+    view.set_date(date(2026, 10, 27))
+
+    popup = view.open_popup("customers", row=2)
+    assert popup.edits[buyer.id].text() == ""  # пока ничего не вводили
+    popup.edits[buyer.id].setText("2 500")
+    popup._save()
+
+    again = view.open_popup("customers", row=2)
+    assert again.edits[buyer.id].text() == "2 500,00"
+    assert again.total_label.text() == "2 500,00"
+    # Очистка поля и сохранение убирают сумму дня.
+    again.edits[buyer.id].setText("")
+    again._save()
+    assert [op for op in store.data.operations if op.kind == "Оплата"] == []
+    assert view.incoming.amount_text("customers") == ""
+    window.close()
+
+
+def test_other_payment_rows_add_rename_and_remove(qt_app, store):
+    """Блок «Оплата»: свои виды оплат, кнопки «+» и «−»."""
+    from datetime import date
+
+    from oplata.app import MainWindow
+
+    window = MainWindow(store)
+    view = window.receipts_view
+    view.outgoing.set_date(date(2026, 10, 27))
+    assert view.outgoing.row_keys == ["suppliers"]  # пока только поставщики
+
+    view.add_other_row()
+    assert view.outgoing.row_keys == ["suppliers", "other:Новый вид оплаты"]
+
+    # Название вида оплаты вводится текстом прямо в ячейку.
+    name_item = view.outgoing.table.item(1, 0)
+    assert name_item.flags() & Qt.ItemFlag.ItemIsEditable
+    name_item.setText("Аренда")
+    assert view.outgoing.row_keys == ["suppliers", "other:Аренда"]
+
+    # Сумма — прямо в ячейку, итоги считаются по названию.
+    view.outgoing.table.item(1, COL_AMOUNT).setText("12 000")
+    assert view.outgoing.amount_text("other:Аренда") == "12 000,00"
+    assert view.outgoing.amount_text("other:Аренда", COL_WEEK) == "12 000,00"
+    assert view.outgoing.amount_text("other:Аренда", COL_YEAR) == "12 000,00"
+    assert [(p.name, p.date, p.amount) for p in store.data.other_payments] == [
+        ("Аренда", "2026-10-27", "12000.00")
+    ]
+
+    # Вторая строка и удаление первой (кнопка «−»).
+    view.add_other_row()
+    assert len(view.outgoing.row_keys) == 3
+    view.outgoing.table.setCurrentCell(1, 0)
+    monkeypatched = QMessageBox.question
+    QMessageBox.question = staticmethod(
+        lambda *args, **kwargs: QMessageBox.StandardButton.Yes
+    )
+    try:
+        view.remove_other_row("other:Аренда")
+    finally:
+        QMessageBox.question = monkeypatched
+    assert view.outgoing.row_keys == [
+        "suppliers",
+        "other:Новый вид оплаты",
+    ]
+    assert [p.name for p in store.data.other_payments] == ["Новый вид оплаты"]
+
+    # Постоянную строку «Поставщики» удалить нельзя.
+    monkeypatched = QMessageBox.information
+    QMessageBox.information = staticmethod(lambda *args, **kwargs: None)
+    try:
+        view.outgoing.table.setCurrentCell(0, 0)
+        view.outgoing._remove_selected()
+    finally:
+        QMessageBox.information = monkeypatched
+    assert view.outgoing.row_keys[0] == "suppliers"
+    window.close()
+
+
+def test_supplier_payments_sync_both_ways(qt_app, store):
+    """Суммы поставщиков видны и здесь, и в недельной таблице."""
+    from datetime import date
+
+    from oplata.app import MainWindow
+
+    supplier = next(s for s in store.data.suppliers if s.name == "ббб")
+    window = MainWindow(store)
+    window.show()
+    qt_app.processEvents()
+    view = window.receipts_view
+    view.set_date(date(2026, 10, 27))
+
+    # Из блока «Оплата» — в таблицу поставщиков.
+    popup = view.open_popup("suppliers", row=0)
+    popup.edits[supplier.id].setText("4 500")
+    popup._save()
+    assert view.outgoing.amount_text("suppliers") == "4 500,00"
+
+    window.suppliers_view.goto_date(date(2026, 10, 27))
+    table = window.suppliers_view.table
+    bbb_row = 4 + [s.name for s in store.data.suppliers].index("ббб")
+    payment_cell = table.item(bbb_row, 3 + 1 * 3 + 2)
+    assert payment_cell.text() == "4 500,00"
+
+    # И обратно: правка в таблице поставщиков видна в блоке «Оплата».
+    payment_cell.setText("7 000")
+    assert view.outgoing.amount_text("suppliers") == "7 000,00"
+    check = view.open_popup("suppliers", row=0)
+    assert check.edits[supplier.id].text() == "7 000,00"
+    check.close()
+
+    # То же самое для покупателей.
+    from oplata.models import Counterparty
+
+    buyer = Counterparty(name="Покупатель Е")
+    store.data.customers.append(buyer)
+    window.customers_view.goto_date(date(2026, 10, 27))
+    customers_table = window.customers_view.table
+    buyer_row = 4 + [c.name for c in store.data.customers].index("Покупатель Е")
+    customers_table.item(buyer_row, 3 + 1 * 2 + 1).setText("1 750")
+    assert view.incoming.amount_text("customers") == "1 750,00"
     window.close()

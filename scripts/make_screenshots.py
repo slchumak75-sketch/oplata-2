@@ -35,7 +35,9 @@ from oplata.models import Counterparty, Operation  # noqa: E402
 from oplata.storage import DataStore  # noqa: E402
 
 OUT = ROOT / "docs" / "screenshots"
-PAGES = ["summary", "receipts", "suppliers", "customers", "data"]
+# Сводка больше не вкладка: она стоит справа на вкладке
+# «Поступление и оплаты» и попадает в снимок receipts.png.
+PAGES = ["receipts", "suppliers", "customers", "data"]
 
 
 def main() -> int:
@@ -156,9 +158,22 @@ def main() -> int:
                     ),
                 ]
             )
+            # Свой вид оплаты в блоке «Оплата»: строка добавляется «+»,
+            # название и сумма вводятся прямо в ячейки.
+            from oplata.models import add_other_payment, set_daily_other_payment
+
+            add_other_payment(store.data, "Аренда", "2026-10-27")
+            set_daily_other_payment(
+                store.data, "Аренда", "2026-10-27", Decimal("45000")
+            )
+            add_other_payment(store.data, "Зарплата", "2026-10-27")
+            set_daily_other_payment(
+                store.data, "Зарплата", "2026-10-21", Decimal("160000")
+            )
             store.save()
+            receipts.refresh_outgoing_rows()
             receipts.refresh()
-            window.show_page(1)
+            window.show_page(0)
             app.processEvents()
             window.grab().save(str(OUT / "receipts.png"))
             print("saved receipts")
@@ -170,9 +185,15 @@ def main() -> int:
             popup.grab().save(str(OUT / "receipts-customers-popup.png"))
             print("saved receipts-customers-popup")
             popup.close()
+            # Окно поставщиков: суммы из блока «Оплата» уже в полях.
+            supplier_popup = receipts.open_popup("suppliers", row=0)
+            app.processEvents()
+            supplier_popup.grab().save(str(OUT / "receipts-suppliers-popup.png"))
+            print("saved receipts-suppliers-popup")
+            supplier_popup.close()
             window.customers_view.refresh()
             window.customers_view.goto_date(date(2026, 10, 28))
-            window.show_page(3)
+            window.show_page(2)
             app.processEvents()
             window.grab().save(str(OUT / "customers.png"))
             print("saved customers with realization")

@@ -241,6 +241,19 @@ class WeekView(QWidget):
 
         bar.addStretch(1)
 
+        # Кнопка карточки живёт в панели таблицы (с v0.11.0), а не в шапке
+        # окна: пользователь просил перенести её слева от «Очистить суммы».
+        card_title = "Карточка поставщика" if self.kind == "supplier" else (
+            "Карточка покупателя"
+        )
+        self.card_button = QPushButton(card_title)
+        self.card_button.setToolTip(
+            f"Открыть карточку "
+            f"{'поставщика' if self.kind == 'supplier' else 'покупателя'}"
+        )
+        self.card_button.clicked.connect(lambda: self.on_open_card(None))
+        bar.addWidget(self.card_button)
+
         if self.kind == "supplier":
             clear_btn = danger_button("Очистить суммы")
             clear_btn.clicked.connect(self._clear_amounts)

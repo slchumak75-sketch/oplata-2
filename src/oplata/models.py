@@ -121,6 +121,41 @@ def cash_receipt_amount(receipt: CashReceipt) -> Decimal:
 
 
 @dataclass
+class OtherPayment:
+    """Прочий вид оплаты: своё название, сумма за дату (v0.11.0).
+
+    Пользователь добавляет такие строки на вкладке «Поступление и оплаты»
+    в блоке «Оплата» кнопкой «+»: название вводится прямо в ячейку,
+    сумма — в ячейку «Сумма». Запись хранится за конкретную дату, а
+    нарастающие итоги строки считаются по названию (по всему виду
+    оплаты).
+    """
+
+    date: str = ""      # ISO ``YYYY-MM-DD``
+    name: str = ""      # название вида оплаты, которое ввёл пользователь
+    amount: str = "0"   # Decimal строкой
+    id: str = field(default_factory=new_id)
+
+    @classmethod
+    def from_dict(cls, data: dict) -> "OtherPayment":
+        return cls(
+            date=str(data.get("date", "")),
+            name=str(data.get("name", "")),
+            amount=str(data.get("amount", "0")),
+            id=str(data.get("id") or new_id()),
+        )
+
+
+def other_payment_amount(payment: OtherPayment) -> Decimal:
+    """Сумма прочей оплаты как Decimal (битая строка — 0)."""
+
+    try:
+        return Decimal(payment.amount or "0")
+    except InvalidOperation:
+        return Decimal("0")
+
+
+@dataclass
 class AppData:
     """Весь сохраняемый набор данных (один JSON-файл, см. storage.py)."""
 
@@ -131,6 +166,9 @@ class AppData:
     # «Поступление и оплаты»). Поле добавлено в v0.9.0, в старых файлах
     # его нет — from_dict подставит пустой список.
     cash_receipts: list[CashReceipt] = field(default_factory=list)
+    # Прочие виды оплат блока «Оплата» (своё название + сумма за дату).
+    # Поле добавлено в v0.11.0; в старых файлах его нет — пустой список.
+    other_payments: list[OtherPayment] = field(default_factory=list)
     # Ручные отметки календаря «Выходные и рабочие дни»:
     # "YYYY-MM-DD" -> "off" (выходной) | "work" (рабочий).
     # Без отметки Сб/Вс считаются выходными, Пн–Пт — рабочими.
@@ -143,6 +181,7 @@ class AppData:
             "customers": [asdict(c) for c in self.customers],
             "operations": [asdict(o) for o in self.operations],
             "cash_receipts": [asdict(r) for r in self.cash_receipts],
+            "other_payments": [asdict(p) for p in self.other_payments],
             "day_overrides": dict(self.day_overrides),
         }
 
@@ -154,6 +193,9 @@ class AppData:
             operations=[Operation.from_dict(x) for x in data.get("operations", [])],
             cash_receipts=[
                 CashReceipt.from_dict(x) for x in data.get("cash_receipts", [])
+            ],
+            other_payments=[
+                OtherPayment.from_dict(x) for x in data.get("other_payments", [])
             ],
             day_overrides={
                 str(k): str(v) for k, v in data.get("day_overrides", {}).items()
@@ -424,3 +466,71 @@ def set_daily_cash_receipt(
     data.cash_receipts.append(
         CashReceipt(date=date_iso, source=source, amount=amount_text)
     )
+
+
+def other_payment_names(data: AppData) -> list[str]:
+    """Названия прочих видов оплат в порядке появления (без пустых)."""
+
+    names: list[str] = []
+    for payment in data.other_payments:
+        if payment.name and payment.name not in names:
+            names.append(payment.name)
+    return names
+
+
+def add_other_payment(data: AppData, name: str, date_iso: str) -> OtherPayment:
+    """Создать строку вида оплаты (сумма 0 — строка только появилась)."""
+
+    payment = OtherPayment(date=date_iso, name=name, amount="0")
+    data.other_payments.append(payment)
+    return payment
+
+
+def set_daily_other_payment(
+    data: AppData, name: str, date_iso: str, amount: Decimal | None
+) -> None:
+    """Задать сумму вида оплаты за день (ввод прямо в ячейку)."""
+
+    def matches(item: OtherPayment) -> bool:
+        return item.name == name and item.date == date_iso
+
+    if amount is None or amount == 0:
+        data.other_payments = [
+            item for item in data.other_payments if not matches(item)
+        ]
+        # Строку вида оплаты не теряем: остаётся запись с нулевой суммой.
+        if name and not any(item.name == name for item in data.other_payments):
+            data.other_payments.append(
+                OtherPayment(date=date_iso, name=name, amount="0")
+            )
+        return
+
+    amount_text = f"{amount.quantize(Decimal('0.01')):.2f}"
+    existing = [item for item in data.other_payments if matches(item)]
+    if existing:
+        existing[0].amount = amount_text
+        for extra in existing[1:]:
+            data.other_payments.remove(extra)
+        return
+    data.other_payments.append(
+        OtherPayment(date=date_iso, name=name, amount=amount_text)
+    )
+
+
+def rename_other_payment(data: AppData, old_name: str, new_name: str) -> None:
+    """Переименовать вид оплаты во всех его записях."""
+
+    cleaned = (new_name or "").strip()
+    if not cleaned or cleaned == old_name:
+        return
+    for item in data.other_payments:
+        if item.name == old_name:
+            item.name = cleaned
+
+
+def delete_other_payment(data: AppData, name: str) -> None:
+    """Убрать вид оплаты вместе со всеми его суммами."""
+
+    data.other_payments = [
+        item for item in data.other_payments if item.name != name
+    ]
