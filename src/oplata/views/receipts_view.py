@@ -117,9 +117,10 @@ def other_row_name(key: str) -> str:
     return key[len(OTHER_PREFIX):] if key.startswith(OTHER_PREFIX) else ""
 
 
-# Постоянная строка «Прочие поступления» в блоке «Поступление» (v0.13.0):
+# Постоянная строка «прочие поступления» в блоке «Поступление» (v0.13.0):
 # она не добавляется кнопкой «+» и не удаляется — только сумма в ячейку.
-OTHER_INCOME_NAME = "Прочие поступления"
+# v0.15.0: пользователь просил писать название строки со строчной буквы.
+OTHER_INCOME_NAME = "прочие поступления"
 FIXED_OTHER_ROW = other_row_key(OTHER_INCOME_NAME)
 
 
