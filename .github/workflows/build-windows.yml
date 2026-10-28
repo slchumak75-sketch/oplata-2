@@ -1,0 +1,231 @@
+# Автосборка Windows-приложения «Оплаты — Строймаркет».
+#
+# Быстрый режим (ADR-013):
+#   * push в main или arena/**, pull request -> тесты + folder-сборка;
+#   * push тега v* -> folder + single-file + публикация GitHub Release;
+#   * вручную: Actions -> Build Windows -> Run workflow
+#     (опция build_single добавляет single-file и без тега).
+#
+# Варианты:
+#   * Oplata-windows-folder-v...      — рекомендуемый, собирается всегда:
+#     папка Oplata (PyInstaller onedir, без самораспаковки);
+#   * Oplata-windows-single-file-v... — запасной: один Oplata.exe
+#     (PyInstaller onefile), только для релизов/ручного запуска с опцией.
+#
+# Где скачать: вкладка Actions -> нужный запуск -> Artifacts,
+# а для тегов — раздел Releases. Подробности: docs/BUILD.md
+
+name: Build Windows
+
+on:
+  push:
+    branches:
+      - main
+      - "arena/**"
+    tags:
+      - "v*"
+  pull_request:
+  workflow_dispatch:
+    inputs:
+      build_single:
+        description: "Также собрать запасной пакет одним файлом"
+        type: boolean
+        required: false
+        default: false
+
+permissions:
+  contents: write # нужно только шагу публикации Release на тегах v*
+
+concurrency:
+  group: build-windows-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    name: Tests (Linux, headless Qt)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: requirements.txt
+
+      # Библиотеки, без которых PySide6 не стартует даже в offscreen-режиме
+      - name: Install Qt runtime libraries
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends libegl1 libgl1 libxkbcommon0 libfontconfig1
+
+      # PyInstaller тестам не нужен: не ставим requirements-dev целиком.
+      - name: Install dependencies
+        run: python -m pip install --disable-pip-version-check -r requirements.txt "pytest>=8,<9"
+
+      # Частями (scripts/run_tests.sh): один длинный процесс с десятками
+      # Qt-окон в offscreen-режиме может не дойти до конца прогона.
+      - name: Run tests
+        env:
+          QT_QPA_PLATFORM: offscreen
+          TEST_PARTS: "4"
+        run: bash scripts/run_tests.sh
+
+  build-windows:
+    name: Build Windows packages
+    needs: test
+    runs-on: windows-latest
+    env:
+      # Обычные ветки: только быстрый рекомендуемый folder-пакет.
+      # Single — релизные теги и ручной запуск с галочкой build_single.
+      BUILD_SINGLE: ${{ startsWith(github.ref, 'refs/tags/v') || inputs.build_single }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: requirements.txt
+
+      - name: Install dependencies
+        run: python -m pip install --disable-pip-version-check -r requirements.txt "pyinstaller>=6,<7"
+
+      - name: Read app version
+        id: version
+        shell: pwsh
+        run: |
+          $v = python -c "import sys; sys.path.insert(0, 'src'); import oplata; print(oplata.__version__)"
+          "version=$v" >> $env:GITHUB_OUTPUT
+          Write-Host "Oplata version: $v"
+
+      - name: Generate Windows version metadata
+        shell: pwsh
+        run: |
+          python scripts/write_version_info.py
+          if ($LASTEXITCODE -ne 0) { throw "Version metadata generation failed" }
+          Get-Content ".\build\version_info.txt"
+
+      - name: Build folder package (recommended)
+        shell: pwsh
+        env:
+          OPLATA_PACKAGE_MODE: folder
+        run: |
+          pyinstaller --noconfirm --clean oplata.spec
+          if ($LASTEXITCODE -ne 0) { throw "Folder build failed, exit code $LASTEXITCODE" }
+
+          $exe = ".\dist\Oplata\Oplata.exe"
+          if (-not (Test-Path $exe)) { throw "Folder build did not create $exe" }
+          $p = Start-Process -FilePath $exe -ArgumentList "--self-test" -Wait -PassThru
+          if ($p.ExitCode -ne 0) { throw "Folder smoke test failed, exit code $($p.ExitCode)" }
+          Write-Host "Folder smoke test OK"
+
+          New-Item -ItemType Directory -Force ".\package-folder" | Out-Null
+          Copy-Item ".\dist\Oplata" ".\package-folder\Oplata" -Recurse
+          Copy-Item ".\packaging\START_HERE_RU.txt" ".\package-folder\START_HERE_RU.txt"
+          Remove-Item ".\dist" -Recurse -Force
+
+      - name: Build single-file package (fallback; tags/manual only)
+        if: env.BUILD_SINGLE == 'true'
+        shell: pwsh
+        env:
+          OPLATA_PACKAGE_MODE: single
+        run: |
+          pyinstaller --noconfirm --clean oplata.spec
+          if ($LASTEXITCODE -ne 0) { throw "Single-file build failed, exit code $LASTEXITCODE" }
+
+          $exe = ".\dist\Oplata.exe"
+          if (-not (Test-Path $exe)) { throw "Single-file build did not create $exe" }
+          $p = Start-Process -FilePath $exe -ArgumentList "--self-test" -Wait -PassThru
+          if ($p.ExitCode -ne 0) { throw "Single-file smoke test failed, exit code $($p.ExitCode)" }
+          Write-Host "Single-file smoke test OK"
+
+          New-Item -ItemType Directory -Force ".\package-single" | Out-Null
+          Copy-Item $exe ".\package-single\Oplata.exe"
+          Copy-Item ".\packaging\START_HERE_RU.txt" ".\package-single\START_HERE_RU.txt"
+
+      - name: Verify EXE metadata and record SHA-256
+        shell: pwsh
+        run: |
+          $expectedVersion = "${{ steps.version.outputs.version }}"
+          $executables = @(".\package-folder\Oplata\Oplata.exe")
+          $singleExe = ".\package-single\Oplata.exe"
+          if (Test-Path $singleExe) {
+            $executables += $singleExe
+          }
+
+          foreach ($exe in $executables) {
+            $info = (Get-Item $exe).VersionInfo
+            Write-Host "$exe"
+            Write-Host "  ProductName=$($info.ProductName)"
+            Write-Host "  FileDescription=$($info.FileDescription)"
+            Write-Host "  FileVersion=$($info.FileVersion)"
+            Write-Host "  ProductVersion=$($info.ProductVersion)"
+            if ($info.FileVersion -ne $expectedVersion -or $info.ProductVersion -ne $expectedVersion) {
+              throw "Unexpected EXE version metadata in $exe (expected $expectedVersion)"
+            }
+            if ([string]::IsNullOrWhiteSpace($info.ProductName) -or [string]::IsNullOrWhiteSpace($info.FileDescription)) {
+              throw "Missing EXE product metadata in $exe"
+            }
+          }
+
+          $summary = @(
+            "## Oplata v$expectedVersion — Windows packages",
+            "",
+            "| File | SHA-256 |",
+            "|---|---|"
+          )
+          foreach ($exe in $executables) {
+            $hash = (Get-FileHash $exe -Algorithm SHA256).Hash.ToLowerInvariant()
+            $summary += "| ``$exe`` | ``$hash`` |"
+            Write-Host "SHA256 $hash  $exe"
+          }
+          $summary | Add-Content $env:GITHUB_STEP_SUMMARY
+
+      - name: Prepare release ZIP files and checksums
+        if: startsWith(github.ref, 'refs/tags/v')
+        shell: pwsh
+        run: |
+          $version = "${{ steps.version.outputs.version }}"
+          $folderZip = "Oplata-v$version-windows-folder.zip"
+          $singleZip = "Oplata-v$version-windows-single-file.zip"
+
+          Compress-Archive -Path ".\package-folder\*" -DestinationPath $folderZip
+          Compress-Archive -Path ".\package-single\*" -DestinationPath $singleZip
+
+          $checksums = foreach ($file in @($folderZip, $singleZip)) {
+            $hash = (Get-FileHash $file -Algorithm SHA256).Hash.ToLowerInvariant()
+            "$hash  $file"
+          }
+          $checksums | Set-Content "SHA256SUMS.txt" -Encoding ascii
+          Get-Content "SHA256SUMS.txt"
+
+          "FOLDER_ZIP=$folderZip" >> $env:GITHUB_ENV
+          "SINGLE_ZIP=$singleZip" >> $env:GITHUB_ENV
+
+      # Upload directories directly: GitHub creates exactly one downloadable
+      # ZIP for each artifact, without our old ZIP-inside-ZIP nesting.
+      - name: Upload folder artifact (recommended)
+        uses: actions/upload-artifact@v4
+        with:
+          name: Oplata-windows-folder-v${{ steps.version.outputs.version }}
+          path: package-folder/**
+          if-no-files-found: error
+
+      - name: Upload single-file artifact (fallback)
+        if: env.BUILD_SINGLE == 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: Oplata-windows-single-file-v${{ steps.version.outputs.version }}
+          path: package-single/**
+          if-no-files-found: error
+
+      - name: Publish GitHub Release (only on v* tags)
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            ${{ env.FOLDER_ZIP }}
+            ${{ env.SINGLE_ZIP }}
+            SHA256SUMS.txt
+          generate_release_notes: true
