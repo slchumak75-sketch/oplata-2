@@ -49,7 +49,7 @@ def test_main_window_all_pages(qt_app, store):
         "Поступление наличными",
         "Поступление по картам",
         "Покупатели",
-        "прочие поступления",  # постоянная строка, v0.13.0
+        "Прочие поступления",  # постоянная строка, v0.13.0
     ]
     assert view.outgoing.table.item(0, 0).text() == "Поставщики"
     assert [view.incoming.table.horizontalHeaderItem(c).text() for c in range(6)] == [
@@ -937,7 +937,7 @@ def test_supplier_payments_sync_both_ways(qt_app, store):
 
 
 def test_incoming_block_has_fixed_other_income_row(qt_app, store):
-    """В «Поступлении» одна постоянная строка «прочие поступления» (v0.13.0)."""
+    """В «Поступлении» одна постоянная строка «Прочие поступления» (v0.13.0)."""
     from datetime import date
 
     from oplata.app import MainWindow
@@ -952,7 +952,7 @@ def test_incoming_block_has_fixed_other_income_row(qt_app, store):
         "cash",
         "card",
         "customers",
-        "other:прочие поступления",
+        "other:Прочие поступления",
     ]
     # Кнопок «+»/«−» у блока «Поступление» нет — строку не добавить и
     # не убрать, название не редактируется.
@@ -963,17 +963,17 @@ def test_incoming_block_has_fixed_other_income_row(qt_app, store):
     # Сумма вводится прямо в ячейку и пишется с направлением «in».
     view.incoming.table.item(3, COL_AMOUNT).setText("5 000")
     qt_app.processEvents()
-    assert view.incoming.amount_text("other:прочие поступления") == "5 000,00"
+    assert view.incoming.amount_text("other:Прочие поступления") == "5 000,00"
     assert [
         (p.name, p.direction, p.date, p.amount)
         for p in store.data.other_payments
-        if p.name == "прочие поступления"
-    ] == [("прочие поступления", INCOMING, "2026-10-27", "5000.00")]
+        if p.name == "Прочие поступления"
+    ] == [("Прочие поступления", INCOMING, "2026-10-27", "5000.00")]
 
     # Свои строки блока «Оплата» не пересекаются с постоянной строкой.
     view.add_other_row(OUTGOING)
     assert view.outgoing.row_keys == ["suppliers", "other:Новый вид оплаты"]
-    assert view.incoming.row_keys[-1] == "other:прочие поступления"
+    assert view.incoming.row_keys[-1] == "other:Прочие поступления"
     window.close()
 
 
