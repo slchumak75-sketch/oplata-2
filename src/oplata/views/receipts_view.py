@@ -526,7 +526,8 @@ class MoneyBlock(QFrame):
         self.next_btn.clicked.connect(lambda: self.shift_date(1))
         top.addWidget(self.next_btn)
 
-        if on_add_row is not None or on_remove_row is not None:
+        has_row_buttons = on_add_row is not None or on_remove_row is not None
+        if has_row_buttons:
             top.addStretch(1)
         if on_add_row is not None:
             self.add_btn = arrow_button("+", "Добавить свою строку")
@@ -536,6 +537,11 @@ class MoneyBlock(QFrame):
             self.remove_btn = arrow_button("−", "Убрать выделенную строку")
             self.remove_btn.clicked.connect(self._remove_selected)
             top.addWidget(self.remove_btn)
+        if not has_row_buttons:
+            # На плашке «поступление» кнопок «+»/«−» нет, поэтому
+            # заголовок остаётся прежним: стрелки справа от «Сегодня» и
+            # растяжка до правого края (как было раньше).
+            top.addStretch(1)
         root.addLayout(top)
 
         # --- таблица: строка + сумма + нарастающие итоги ---
@@ -638,9 +644,21 @@ class MoneyBlock(QFrame):
             )
             self.table.setStyleSheet(WIDE_SCROLLBAR)
         else:
-            self.table.setMaximumHeight(
-                header_height + visible * row_height + 2
+            # Блок «Поступление» закреплён (v0.15.0): высота таблицы
+            # фиксированная по числу строк, чтобы при обновлении и
+            # прокрутке содержимое не «болталось» и не сдвигало блок
+            # «Оплата» под ним.
+            fixed_height = header_height + visible * row_height + 2
+            # Высоты строк не пересчитываются по переносу слов: иначе
+            # таблица дёргается при каждом пересчёте раскладки.
+            self.table.verticalHeader().setSectionResizeMode(
+                QHeaderView.ResizeMode.Fixed
             )
+            self.table.setSizePolicy(
+                QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed
+            )
+            self.table.setMinimumHeight(fixed_height)
+            self.table.setMaximumHeight(fixed_height)
             # Скроллинга в блоке «Поступление» нет (v0.14.0): строк там
             # немного, а полоса прокрутки только мешала.
             self.table.setVerticalScrollBarPolicy(

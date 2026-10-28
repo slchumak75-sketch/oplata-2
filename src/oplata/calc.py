@@ -220,32 +220,22 @@ def funds_totals(data: AppData) -> FundsTotals:
     except InvalidOperation:
         funds = ZERO
 
-    # v0.15.0: «Реализация» покупателей в ИТОГ ПОСТУПЛЕНИЕ не входит —
-    # это отгрузка, а не деньги. Деньги, поступившие от покупателя
-    # («Оплата» покупателя), наоборот, поступление.
-    supplier_ids = {s.id for s in data.suppliers}
-    customer_ids = {c.id for c in data.customers}
-
+    # v0.15.0: по просьбе пользователя «Реализация» покупателей в
+    # ИТОГ ПОСТУПЛЕНИЕ не входит. Больше в расчёте ничего не менялось.
     income = ZERO
     for receipt in data.cash_receipts:
         income += cash_receipt_amount(receipt)
     for payment in data.other_payments:
         if payment.direction == INCOMING:
             income += other_payment_amount(payment)
-    for op in data.operations:
-        if op.kind == KIND_PAYMENT and op.counterparty_id in customer_ids:
-            income += operation_amount(op)
 
     payments = ZERO
     for payment in data.other_payments:
         if payment.direction != INCOMING:
             payments += other_payment_amount(payment)
     for op in data.operations:
-        if op.kind == KIND_PAYMENT and (
-            not supplier_ids or op.counterparty_id in supplier_ids
-        ):
+        if op.kind == KIND_PAYMENT:
             payments += operation_amount(op)
-    _ = KIND_SALE  # реализация в расчёте средств не участвует
 
     return FundsTotals(
         funds=funds,

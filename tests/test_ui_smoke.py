@@ -1405,10 +1405,9 @@ def test_summary_panel_shows_three_blocks_line_by_line(qt_app, store):
 
     # Все значения построчно: подписи и числа лежат в сетке блоками.
     assert view.panel.isVisible()
-    assert len(view._values) == len(view._captions) == 4 + 8 + 2 + 2
+    assert len(view._values) == len(view._captions) == 4 + 8 + 1 + 2
     # Блок «Задолженность покупателей» пока пуст (покупателей нет).
     assert view.value_text("cust_total") == "0,00"
-    assert view.value_text("cust_week") == "0,00"
     window.close()
 
 
@@ -1476,13 +1475,12 @@ def test_summary_customer_debt_block_counts_sales_minus_payments(qt_app, store):
     view.date_edit.setDate(QDate(2026, 10, 27))
     view.refresh()
 
-    assert view.caption_text("cust_total") == "Всего задолженность покупателей"
+    assert view.caption_text("cust_total") == "Задолженность покупателей"
     assert view.value_text("cust_total") == "3 500,00"
-    assert view.value_text("cust_week") == "3 500,00"
 
-    # «Итого Поступление» не включает реализацию покупателей (v0.15.0),
-    # но деньги, поступившие от покупателя, — включает.
-    assert view.value_text("income") == "1 500,00"
+    # «Итого поступление» не включает реализацию покупателей (v0.15.0).
+    assert view.value_text("income") == "0,00"
+    assert view.value_text("payments") == "1 500,00"
     window.close()
 
 

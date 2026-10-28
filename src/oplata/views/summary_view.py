@@ -108,7 +108,7 @@ class SummaryView(QWidget):
             "СРЕДСТВА",
             [
                 ("funds", "Остаток на счету"),
-                ("income", "Итого Поступление"),
+                ("income", "Итого поступление"),
                 ("payments", "Итого оплаты"),
                 ("balance", "Итого остаток"),
             ],
@@ -135,8 +135,7 @@ class SummaryView(QWidget):
             content,
             "ЗАДОЛЖЕННОСТЬ ПОКУПАТЕЛЕЙ",
             [
-                ("cust_total", "Всего задолженность покупателей"),
-                ("cust_week", "За неделю"),
+                ("cust_total", "Задолженность покупателей"),
             ],
         )
         self._separator(content)
@@ -228,6 +227,7 @@ class SummaryView(QWidget):
             data, on_date, PLAN_WEEKS, include_archived
         )
         customers = calc.customer_debt_totals(data, on_date, include_archived)
+        _ = customers.week  # «за неделю» в блоке не показывается
         month = calc.month_totals(data, on_date)
 
         self._set_value("funds", funds.funds)
@@ -246,7 +246,6 @@ class SummaryView(QWidget):
                 f" – {week.sunday.strftime('%d.%m')}"
             )
         self._set_value("cust_total", customers.total)
-        self._set_value("cust_week", customers.week)
         self._set_value("month_income", month.income)
         self._set_value("month_payments", month.payments)
 
@@ -258,7 +257,7 @@ class SummaryView(QWidget):
                 title="Средства",
                 lines=[
                     SummaryLine("Остаток на счету", fmt_money_plain(funds.funds)),
-                    SummaryLine("Итого Поступление", fmt_money_plain(funds.income)),
+                    SummaryLine("Итого поступление", fmt_money_plain(funds.income)),
                     SummaryLine("Итого оплаты", fmt_money_plain(funds.payments)),
                     SummaryLine("Итого остаток", fmt_money_plain(funds.balance)),
                 ],
@@ -290,10 +289,9 @@ class SummaryView(QWidget):
                 title="Задолженность покупателей",
                 lines=[
                     SummaryLine(
-                        "Всего задолженность покупателей",
+                        "Задолженность покупателей",
                         fmt_money_plain(customers.total),
                     ),
-                    SummaryLine("За неделю", fmt_money_plain(customers.week)),
                 ],
             ),
             SummarySection(
