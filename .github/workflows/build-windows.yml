@@ -121,9 +121,20 @@ jobs:
           Write-Host "Folder smoke test OK"
 
           New-Item -ItemType Directory -Force ".\package-folder" | Out-Null
-          Copy-Item ".\dist\Oplata" ".\package-folder\Oplata" -Recurse
+          Copy-Item ".\dist\Oplata" ".\package-folder\Oplata" -Recurse -Force
           Copy-Item ".\packaging\START_HERE_RU.txt" ".\package-folder\START_HERE_RU.txt"
           Remove-Item ".\dist" -Recurse -Force
+
+          # Smoke-тест именно того, что уходит в артефакт: раньше
+          # проверялся dist\Oplata, а пользователю достаётся копия из
+          # package-folder. Плюс считаем файлы — по числу видно, полная
+          # ли папка (внутри должна быть _internal с DLL).
+          $packed = ".\package-folder\Oplata\Oplata.exe"
+          if (-not (Test-Path $packed)) { throw "package-folder does not contain $packed" }
+          $files = Get-ChildItem -Path ".\package-folder" -Recurse -File
+          $p2 = Start-Process -FilePath $packed -ArgumentList "--self-test" -Wait -PassThru
+          if ($p2.ExitCode -ne 0) { throw "Packed smoke test failed, exit code $($p2.ExitCode)" }
+          Write-Host "Packed smoke test OK, files: $($files.Count)"
 
       - name: Build single-file package (fallback; tags/manual only)
         if: env.BUILD_SINGLE == 'true'
