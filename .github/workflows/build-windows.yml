@@ -10,7 +10,10 @@
 #   * Oplata-windows-folder-v...      — рекомендуемый, собирается всегда:
 #     папка Oplata (PyInstaller onedir, без самораспаковки);
 #   * Oplata-windows-single-file-v... — запасной: один Oplata.exe
-#     (PyInstaller onefile), только для релизов/ручного запуска с опцией.
+#     (PyInstaller onefile), только для релизов/ручного запуска с опцией;
+#   * Oplata-windows-setup-v...        — установщик Inno Setup
+#     (Oplata-<версия>-Setup.exe): ставит программу в меню «Пуск»,
+#     создаёт ярлыки и нормально удаляется через «Программы и компоненты».
 #
 # Где скачать: вкладка Actions -> нужный запуск -> Artifacts,
 # а для тегов — раздел Releases. Подробности: docs/BUILD.md
@@ -125,6 +128,45 @@ jobs:
           Copy-Item ".\packaging\START_HERE_RU.txt" ".\package-folder\START_HERE_RU.txt"
           Remove-Item ".\dist" -Recurse -Force
 
+      # Установщик Inno Setup: вместо «распакуй папку и запусти EXE»
+      # пользователь получает обычную установку Windows с ярлыками и
+      # удалением через «Программы и компоненты».
+      - name: Install Inno Setup
+        shell: pwsh
+        run: |
+          $iscc = @(
+            "C:\Program Files (x86)\Inno Setup 6\ISCC.exe",
+            "C:\Program Files\Inno Setup 6\ISCC.exe"
+          ) | Where-Object { Test-Path $_ } | Select-Object -First 1
+          if (-not $iscc) {
+            choco install innosetup --no-progress -y
+            $iscc = "C:\Program Files (x86)\Inno Setup 6\ISCC.exe"
+          }
+          if (-not (Test-Path $iscc)) { throw "Inno Setup compiler (ISCC.exe) not found" }
+          "ISCC=$iscc" >> $env:GITHUB_ENV
+          Write-Host "ISCC: $iscc"
+
+      - name: Build Windows installer
+        shell: pwsh
+        run: |
+          & "$env:ISCC" "/DMyAppVersion=${{ steps.version.outputs.version }}" ".\packaging\windows\installer.iss"
+          if ($LASTEXITCODE -ne 0) { throw "Installer build failed, exit code $LASTEXITCODE" }
+
+          $setup = Get-ChildItem -Path ".\installer" -Filter "Oplata-*-Setup.exe" | Select-Object -First 1
+          if (-not $setup) { throw "Installer was not created in .\installer" }
+          Write-Host "Installer: $($setup.FullName) ($($setup.Length) bytes)"
+
+          # Тихая установка во временную папку и запуск EXE с --self-test:
+          # проверяем, что всё распаковалось и программа стартует.
+          $target = Join-Path $env:RUNNER_TEMP "OplataInstallTest"
+          & $setup.FullName /VERYSILENT /NORESTART /SUPPRESSMSGBOXES /DIR=$target
+          if ($LASTEXITCODE -ne 0) { throw "Silent install failed, exit code $LASTEXITCODE" }
+          $installed = Join-Path $target "Oplata.exe"
+          if (-not (Test-Path $installed)) { throw "Installer did not create $installed" }
+          $p = Start-Process -FilePath $installed -ArgumentList "--self-test" -Wait -PassThru
+          if ($p.ExitCode -ne 0) { throw "Installed app smoke test failed, exit code $($p.ExitCode)" }
+          Write-Host "Installer smoke test OK"
+
       - name: Build single-file package (fallback; tags/manual only)
         if: env.BUILD_SINGLE == 'true'
         shell: pwsh
@@ -180,6 +222,12 @@ jobs:
             $summary += "| ``$exe`` | ``$hash`` |"
             Write-Host "SHA256 $hash  $exe"
           }
+          $setup = Get-ChildItem -Path ".\installer" -Filter "Oplata-*-Setup.exe" | Select-Object -First 1
+          if ($setup) {
+            $hash = (Get-FileHash $setup.FullName -Algorithm SHA256).Hash.ToLowerInvariant()
+            $summary += "| ``$($setup.Name)`` | ``$hash`` |"
+            Write-Host "SHA256 $hash  $($setup.Name)"
+          }
           $summary | Add-Content $env:GITHUB_STEP_SUMMARY
 
       - name: Prepare release ZIP files and checksums
@@ -193,7 +241,12 @@ jobs:
           Compress-Archive -Path ".\package-folder\*" -DestinationPath $folderZip
           Compress-Archive -Path ".\package-single\*" -DestinationPath $singleZip
 
-          $checksums = foreach ($file in @($folderZip, $singleZip)) {
+          $setupExe = Get-ChildItem -Path ".\installer" -Filter "Oplata-*-Setup.exe" | Select-Object -First 1
+          if (-not $setupExe) { throw "Installer not found for release" }
+          $setupName = "Oplata-v$version-windows-setup.exe"
+          Copy-Item $setupExe.FullName ".\$setupName"
+
+          $checksums = foreach ($file in @($folderZip, $singleZip, $setupName)) {
             $hash = (Get-FileHash $file -Algorithm SHA256).Hash.ToLowerInvariant()
             "$hash  $file"
           }
@@ -202,6 +255,7 @@ jobs:
 
           "FOLDER_ZIP=$folderZip" >> $env:GITHUB_ENV
           "SINGLE_ZIP=$singleZip" >> $env:GITHUB_ENV
+          "SETUP_EXE=$setupName" >> $env:GITHUB_ENV
 
       # Upload directories directly: GitHub creates exactly one downloadable
       # ZIP for each artifact, without our old ZIP-inside-ZIP nesting.
@@ -210,6 +264,13 @@ jobs:
         with:
           name: Oplata-windows-folder-v${{ steps.version.outputs.version }}
           path: package-folder/**
+          if-no-files-found: error
+
+      - name: Upload installer artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: Oplata-windows-setup-v${{ steps.version.outputs.version }}
+          path: installer/*.exe
           if-no-files-found: error
 
       - name: Upload single-file artifact (fallback)
@@ -227,5 +288,6 @@ jobs:
           files: |
             ${{ env.FOLDER_ZIP }}
             ${{ env.SINGLE_ZIP }}
+            ${{ env.SETUP_EXE }}
             SHA256SUMS.txt
           generate_release_notes: true

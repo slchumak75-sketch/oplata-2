@@ -61,3 +61,34 @@ def test_application_and_project_versions_are_in_sync():
 
     assert version_info.application_version() == oplata.__version__
     assert project["version"] == oplata.__version__
+
+
+def test_inno_setup_script_is_present_and_consistent():
+    """Установщик Windows: скрипт Inno Setup с AppId и версией через /D."""
+    iss = ROOT / "packaging" / "windows" / "installer.iss"
+    assert iss.is_file()
+    text = iss.read_text(encoding="utf-8")
+
+    # Версия не дублируется: она приходит ключом /DMyAppVersion=
+    assert "#define MyAppVersion" in text
+    assert "{#MyAppVersion}" in text
+    # Один и тот же AppId между версиями: иначе обновление встанет рядом.
+    assert text.count("#define MyAppId") == 1
+    # Установка без прав администратора и ярлыки.
+    assert "PrivilegesRequired=lowest" in text
+    assert "{group}" in text
+    # В установку попадает folder-сборка PyInstaller целиком.
+    assert "dist\\Oplata\\*" in text
+
+
+def test_workflow_builds_and_uploads_installer():
+    """CI собирает установщик, проверяет его и кладёт в артефакты."""
+    workflow = ROOT / ".github" / "workflows" / "build-windows.yml"
+    text = workflow.read_text(encoding="utf-8")
+    assert "packaging\\windows\\installer.iss" in text
+    assert "Oplata-windows-setup-v" in text
+    # Тихая установка + --self-test: программа стартует после установки.
+    assert "/VERYSILENT" in text
+    assert "--self-test" in text
+    # Setup.exe публикуется в релизе по тегу.
+    assert "SETUP_EXE" in text

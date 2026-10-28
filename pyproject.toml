@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "oplata"
-version = "0.15.0"
+version = "0.16.0"
 description = "Оплаты — Строймаркет (Windows-программа учёта поставок, долгов и оплат)"
 requires-python = ">=3.11"
 dependencies = ["PySide6-Essentials>=6.7,<7"]
