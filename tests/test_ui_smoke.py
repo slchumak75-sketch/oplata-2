@@ -75,6 +75,9 @@ def test_main_window_all_pages(qt_app, store):
     assert window.customers_view.card_button.text() == "Карточка покупателя"
     assert not hasattr(window, "operations_view")
     for index in range(4):
+        # v0.18.0: «Конфигурация» открывается по паролю — в тесте
+        # считаем, что пароль уже введён (иначе встанет модальный диалог).
+        window._config_unlocked = True  # noqa: SLF001 - доступ к флагу окна
         window.show_page(index)
         assert window.stack.currentIndex() == index
     # Сводка — построчная плашка из трёх блоков (v0.14.0)
@@ -1776,4 +1779,103 @@ def test_base_switch_button_changes_database_and_header(qt_app, store, monkeypat
         for row in range(4, window.suppliers_view.table.rowCount())
     ]
     assert "Поставщик МИР" in names
+    window.close()
+
+
+def test_user_rights_limit_pages_base_and_input(qt_app, store, monkeypatch, tmp_path):
+    """v0.18.0: права пользователя — вкладки, база, ввод данных."""
+    from oplata import access as access_module
+    from oplata.app import MainWindow
+
+    # Файлы пользователей теста — во временном каталоге.
+    monkeypatch.setattr(access_module, "data_dir", lambda: tmp_path)
+
+    admin, manager, user_mir, user_kor = access_module.default_users()
+
+    window = MainWindow(store, access_module.Access(admin))
+    window.show()
+    qt_app.processEvents()
+    assert [b.text() for b in window.nav_buttons if not b.isHidden()] == [
+        "Поступление и оплаты",
+        "Поставщики",
+        "Покупатели",
+        "Конфигурация",
+    ]
+    assert window.suppliers_view.read_only is False
+    assert not window.data_view.admin_panel.isHidden()
+    window.close()
+
+    window = MainWindow(store, access_module.Access(manager))
+    window.show()
+    qt_app.processEvents()
+    # Руководитель видит все вкладки, но без права ввода.
+    assert all(not b.isHidden() for b in window.nav_buttons)
+    assert window.suppliers_view.read_only is True
+    assert window.receipts_view.incoming.read_only is True
+    assert window.data_view.admin_panel.isHidden()
+    window.close()
+
+    window = MainWindow(store, access_module.Access(user_mir))
+    window.show()
+    qt_app.processEvents()
+    # Пользователь МИР: только «Покупатели», база МИР, только просмотр.
+    assert [b.text() for b in window.nav_buttons if not b.isHidden()] == ["Покупатели"]
+    assert window.base_button.isHidden()
+    assert store.base_key == "mir"
+    assert window.customers_view.read_only is True
+    window.close()
+
+    window = MainWindow(store, access_module.Access(user_kor))
+    window.show()
+    qt_app.processEvents()
+    assert store.base_key == "korelichi"
+    assert [b.text() for b in window.nav_buttons if not b.isHidden()] == ["Покупатели"]
+    window.close()
+
+
+def test_users_are_listed_in_configuration_and_password_gate(
+    qt_app, store, monkeypatch, tmp_path
+):
+    """v0.18.0: четыре пользователя в «Конфигурации» и пароль на раздел."""
+    from oplata import access as access_module
+    from oplata.app import MainWindow
+
+    monkeypatch.setattr(access_module, "data_dir", lambda: tmp_path)
+
+    window = MainWindow(store, access_module.Access(access_module.default_users()[0]))
+    window.show()
+    qt_app.processEvents()
+
+    # Плашка свёрнута — раскрываем, иначе её кнопки невидимы.
+    window.data_view.users_panel.set_expanded(True)
+    table = window.data_view.users_table
+    assert table.rowCount() == 4
+    names = [table.item(row, 0).text() for row in range(table.rowCount())]
+    assert names == [
+        "Администратор",
+        "Руководитель",
+        "Пользователь МИР",
+        "Пользователь КОРЕЛИЧИ",
+    ]
+    # У администратора отмечены все вкладки и право ввода.
+    assert table.item(0, 1).checkState() is not None
+    # Вкладка «Конфигурация» не открыта, поэтому проверяем не «видна ли
+    # кнопка», а «не скрыта ли она правами».
+    assert not window.data_view.users_save_btn.isHidden()
+
+    # Пароль: придумываем, проверяем верный и неверный.
+    assert not access_module.has_password()
+    access_module.set_password("1234")
+    assert access_module.has_password()
+    assert access_module.check_password("1234")
+    assert not access_module.check_password("0000")
+
+    # Добавление пользователя и сохранение списка.
+    window.data_view.users_add_btn.click()
+    qt_app.processEvents()
+    assert table.rowCount() == 5
+    table.item(4, 0).setText("Кладовщик")
+    window.data_view.users_save_btn.click()
+    qt_app.processEvents()
+    assert "Кладовщик" in [user.name for user in access_module.load_users()]
     window.close()

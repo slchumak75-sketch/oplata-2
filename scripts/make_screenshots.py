@@ -152,9 +152,13 @@ def main() -> int:
             if index < len(PAGES):
                 page = PAGES[index]
                 if page == "data":
+                    # v0.18.0: раздел «Конфигурация» за паролем — на
+                    # снимке считаем, что пароль уже введён.
+                    window._config_unlocked = True  # noqa: SLF001
                     # Плашки свёрнуты по умолчанию — для снимка раскрываем.
                     window.data_view.calendar_panel.set_expanded(True)
                     window.data_view.data_panel.set_expanded(True)
+                    window.data_view.users_panel.set_expanded(True)
                     window.data_view.admin_panel.set_expanded(True)
                 window.show_page(index)
                 app.processEvents()

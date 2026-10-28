@@ -131,7 +131,22 @@ class DataStore:
     def save(self) -> None:
         self.path.parent.mkdir(parents=True, exist_ok=True)
         text = json.dumps(self.data.to_dict(), ensure_ascii=False, indent=2)
-        self.path.write_text(text, encoding="utf-8")
+        # v0.18.0: запись атомарная — сначала во временный файл, потом
+        # подмена целиком (os.replace). Так облачный клиент (OneDrive,
+        # Диск) не успевает синхронизировать недописанный файл и не
+        # развозит повреждённые данные по остальным компьютерам.
+        tmp_path = self.path.with_name(self.path.name + ".tmp")
+        try:
+            tmp_path.write_text(text, encoding="utf-8")
+            os.replace(tmp_path, self.path)
+        except OSError:
+            # Не удалось записать рядом (например, каталог только для
+            # чтения) — пишем напрямую, как раньше.
+            try:
+                tmp_path.unlink()
+            except OSError:
+                pass
+            self.path.write_text(text, encoding="utf-8")
         # «Сводка» пересчитывается сразу после любого сохранения данных.
         for callback in list(self.on_saved):
             callback()

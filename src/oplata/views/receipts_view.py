@@ -558,6 +558,8 @@ class MoneyBlock(QFrame):
         # не обрезаем: пять числовых колонок оставляют им 200–250 px.
         self.table.setWordWrap(True)
         self.table.itemChanged.connect(self._on_item_changed)
+        # v0.18.0: без права ввода кнопок «+»/«−» у блока не показываем.
+        self.read_only = False
         self.table.cellClicked.connect(self._on_cell_clicked)
         self.table.setAlternatingRowColors(False)
         header_view = self.table.horizontalHeader()
@@ -758,6 +760,21 @@ class MoneyBlock(QFrame):
             return
         if self.on_remove_row is not None:
             self.on_remove_row(key)
+
+
+    def set_read_only(self, read_only: bool) -> None:
+        """Права пользователя: «только просмотр» или полный доступ (v0.18.0)."""
+
+        self.read_only = read_only
+        self.table.setEditTriggers(
+            QAbstractItemView.EditTrigger.NoEditTriggers
+            if read_only
+            else QAbstractItemView.EditTrigger.AllEditTriggers
+        )
+        for name in ("add_btn", "remove_btn"):
+            btn = getattr(self, name, None)
+            if btn is not None:
+                btn.setVisible(not read_only)
 
 
 class ReceiptsView(QWidget):
@@ -1280,6 +1297,13 @@ class ReceiptsView(QWidget):
             if item_day >= year_start:
                 year += amount
         return week, month, quarter, year
+
+    def set_read_only(self, read_only: bool) -> None:
+        """Права пользователя: «только просмотр» или полный доступ (v0.18.0)."""
+
+        self.read_only = read_only
+        self.incoming.set_read_only(read_only)
+        self.outgoing.set_read_only(read_only)
 
     def refresh(self) -> None:
         incoming_day = self.incoming.current_date()

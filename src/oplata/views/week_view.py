@@ -215,6 +215,8 @@ class WeekView(QWidget):
         self._partners: list[Counterparty] = []
         self._days: list[date] = []
         self._rebuilding = False  # True, пока таблицу меняет код, а не пользователь
+        # v0.18.0: без права ввода данных таблица только для просмотра.
+        self.read_only = False
         self._amount_items: list[QTableWidgetItem] = []  # для подгонки шрифта сумм
 
         root = QVBoxLayout(self)
@@ -298,9 +300,9 @@ class WeekView(QWidget):
         bar.addWidget(self.card_button)
 
         if self.kind == "supplier":
-            clear_btn = danger_button("Очистить суммы")
-            clear_btn.clicked.connect(self._clear_amounts)
-            bar.addWidget(clear_btn)
+            self.clear_btn = danger_button("Очистить суммы")
+            self.clear_btn.clicked.connect(self._clear_amounts)
+            bar.addWidget(self.clear_btn)
             debt_title = QLabel("Задолженность за неделю:")
             debt_title.setObjectName("Muted")
             bar.addWidget(debt_title)
@@ -315,6 +317,20 @@ class WeekView(QWidget):
             self.right_value_label.setStyleSheet(f"font-weight:800;font-size:{styles.fs(14)}px")
             bar.addWidget(self.right_value_label)
         return bar
+
+    def set_read_only(self, read_only: bool) -> None:
+        """Права пользователя: «только просмотр» или полный доступ (v0.18.0)."""
+
+        self.read_only = read_only
+        self.table.setEditTriggers(
+            QAbstractItemView.EditTrigger.NoEditTriggers
+            if read_only
+            else QAbstractItemView.EditTrigger.AllEditTriggers
+        )
+        # Кнопки, меняющие данные, без права ввода не показываем.
+        if hasattr(self, "clear_btn"):
+            self.clear_btn.setVisible(not read_only)
+        self.card_button.setVisible(not read_only)
 
     # ------------------------------------------------------------- навигация
     def _shift_week(self, days: int) -> None:
@@ -365,6 +381,8 @@ class WeekView(QWidget):
 
     # ------------------------------------------------------------ клики/ввод
     def _on_item_clicked(self, item: QTableWidgetItem) -> None:
+        if self.read_only:  # v0.18.0: без права ввода окна ввода не открываем
+            return
         if item.column() != 0 or item.row() < FIRST_DATA_ROW:
             return
         counterparty_id = item.data(Qt.ItemDataRole.UserRole)
@@ -387,6 +405,8 @@ class WeekView(QWidget):
     def _on_item_double_clicked(self, item: QTableWidgetItem) -> None:
         """Двойной клик по контрагенту: «Поставка»/«Реализация»."""
 
+        if self.read_only:  # v0.18.0: только просмотр
+            return
         if item.column() != 0 or item.row() < FIRST_DATA_ROW:
             return
         counterparty_id = item.data(Qt.ItemDataRole.UserRole)

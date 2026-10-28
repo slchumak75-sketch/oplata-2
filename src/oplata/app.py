@@ -25,6 +25,7 @@ from PySide6.QtWidgets import (
 )
 
 from . import __app_name__, __version__, styles
+from .access import IDX_CUSTOMERS, Access
 from .dialogs.counterparty_card import CounterpartyCardDialog
 from .dialogs.delivery_dialog import DeliveryDialog
 from .dialogs.operations_journal_dialog import OperationsJournalDialog
@@ -55,9 +56,14 @@ BASE_HEADER_COLORS = {BASE_MIR: styles.NAVY, BASE_KORELICHI: styles.MAROON}
 
 
 class MainWindow(QMainWindow):
-    def __init__(self, store: DataStore) -> None:
+    def __init__(self, store: DataStore, access: Access | None = None) -> None:
         super().__init__()
         self.store = store
+        # v0.18.0: права выбранного на этом компьютере пользователя.
+        self.access = access or Access()
+        # «Конфигурация» открывается по паролю: флаг живёт, пока
+        # пользователь не ушёл с этой вкладки.
+        self._config_unlocked = False
         # Открытые окна журналов операций держим, чтобы они не закрывались
         # сборщиком мусора (окна немодальные).
         self._journal_dialogs: list[OperationsJournalDialog] = []
@@ -120,7 +126,11 @@ class MainWindow(QMainWindow):
 
         root_layout.addWidget(self._build_header())
         root_layout.addWidget(self.stack, stretch=1)
-        self.show_page(IDX_RECEIPTS)  # стартовый экран — «Поступление и оплаты»
+        self.apply_access()
+        # Стартовый экран — «Поступление и оплаты» (если права разрешают).
+        self.show_page(
+            IDX_RECEIPTS if IDX_RECEIPTS in self.access.pages else self.access.pages[0]
+        )
 
     # ------------------------------------------------------------------ шапка
     def _build_header(self) -> QFrame:
@@ -220,8 +230,89 @@ class MainWindow(QMainWindow):
 
     # -------------------------------------------------------------- навигация
     def show_page(self, index: int) -> None:
+        """Показать вкладку с учётом прав и пароля на «Конфигурацию»."""
+
+        if index == IDX_DATA and not self._config_unlocked:
+            if not self._ask_config_password():
+                return  # пароль не принят — остаёмся на прежней вкладке
+        if index != IDX_DATA:
+            self._config_unlocked = False  # выход из «Конфигурации» = снова по паролю
+        if index not in self.access.pages:
+            return
         self.stack.setCurrentIndex(index)
         self.nav_buttons[index].setChecked(True)
+
+    def _ask_config_password(self) -> bool:
+        """Пароль на вкладку «Конфигурация» (v0.18.0).
+
+        Пока пароль не задан, просим придумать его; дальше проверяем
+        введённый. Возвращаем True, если вход разрешён.
+        """
+
+        from PySide6.QtWidgets import QInputDialog, QLineEdit
+
+        from .access import check_password, has_password, set_password
+
+        if not has_password():
+            title = "Первый вход в «Конфигурацию»"
+            label = "Придумайте пароль на раздел «Конфигурация»:"
+            while True:
+                text, ok = QInputDialog.getText(
+                    self, title, label, QLineEdit.EchoMode.Password
+                )
+                if not ok:
+                    return False
+                if not text:
+                    continue
+                confirm, ok2 = QInputDialog.getText(
+                    self, title, "Повторите пароль:", QLineEdit.EchoMode.Password
+                )
+                if not ok2:
+                    return False
+                if confirm != text:
+                    continue
+                set_password(text)
+                self._config_unlocked = True
+                return True
+
+        text, ok = QInputDialog.getText(
+            self,
+            "Конфигурация",
+            "Пароль на раздел «Конфигурация»:",
+            QLineEdit.EchoMode.Password,
+        )
+        if ok and text and check_password(text):
+            self._config_unlocked = True
+            return True
+        if ok:
+            self._config_unlocked = False
+        return False
+
+    def apply_access(self) -> None:
+        """Применить права пользователя: вкладки, база, ввод (v0.18.0)."""
+
+        # Видны только разрешённые вкладки.
+        for index, btn in enumerate(self.nav_buttons):
+            btn.setVisible(index in self.access.pages)
+        # Переключатель базы — только тем, кому доступны обе базы.
+        self.base_button.setVisible(self.access.can_switch_base)
+        # Пользователь «посажен» на свою базу: МИР или КОРЕЛИЧИ.
+        fixed = self.access.fixed_base
+        if fixed and self.store.base_key != fixed:
+            self.store.switch_base(fixed)
+            self.base_button.setText(BASE_TITLES[self.store.base_key])
+            self._apply_base_style()
+            self.refresh_all_views()
+        # Ввод данных — только тем, у кого есть право ввода.
+        read_only = not self.access.can_edit
+        for view in (self.receipts_view, self.suppliers_view, self.customers_view):
+            view.set_read_only(read_only)
+        self.data_view.set_read_only(read_only, can_admin=self.access.can_admin_data)
+        # Текущая вкладка могла стать недоступной — показываем первую из разрешённых.
+        if self.stack.currentIndex() not in self.access.pages:
+            first = self.access.pages[0]
+            self.stack.setCurrentIndex(first)
+            self.nav_buttons[first].setChecked(True)
 
     # -------------------------------------------------------------- поставка
     def open_delivery_dialog(self, supplier_id: str, preset_date=None) -> None:

@@ -40,11 +40,13 @@ from PySide6.QtWidgets import (
     QAbstractItemView,
     QButtonGroup,
     QCheckBox,
+    QComboBox,
     QDateEdit,
     QFrame,
     QGridLayout,
     QHBoxLayout,
     QLabel,
+    QHeaderView,
     QMessageBox,
     QPushButton,
     QScrollArea,
@@ -56,6 +58,17 @@ from PySide6.QtWidgets import (
 )
 
 from .. import styles
+from ..access import (
+    BASE_KORELICHI,
+    BASE_MIR,
+    PAGE_TITLES,
+    User,
+    check_password,
+    load_users,
+    new_user_id,
+    save_users,
+    set_password,
+)
 from ..dates import MONTHS_RU, WEEKDAYS_RU_TITLE, fmt_money_plain, parse_money
 from ..models import (
     set_year_start_customer_debt,
@@ -123,6 +136,9 @@ class DataView(QWidget):
         # Черновик отметок: клики по календарю меняют его, а не файл
         # данных. В store он попадёт только по кнопке «Сохранить».
         self._pending_overrides: dict[str, str] = dict(store.data.day_overrides)
+        # v0.18.0: без права ввода календарь и таблицы долгов только
+        # для просмотра (флаг выставляет MainWindow.apply_access).
+        self.read_only = False
 
         root = QVBoxLayout(self)
         root.setContentsMargins(10, 10, 10, 10)
@@ -196,6 +212,11 @@ class DataView(QWidget):
         self.data_panel = CollapsiblePanel("Данные", expanded=False)
         self._build_year_start_panel(self.data_panel.content_layout)
         root.addWidget(self.data_panel)
+
+        # --- раскрывающаяся плашка «Пользователи и права» (v0.18.0) ---
+        self.users_panel = CollapsiblePanel("Пользователи и права", expanded=False)
+        self._build_users_panel(self.users_panel.content_layout)
+        root.addWidget(self.users_panel)
 
         # --- раскрывающаяся плашка «Администрирование» ---
         self.admin_panel = CollapsiblePanel("Администрирование", expanded=False)
@@ -506,6 +527,229 @@ class DataView(QWidget):
         self.year += delta
         self.refresh()
 
+    # ---------------------------------------------------------- пользователи
+    def _build_users_panel(self, layout) -> None:
+        """Список пользователей и их права (v0.18.0)."""
+
+        hint = QLabel(
+            "Кто работает на каждом компьютере и что этому пользователю "
+            "разрешено. Пользователи общие для всех компьютеров; выбор "
+            "конкретного — при первом запуске на компьютере."
+        )
+        hint.setObjectName("Muted")
+        hint.setWordWrap(True)
+        layout.addWidget(hint)
+
+        self.users_table = QTableWidget(0, len(PAGE_TITLES) + 3)
+        self.users_table.setHorizontalHeaderLabels(
+            ["Пользователь", *PAGE_TITLES, "База", "Ввод данных"]
+        )
+        self.users_table.verticalHeader().setVisible(False)
+        self.users_table.setEditTriggers(
+            QAbstractItemView.EditTrigger.AllEditTriggers
+        )
+        self.users_table.horizontalHeader().setSectionResizeMode(
+            QHeaderView.ResizeMode.ResizeToContents
+        )
+        layout.addWidget(self.users_table)
+
+        buttons = QHBoxLayout()
+        buttons.setSpacing(8)
+        self.users_add_btn = QPushButton("Добавить")
+        self.users_add_btn.clicked.connect(self._add_user_row)
+        buttons.addWidget(self.users_add_btn)
+        self.users_remove_btn = QPushButton("Удалить")
+        self.users_remove_btn.clicked.connect(self._remove_user_row)
+        buttons.addWidget(self.users_remove_btn)
+        self.users_save_btn = blue_button("Сохранить пользователей")
+        self.users_save_btn.clicked.connect(self._save_users)
+        buttons.addWidget(self.users_save_btn)
+        self.users_password_btn = QPushButton("Сменить пароль")
+        self.users_password_btn.setToolTip("Пароль на раздел «Конфигурация»")
+        self.users_password_btn.clicked.connect(self._change_password)
+        buttons.addWidget(self.users_password_btn)
+        buttons.addStretch(1)
+        layout.addLayout(buttons)
+
+        self.users_status_label = QLabel("")
+        self.users_status_label.setObjectName("Muted")
+        self.users_status_label.setWordWrap(True)
+        layout.addWidget(self.users_status_label)
+
+        self._fill_users_table()
+
+    def _fill_users_table(self) -> None:
+        """Перечитать список пользователей в таблицу."""
+
+        if not hasattr(self, "users_table"):
+            return
+        users = load_users()
+        self.users_table.setRowCount(len(users))
+        for row, user in enumerate(users):
+            name_item = QTableWidgetItem(user.name)
+            name_item.setData(Qt.ItemDataRole.UserRole, user.id)
+            self.users_table.setItem(row, 0, name_item)
+            for col in range(len(PAGE_TITLES)):
+                item = QTableWidgetItem()
+                item.setFlags(
+                    Qt.ItemFlag.ItemIsEnabled | Qt.ItemFlag.ItemIsUserCheckable
+                )
+                checked = col in user.pages
+                item.setCheckState(
+                    Qt.CheckState.Checked if checked else Qt.CheckState.Unchecked
+                )
+                self.users_table.setItem(row, 1 + col, item)
+            base_combo = QComboBox()
+            base_combo.addItem("Обе базы", None)
+            base_combo.addItem("МИР", BASE_MIR)
+            base_combo.addItem("КОРЕЛИЧИ", BASE_KORELICHI)
+            index = {None: 0, BASE_MIR: 1, BASE_KORELICHI: 2}.get(user.base, 0)
+            base_combo.setCurrentIndex(index)
+            self.users_table.setCellWidget(row, 1 + len(PAGE_TITLES), base_combo)
+            edit_item = QTableWidgetItem()
+            edit_item.setFlags(
+                Qt.ItemFlag.ItemIsEnabled | Qt.ItemFlag.ItemIsUserCheckable
+            )
+            edit_item.setCheckState(
+                Qt.CheckState.Checked if user.can_edit else Qt.CheckState.Unchecked
+            )
+            self.users_table.setItem(row, 2 + len(PAGE_TITLES), edit_item)
+
+    def _add_user_row(self) -> None:
+        """Новый пользователь: только просмотр таблицы «Покупатели»."""
+
+        row = self.users_table.rowCount()
+        self.users_table.insertRow(row)
+        name_item = QTableWidgetItem("Новый пользователь")
+        name_item.setData(Qt.ItemDataRole.UserRole, new_user_id())
+        self.users_table.setItem(row, 0, name_item)
+        for col in range(len(PAGE_TITLES)):
+            item = QTableWidgetItem()
+            item.setFlags(Qt.ItemFlag.ItemIsEnabled | Qt.ItemFlag.ItemIsUserCheckable)
+            # По умолчанию новая учётка видит только «Покупатели».
+            checked = PAGE_TITLES[col] == "Покупатели"
+            item.setCheckState(
+                Qt.CheckState.Checked if checked else Qt.CheckState.Unchecked
+            )
+            self.users_table.setItem(row, 1 + col, item)
+        base_combo = QComboBox()
+        base_combo.addItem("Обе базы", None)
+        base_combo.addItem("МИР", BASE_MIR)
+        base_combo.addItem("КОРЕЛИЧИ", BASE_KORELICHI)
+        self.users_table.setCellWidget(row, 1 + len(PAGE_TITLES), base_combo)
+        edit_item = QTableWidgetItem()
+        edit_item.setFlags(Qt.ItemFlag.ItemIsEnabled | Qt.ItemFlag.ItemIsUserCheckable)
+        edit_item.setCheckState(Qt.CheckState.Unchecked)
+        self.users_table.setItem(row, 2 + len(PAGE_TITLES), edit_item)
+        self.users_table.setCurrentCell(row, 0)
+        self.users_status_label.setText("Добавлен пользователь — нажмите «Сохранить»")
+
+    def _remove_user_row(self) -> None:
+        row = self.users_table.currentRow()
+        if row < 0:
+            return
+        if self.users_table.rowCount() <= 1:
+            self.users_status_label.setText("Должен остаться хотя бы один пользователь")
+            return
+        self.users_table.removeRow(row)
+        self.users_status_label.setText("Пользователь удалён — нажмите «Сохранить»")
+
+    def _collect_users(self) -> list[User]:
+        """Собрать список пользователей из таблицы."""
+
+        users: list[User] = []
+        for row in range(self.users_table.rowCount()):
+            name_item = self.users_table.item(row, 0)
+            name = name_item.text().strip() if name_item is not None else ""
+            user_id = (
+                name_item.data(Qt.ItemDataRole.UserRole)
+                if name_item is not None
+                else None
+            )
+            pages = []
+            for col in range(len(PAGE_TITLES)):
+                item = self.users_table.item(row, 1 + col)
+                if item is not None and item.checkState() == Qt.CheckState.Checked:
+                    pages.append(col)
+            combo = self.users_table.cellWidget(row, 1 + len(PAGE_TITLES))
+            base = combo.currentData() if combo is not None else None
+            edit_item = self.users_table.item(row, 2 + len(PAGE_TITLES))
+            can_edit = bool(
+                edit_item is not None
+                and edit_item.checkState() == Qt.CheckState.Checked
+            )
+            users.append(
+                User(
+                    id=str(user_id or new_user_id()),
+                    name=name or "Пользователь",
+                    pages=pages,
+                    base=base,
+                    can_edit=can_edit,
+                    can_switch_base=base is None and can_edit,
+                )
+            )
+        return users
+
+    def _save_users(self) -> None:
+        save_users(self._collect_users())
+        self.users_status_label.setText("Пользователи сохранены")
+
+    def _change_password(self) -> None:
+        """Сменить пароль на раздел «Конфигурация» (v0.18.0)."""
+
+        from PySide6.QtWidgets import QInputDialog, QLineEdit
+
+        old_text, ok = QInputDialog.getText(
+            self, "Смена пароля", "Текущий пароль:", QLineEdit.EchoMode.Password
+        )
+        if not ok or not check_password(old_text):
+            self.users_status_label.setText("Текущий пароль не принят")
+            return
+        new_text, ok = QInputDialog.getText(
+            self, "Смена пароля", "Новый пароль:", QLineEdit.EchoMode.Password
+        )
+        if not ok or not new_text:
+            return
+        set_password(new_text)
+        self.users_status_label.setText("Пароль изменён")
+
+    def set_read_only(self, read_only: bool, can_admin: bool = False) -> None:
+        """Права пользователя: «только просмотр» или полный доступ (v0.18.0).
+
+        ``can_admin`` — доступ к разделу «Администрирование» (бэкап,
+        восстановление, сброс данных).
+        """
+
+        self.read_only = read_only
+        # Отметки в календаре меняют данные — без права ввода нельзя.
+        self.save_button.setVisible(not read_only)
+        self.cancel_button.setVisible(not read_only)
+        self.year_start_save_btn.setVisible(not read_only)
+        self.supplier_debts_table.setEditTriggers(
+            QAbstractItemView.EditTrigger.NoEditTriggers
+            if read_only
+            else QAbstractItemView.EditTrigger.AllEditTriggers
+        )
+        self.customer_debts_table.setEditTriggers(
+            QAbstractItemView.EditTrigger.NoEditTriggers
+            if read_only
+            else QAbstractItemView.EditTrigger.AllEditTriggers
+        )
+        self.admin_panel.setVisible(can_admin)
+        # Пользователей правит только тот, у кого есть право ввода данных.
+        for btn in (
+            self.users_add_btn,
+            self.users_remove_btn,
+            self.users_save_btn,
+            self.users_password_btn,
+        ):
+            btn.setVisible(not read_only)
+        self.users_table.setEditTriggers(
+            QAbstractItemView.EditTrigger.NoEditTriggers
+            if read_only
+            else QAbstractItemView.EditTrigger.AllEditTriggers
+        )
+
     # ------------------------------------------------------------- календарь
     def refresh(self) -> None:
         self.year_label.setText(str(self.year))
@@ -525,6 +769,7 @@ class DataView(QWidget):
         # v0.17.0: путь к файлу и незакоммиченные правки календаря —
         # от активной базы (после переключения МИР <-> КОРЕЛИЧИ).
         self.path_label.setText(str(self.store.path))
+        self._fill_users_table()
         self._pending_overrides = dict(self.store.data.day_overrides)
         self._fill_year_start_tables()
         self._update_admin_stats()
@@ -597,6 +842,8 @@ class DataView(QWidget):
         )
 
     def _on_day_clicked(self, day: date) -> None:
+        if self.read_only:  # v0.18.0: только просмотр
+            return
         mode = "off" if self.chk_off.isChecked() else "work"
         is_default_off = day.weekday() >= 5
         if (mode == "off") == is_default_off:
