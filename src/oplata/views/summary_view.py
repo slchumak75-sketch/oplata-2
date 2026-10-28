@@ -41,8 +41,9 @@ from ..reports import SummaryLine, SummarySection, build_summary_sections_html
 from ..storage import DataStore
 from ..widgets import CollapsiblePanel, date_edit_value, make_date_edit
 
-# Сколько недель вперёд показывать в блоке «Оплата понедельно».
-PLAN_WEEKS = 3
+# Сколько недель вперёд показывать в блоке «Оплата понедельно»
+# (v0.15.0: четыре недели — следующая, ещё две и четвёртая).
+PLAN_WEEKS = 4
 
 
 class SummaryView(QWidget):
@@ -90,6 +91,15 @@ class SummaryView(QWidget):
 
         # --- плашка со всеми строками ---
         self.panel = CollapsiblePanel("Сводка", expanded=True)
+        # Заголовок «Сводка» — тем же шрифтом, что и заголовки блоков
+        # «Поступление»/«Оплата» (v0.15.0); подзаголовки блоков внутри
+        # мельче (см. ``_add_section``).
+        self.panel.toggle.setStyleSheet(
+            "QPushButton{background:transparent;border:none;text-align:left;"
+            f"padding:2px 0;font-weight:800;font-size:{styles.fs(15)}px;"
+            f"color:{styles.TEXT}}}"
+            "QPushButton:hover{background:transparent}"
+        )
         content = self.panel.content_layout
         content.setSpacing(8)
 
@@ -117,6 +127,16 @@ class SummaryView(QWidget):
             + [
                 (f"plan_{index}", f"Оплата неделя {index}")
                 for index in range(1, PLAN_WEEKS + 1)
+            ],
+        )
+        self._separator(content)
+
+        self._add_section(
+            content,
+            "ЗАДОЛЖЕННОСТЬ ПОКУПАТЕЛЕЙ",
+            [
+                ("cust_total", "Всего задолженность покупателей"),
+                ("cust_week", "За неделю"),
             ],
         )
         self._separator(content)
@@ -152,7 +172,7 @@ class SummaryView(QWidget):
 
         caption = QLabel(title)
         caption.setStyleSheet(
-            f"font-weight:800;font-size:{styles.fs(13)}px;color:{styles.TEXT}"
+            f"font-weight:800;font-size:{styles.fs(12)}px;color:{styles.TEXT}"
         )
         layout.addWidget(caption)
 
@@ -207,6 +227,7 @@ class SummaryView(QWidget):
         plan = calc.weekly_payment_plan(
             data, on_date, PLAN_WEEKS, include_archived
         )
+        customers = calc.customer_debt_totals(data, on_date, include_archived)
         month = calc.month_totals(data, on_date)
 
         self._set_value("funds", funds.funds)
@@ -224,6 +245,8 @@ class SummaryView(QWidget):
                 f"Оплата {week.monday.strftime('%d.%m')}"
                 f" – {week.sunday.strftime('%d.%m')}"
             )
+        self._set_value("cust_total", customers.total)
+        self._set_value("cust_week", customers.week)
         self._set_value("month_income", month.income)
         self._set_value("month_payments", month.payments)
 
@@ -261,6 +284,16 @@ class SummaryView(QWidget):
                         fmt_money_plain(week.amount),
                     )
                     for week in plan
+                ],
+            ),
+            SummarySection(
+                title="Задолженность покупателей",
+                lines=[
+                    SummaryLine(
+                        "Всего задолженность покупателей",
+                        fmt_money_plain(customers.total),
+                    ),
+                    SummaryLine("За неделю", fmt_money_plain(customers.week)),
                 ],
             ),
             SummarySection(

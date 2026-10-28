@@ -525,9 +525,13 @@ def test_customer_sale_table_and_direct_input(qt_app, store):
     view._rebuild_table(view._partners, view._days, today)
     table = view.table
 
-    assert table.columnCount() == 17  # 3 левые + 7 дней * 2 подколонки
-    assert table.item(2, 3).text() == "Реализация"
-    assert table.item(2, 4).text() == "Оплата"
+    # v0.15.0: у покупателей нет столбца «просрочено» — 1 имя + 1 итог
+    # («Всего») + 7 дней * 2 подколонки.
+    assert table.columnCount() == 16
+    assert table.item(1, 1).text() == "ЗАДОЛЖ."
+    assert table.item(2, 1).text() == "Всего"
+    assert table.item(2, 2).text() == "Реализация"
+    assert table.item(2, 3).text() == "Оплата"
     assert all(
         table.item(2, col) is None or table.item(2, col).text() != "Долг"
         for col in range(table.columnCount())
@@ -538,14 +542,14 @@ def test_customer_sale_table_and_direct_input(qt_app, store):
         return None if brush.style() == Qt.BrushStyle.NoBrush else brush.color().name()
 
     # Только верхнее поле «27 вт» салатовое; ниже этот день не красим.
-    assert bg_name(1, 3 + 1 * 2) == styles.WEEK_TABLE_TODAY_GREEN
-    assert bg_name(2, 3 + 1 * 2) is None
-    assert bg_name(TOTAL_ROW, 3 + 1 * 2) is None
-    assert bg_name(FIRST_DATA_ROW, 3 + 1 * 2) is None
+    assert bg_name(1, 2 + 1 * 2) == styles.WEEK_TABLE_TODAY_GREEN
+    assert bg_name(2, 2 + 1 * 2) is None
+    assert bg_name(TOTAL_ROW, 2 + 1 * 2) is None
+    assert bg_name(FIRST_DATA_ROW, 2 + 1 * 2) is None
     # Суббота как обычный выходной остаётся розовой и в теле таблицы.
     assert bg_name(FIRST_DATA_ROW, 3 + 5 * 2) == styles.WEEK_TABLE_WEEKEND_PINK
 
-    sale = table.item(FIRST_DATA_ROW, 3)
+    sale = table.item(FIRST_DATA_ROW, 2)
     sale.setText("500")
     (op,) = store.data.operations
     assert (op.counterparty_id, op.kind, op.date, op.amount, op.due_date) == (
@@ -713,8 +717,8 @@ def test_receipts_customers_popup_opens_right_and_sums(qt_app, store):
     window.customers_view.goto_date(date(2026, 10, 27))
     table = window.customers_view.table
     names = [c.name for c in store.data.customers]
-    assert table.item(4 + names.index(first.name), 3 + 1 * 2 + 1).text() == "3 000,00"
-    assert table.item(4 + names.index(second.name), 3 + 1 * 2 + 1).text() == "1 250,50"
+    assert table.item(4 + names.index(first.name), 2 + 1 * 2 + 1).text() == "3 000,00"
+    assert table.item(4 + names.index(second.name), 2 + 1 * 2 + 1).text() == "1 250,50"
     window.close()
 
 
@@ -927,7 +931,7 @@ def test_supplier_payments_sync_both_ways(qt_app, store):
     window.customers_view.goto_date(date(2026, 10, 27))
     customers_table = window.customers_view.table
     buyer_row = 4 + [c.name for c in store.data.customers].index("Покупатель Е")
-    customers_table.item(buyer_row, 3 + 1 * 2 + 1).setText("1 750")
+    customers_table.item(buyer_row, 2 + 1 * 2 + 1).setText("1 750")
     assert view.incoming.amount_text("customers") == "1 750,00"
     window.close()
 
@@ -1222,8 +1226,8 @@ def test_year_start_panel_saves_opening_balances(qt_app, store):
     window.close()
 
 
-def test_outgoing_arrows_in_right_corner_and_no_scroll_in_incoming(qt_app, store):
-    """Стрелки «Оплаты» — справа; скроллинга в «Поступлении» нет."""
+def test_arrows_are_next_to_today_and_bold_only_on_receipts(qt_app, store):
+    """Стрелки — справа от «Сегодня»; жирные только на первой вкладке."""
     from PySide6.QtCore import Qt
 
     from oplata.app import MainWindow
@@ -1233,21 +1237,25 @@ def test_outgoing_arrows_in_right_corner_and_no_scroll_in_incoming(qt_app, store
     qt_app.processEvents()
     view = window.receipts_view
 
-    # В блоке «Оплата» стрелки правее кнопки «Сегодня».
+    # Стрелки стоят сразу справа от кнопки «Сегодня».
+    for block in (view.incoming, view.outgoing):
+        assert block.prev_btn.x() > block.today_btn.x()
+        assert block.next_btn.x() > block.prev_btn.x()
     outgoing = view.outgoing
-    assert outgoing.next_btn.x() > outgoing.today_btn.x()
-    assert outgoing.prev_btn.x() > outgoing.today_btn.x()
-    assert outgoing.next_btn.x() > outgoing.add_btn.x()
-    # Стрелки стоят в правом углу: до правого края панели меньше 90 px.
-    free = outgoing.width() - (outgoing.next_btn.x() + outgoing.next_btn.width())
-    assert 0 <= free < 90
+    assert outgoing.add_btn.x() > outgoing.next_btn.x()
+    assert outgoing.remove_btn.x() > outgoing.add_btn.x()
+    # В блоке «Поступление» кнопок добавления строк нет.
+    assert not hasattr(view.incoming, "add_btn")
 
-    # В блоке «Поступление» стрелки остались рядом с датой (левее, чем
-    # у «Оплаты»), скролла нет.
-    incoming = view.incoming
-    assert incoming.next_btn.x() < outgoing.next_btn.x()
+    # Жирные стрелки только здесь: у них увеличенный кегль, а на
+    # других вкладках стрелки обычного размера (v0.15.0).
+    plain = window.suppliers_view.prev_week_btn.font().pixelSize()
+    assert outgoing.next_btn.font().pixelSize() > plain
+    assert view.incoming.next_btn.font().pixelSize() > plain
+
+    # Скроллинга в «Поступлении» нет, в «Оплате» он закреплён.
     assert (
-        incoming.table.verticalScrollBarPolicy()
+        view.incoming.table.verticalScrollBarPolicy()
         == Qt.ScrollBarPolicy.ScrollBarAlwaysOff
     )
     assert (
@@ -1388,6 +1396,8 @@ def test_summary_panel_shows_three_blocks_line_by_line(qt_app, store):
     assert view.value_text("plan_2") == "900,00"
     assert view.caption_text("plan_3") == "Оплата 16.11 – 22.11"
     assert view.value_text("plan_3") == "0,00"
+    assert view.caption_text("plan_4") == "Оплата 23.11 – 29.11"
+    assert view.value_text("plan_4") == "0,00"
 
     # Блок «Месяц»: приход 05.10 + 10.10 + 20.10, оплаты 27.10 + аренда.
     assert view.value_text("month_income") == "2 100,00"
@@ -1395,7 +1405,10 @@ def test_summary_panel_shows_three_blocks_line_by_line(qt_app, store):
 
     # Все значения построчно: подписи и числа лежат в сетке блоками.
     assert view.panel.isVisible()
-    assert len(view._values) == len(view._captions) == 4 + 7 + 2
+    assert len(view._values) == len(view._captions) == 4 + 8 + 2 + 2
+    # Блок «Задолженность покупателей» пока пуст (покупателей нет).
+    assert view.value_text("cust_total") == "0,00"
+    assert view.value_text("cust_week") == "0,00"
     window.close()
 
 
@@ -1424,13 +1437,144 @@ def test_summary_calc_helpers_are_pure(qt_app, store):
     assert totals.overdue == Decimal("700")
 
     plan = calc.weekly_payment_plan(store.data, date(2026, 10, 28))
-    assert [week.amount for week in plan] == [Decimal("0")] * 3
+    assert [week.amount for week in plan] == [Decimal("0")] * 4
     assert [week.monday.isoformat() for week in plan] == [
         "2026-11-02",
         "2026-11-09",
         "2026-11-16",
+        "2026-11-23",
     ]
 
     funds = calc.funds_totals(store.data)
     assert funds.funds == Decimal("0")   # «текущие средства» не задавали
     assert funds.balance == funds.income - funds.payments
+
+
+def test_summary_customer_debt_block_counts_sales_minus_payments(qt_app, store):
+    """Блок «Задолженность покупателей»: Реализация − Оплата."""
+    from datetime import date
+    from decimal import Decimal
+
+    from PySide6.QtCore import QDate
+
+    from oplata.app import MainWindow
+    from oplata.models import (
+        Counterparty,
+        add_customer_receipt,
+        add_realization,
+    )
+
+    buyer = Counterparty(name="Покупатель К")
+    store.data.customers.append(buyer)
+    add_realization(store.data, buyer.id, "2026-10-27", Decimal("5000"))
+    add_customer_receipt(store.data, buyer.id, "2026-10-28", Decimal("1500"))
+
+    window = MainWindow(store)
+    window.show()
+    qt_app.processEvents()
+    view = window.summary_view
+    view.date_edit.setDate(QDate(2026, 10, 27))
+    view.refresh()
+
+    assert view.caption_text("cust_total") == "Всего задолженность покупателей"
+    assert view.value_text("cust_total") == "3 500,00"
+    assert view.value_text("cust_week") == "3 500,00"
+
+    # «Итого Поступление» не включает реализацию покупателей (v0.15.0),
+    # но деньги, поступившие от покупателя, — включает.
+    assert view.value_text("income") == "1 500,00"
+    window.close()
+
+
+def test_summary_refreshes_right_after_typing_amount(qt_app, store):
+    """Сводка пересчитывается сразу после ввода суммы в ячейку."""
+    from oplata.app import MainWindow
+    from oplata.views.receipts_view import COL_AMOUNT
+
+    window = MainWindow(store)
+    window.show()
+    qt_app.processEvents()
+    view = window.receipts_view
+    summary = window.summary_view
+
+    assert summary.value_text("income") == "0,00"
+    view.incoming.table.item(0, COL_AMOUNT).setText("2 500")
+    qt_app.processEvents()
+    assert summary.value_text("income") == "2 500,00"
+    assert summary.value_text("balance") == "2 500,00"
+
+    # Убрали сумму — сводка снова пересчиталась.
+    view.incoming.table.item(0, COL_AMOUNT).setText("")
+    qt_app.processEvents()
+    assert summary.value_text("income") == "0,00"
+    window.close()
+
+
+def test_week_customer_debt_column_is_sales_minus_payments(qt_app, store):
+    """У покупателей столбец «ЗАДОЛЖ.»/«Всего» = Реализация − Оплата."""
+    from datetime import date
+    from decimal import Decimal
+
+    from oplata.app import MainWindow
+    from oplata.models import (
+        Counterparty,
+        add_customer_receipt,
+        add_realization,
+    )
+
+    buyer = Counterparty(name="Покупатель Л")
+    store.data.customers.append(buyer)
+    add_realization(store.data, buyer.id, "2026-10-27", Decimal("4000"))
+    add_customer_receipt(store.data, buyer.id, "2026-10-28", Decimal("1000"))
+
+    window = MainWindow(store)
+    window.show()
+    qt_app.processEvents()
+    view = window.customers_view
+    view.goto_date(date(2026, 10, 27))
+    table = view.table
+
+    assert table.item(1, 1).text() == "ЗАДОЛЖ."
+    assert table.item(2, 1).text() == "Всего"
+    # Столбца «просрочено» у покупателей нет: вторая колонка — день.
+    assert table.item(2, 2).text() == "Реализация"
+    assert table.item(4, 1).text() == "3 000,00"
+    assert table.item(3, 1).text() == "3 000,00"  # строка «ВСЕГО»
+    window.close()
+
+
+def test_supplier_overdue_carries_over_to_next_week(qt_app, store):
+    """«На сегодня» — просроченное; при переходе недели долги переносятся."""
+    from datetime import date, timedelta
+    from decimal import Decimal
+
+    from oplata.app import MainWindow
+    from oplata.models import add_delivery
+
+    supplier = store.data.suppliers[0]
+    # Срок 27.10 — внутри недели 26.10–01.11; срок 05.11 — в следующей.
+    add_delivery(store.data, supplier.id, "2026-10-20", "2026-10-27", Decimal("700"))
+    add_delivery(store.data, supplier.id, "2026-10-20", "2026-11-05", Decimal("900"))
+
+    window = MainWindow(store)
+    window.show()
+    qt_app.processEvents()
+    view = window.suppliers_view
+    row = 4  # первая строка контрагента
+    table = view.table
+
+    view.goto_date(date(2026, 10, 26))
+    assert table.item(1, 1).text() == "ПРОСРОЧЕН."
+    assert table.item(1, 2).text() == "ЗАДОЛЖ."
+    assert table.item(2, 2).text() == "за неделю"
+    # На текущей неделе: просрочено 700 (срок 27.10 <= сегодня),
+    # итог за неделю — 700.
+    assert table.item(row, 1).text() == "700,00"
+    assert table.item(row, 2).text() == "700,00"
+
+    # Следующая неделя: долг 700 перенесён в «на сегодня», в «за неделю»
+    # уже 900 (срок 05.11).
+    view.goto_date(date(2026, 10, 26) + timedelta(days=7))
+    assert table.item(row, 1).text() == "700,00"
+    assert table.item(row, 2).text() == "900,00"
+    window.close()

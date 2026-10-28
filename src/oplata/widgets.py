@@ -233,22 +233,32 @@ def kpi_card(title: str, value_text: str, green_value: bool = False) -> tuple[QF
 
 
 # ------------------------------------------------------------------ стрелки
-def arrow_button(text: str, tooltip: str = "") -> QPushButton:
-    """Кнопка со **жирной** стрелкой (v0.13.0): крупнее и заметнее."""
+def arrow_button(
+    text: str, tooltip: str = "", bold: bool = False
+) -> QPushButton:
+    """Кнопка-стрелка «←»/«→».
+
+    По умолчанию — обычная, как до v0.13.0. С ``bold=True`` стрелка
+    жирная и крупнее: с v0.15.0 жирными остались только стрелки блоков
+    «Поступление» и «Оплата» на первой вкладке.
+    """
 
     button = QPushButton(text)
     button.setFixedWidth(52)
-    font = button.font()
-    font.setBold(True)
-    if font.pointSize() > 0:
-        font.setPointSize(font.pointSize() + 6)
+    if bold:
+        # Стиль приложения задаёт кнопкам свой шрифт, поэтому жирность
+        # и кегль задаются таблицей стилей самого виджета: она имеет
+        # приоритет над общим QSS и над ``setFont``.
+        button.setStyleSheet(
+            "QPushButton{"
+            f"font-weight:800;font-size:{styles.fs(20)}px;"
+            "padding:0 4px;}"
+        )
     else:
-        font.setPixelSize(styles.fs(20))
-    button.setFont(font)
-    button.setStyleSheet(
-        f"QPushButton{{font-weight:800;font-size:{styles.fs(16)}px;"
-        "padding:2px 8px;}"
-    )
+        button.setStyleSheet(
+            f"QPushButton{{font-weight:800;font-size:{styles.fs(16)}px;"
+            "padding:2px 8px;}"
+        )
     if tooltip:
         button.setToolTip(tooltip)
     return button

@@ -483,7 +483,8 @@ class MoneyBlock(QFrame):
         # Блок «Оплата» тянется до низа экрана (v0.13.0), поэтому его
         # таблица растягиваемая и всегда с широким скроллбаром.
         self._stretch_table = stretch_table
-        # Стрелки даты у блока «Оплата» стоят в правом углу (v0.14.0).
+        # Раскладка заголовка одна для обоих блоков (v0.15.0): стрелки
+        # справа от «Сегодня», «+»/«−» — в правом краю.
         self._arrows_at_end = arrows_at_end
         self.row_keys = list(row_keys)
         self.on_open_popup = on_open_popup
@@ -514,11 +515,19 @@ class MoneyBlock(QFrame):
         self.today_btn.clicked.connect(self.go_today)
         top.addWidget(self.today_btn)
 
-        if arrows_at_end:
-            # В блоке «Оплата» стрелки уходят в правый угол: всё
-            # остальное прижато к левому краю заголовка.
-            top.addStretch(1)
+        # v0.15.0: стрелки «←»/«→» стоят сразу справа от кнопки
+        # «Сегодня» (жирные — только на этой вкладке), а «+»/«−», если
+        # они у блока есть, уходят в правый край заголовка.
+        self.prev_btn = arrow_button("←", "День назад", bold=True)
+        self.prev_btn.clicked.connect(lambda: self.shift_date(-1))
+        top.addWidget(self.prev_btn)
 
+        self.next_btn = arrow_button("→", "День вперёд", bold=True)
+        self.next_btn.clicked.connect(lambda: self.shift_date(1))
+        top.addWidget(self.next_btn)
+
+        if on_add_row is not None or on_remove_row is not None:
+            top.addStretch(1)
         if on_add_row is not None:
             self.add_btn = arrow_button("+", "Добавить свою строку")
             self.add_btn.clicked.connect(on_add_row)
@@ -527,19 +536,6 @@ class MoneyBlock(QFrame):
             self.remove_btn = arrow_button("−", "Убрать выделенную строку")
             self.remove_btn.clicked.connect(self._remove_selected)
             top.addWidget(self.remove_btn)
-
-        if arrows_at_end:
-            top.addSpacing(10)
-        self.prev_btn = arrow_button("←", "День назад")
-        self.prev_btn.clicked.connect(lambda: self.shift_date(-1))
-        top.addWidget(self.prev_btn)
-
-        self.next_btn = arrow_button("→", "День вперёд")
-        self.next_btn.clicked.connect(lambda: self.shift_date(1))
-        top.addWidget(self.next_btn)
-
-        if not arrows_at_end:
-            top.addStretch(1)
         root.addLayout(top)
 
         # --- таблица: строка + сумма + нарастающие итоги ---
@@ -797,7 +793,6 @@ class ReceiptsView(QWidget):
             on_remove_row=lambda key: self.remove_other_row(key, OUTGOING),
             direction=OUTGOING,
             stretch_table=True,
-            arrows_at_end=True,
         )
         # «Поступление» — по высоте содержимого, «Оплата» тянется до
         # низа экрана (v0.13.0).

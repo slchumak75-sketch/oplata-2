@@ -49,6 +49,7 @@ from .models import (
     operation_amount,
     other_payment_amount,
     year_start_amount,
+    year_start_customer_debt,
 )
 
 ZERO = Decimal("0")
@@ -143,6 +144,18 @@ class WeekPlan:
 
 
 @dataclass(frozen=True)
+class CustomerDebtTotals:
+    """Блок «Задолженность покупателей» плашки «Сводка» (v0.15.0).
+
+    Считается как **Реализация − Оплата** по сохранённым операциям
+    покупателя плюс долг переноса на 1 января (плашка «Данные»).
+    """
+
+    total: Decimal = ZERO        # всего задолженность покупателей
+    week: Decimal = ZERO         # за текущую неделю
+
+
+@dataclass(frozen=True)
 class MonthTotals:
     """Блок «Месяц» плашки «Сводка»."""
 
@@ -207,6 +220,12 @@ def funds_totals(data: AppData) -> FundsTotals:
     except InvalidOperation:
         funds = ZERO
 
+    # v0.15.0: «Реализация» покупателей в ИТОГ ПОСТУПЛЕНИЕ не входит —
+    # это отгрузка, а не деньги. Деньги, поступившие от покупателя
+    # («Оплата» покупателя), наоборот, поступление.
+    supplier_ids = {s.id for s in data.suppliers}
+    customer_ids = {c.id for c in data.customers}
+
     income = ZERO
     for receipt in data.cash_receipts:
         income += cash_receipt_amount(receipt)
@@ -214,7 +233,7 @@ def funds_totals(data: AppData) -> FundsTotals:
         if payment.direction == INCOMING:
             income += other_payment_amount(payment)
     for op in data.operations:
-        if op.kind == KIND_SALE:
+        if op.kind == KIND_PAYMENT and op.counterparty_id in customer_ids:
             income += operation_amount(op)
 
     payments = ZERO
@@ -222,8 +241,11 @@ def funds_totals(data: AppData) -> FundsTotals:
         if payment.direction != INCOMING:
             payments += other_payment_amount(payment)
     for op in data.operations:
-        if op.kind == KIND_PAYMENT:
+        if op.kind == KIND_PAYMENT and (
+            not supplier_ids or op.counterparty_id in supplier_ids
+        ):
             payments += operation_amount(op)
+    _ = KIND_SALE  # реализация в расчёте средств не участвует
 
     return FundsTotals(
         funds=funds,
@@ -253,7 +275,7 @@ def debt_totals(
 def weekly_payment_plan(
     data: AppData,
     on_date: date,
-    weeks: int = 3,
+    weeks: int = 4,
     include_archived: bool = False,
 ) -> list[WeekPlan]:
     """«Оплата понедельно»: ``weeks`` недель, следующих за текущей."""
@@ -272,6 +294,84 @@ def weekly_payment_plan(
             )
         )
     return result
+
+
+def _customer_debt_components(
+    data: AppData, customer: Counterparty
+) -> tuple[Decimal, Decimal]:
+    """(реализация, оплата) покупателя: суммы по всем его операциям."""
+
+    sale = ZERO
+    payment = ZERO
+    for op in data.operations:
+        if op.counterparty_id != customer.id:
+            continue
+        if op.kind == KIND_SALE:
+            sale += operation_amount(op)
+        elif op.kind == KIND_PAYMENT:
+            payment += operation_amount(op)
+    return sale, payment
+
+
+def customer_debt_amount(
+    data: AppData,
+    customer: Counterparty,
+    start: date | None = None,
+    end: date | None = None,
+) -> Decimal:
+    """Задолженность покупателя: Реализация − Оплата (+ перенос 1 января).
+
+    Без ``start``/``end`` берутся все операции; с границами — только
+    операции внутри периода. Перенос на 1 января (плашка «Данные»)
+    входит в общую сумму и не входит в «за неделю».
+    """
+
+    sale = ZERO
+    payment = ZERO
+    for op in data.operations:
+        if op.counterparty_id != customer.id:
+            continue
+        if start is not None or end is not None:
+            day = _iso_day(op.date)
+            if day is None:
+                continue
+            if start is not None and day < start:
+                continue
+            if end is not None and day > end:
+                continue
+        if op.kind == KIND_SALE:
+            sale += operation_amount(op)
+        elif op.kind == KIND_PAYMENT:
+            payment += operation_amount(op)
+    total = sale - payment
+    if start is None and end is None:
+        entry = year_start_customer_debt(data, customer.id)
+        if entry is not None:
+            total += year_start_amount(entry)
+    return total
+
+
+def customer_debt_totals(
+    data: AppData, on_date: date, include_archived: bool = False
+) -> CustomerDebtTotals:
+    """Блок «Задолженность покупателей» на дату ``on_date``."""
+
+    customers = [
+        c for c in data.customers if include_archived or not c.archived
+    ]
+    monday = week_monday(on_date)
+    sunday = monday + timedelta(days=6)
+    total = sum(
+        (customer_debt_amount(data, customer) for customer in customers), ZERO
+    )
+    week = sum(
+        (
+            customer_debt_amount(data, customer, monday, sunday)
+            for customer in customers
+        ),
+        ZERO,
+    )
+    return CustomerDebtTotals(total=total, week=week)
 
 
 def month_totals(data: AppData, on_date: date) -> MonthTotals:

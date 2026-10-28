@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import json
 import os
+from collections.abc import Callable
 from pathlib import Path
 
 from .models import AppData, seed_data
@@ -37,6 +38,9 @@ class DataStore:
 
     def __init__(self, path: Path | None = None) -> None:
         self.path = path or default_data_path()
+        # Подписчики на сохранение (v0.15.0): «Сводка» должна
+        # пересчитываться сразу после ввода, а не только при смене даты.
+        self.on_saved: list[Callable[[], None]] = []
         self.data: AppData = self._load()
 
     def _load(self) -> AppData:
@@ -58,3 +62,6 @@ class DataStore:
         self.path.parent.mkdir(parents=True, exist_ok=True)
         text = json.dumps(self.data.to_dict(), ensure_ascii=False, indent=2)
         self.path.write_text(text, encoding="utf-8")
+        # «Сводка» пересчитывается сразу после любого сохранения данных.
+        for callback in list(self.on_saved):
+            callback()

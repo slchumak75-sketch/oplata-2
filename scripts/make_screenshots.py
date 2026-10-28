@@ -40,6 +40,86 @@ OUT = ROOT / "docs" / "screenshots"
 PAGES = ["receipts", "suppliers", "customers", "data"]
 
 
+def seed_demo(store) -> None:
+    """Демо-данные для снимков: поставки, оплаты, реализация, касса.
+
+    Заполняются ДО первого снимка, поэтому и блоки «Поступление/
+    Оплата», и «Сводка» попадают в кадр с цифрами.
+    """
+
+    from oplata.models import (
+        add_cash_receipt,
+        set_year_start_funds,
+        set_year_start_supplier_debt,
+    )
+
+    ggg = next(s for s in store.data.suppliers if s.name == "ггг")
+    eee = next(s for s in store.data.suppliers if s.name == "eee")
+    buyer = Counterparty(name="Покупатель А")
+    store.data.customers.append(buyer)
+
+    first = Operation(
+        kind="Приход",
+        counterparty_id=ggg.id,
+        date="2026-10-26",
+        due_date="2026-11-05",
+        amount="88888.88",
+        document="Накладная 42",
+        comment="поставка за неделю",
+    )
+    store.data.operations.extend(
+        [
+            first,
+            Operation(
+                kind="Оплата",
+                counterparty_id=ggg.id,
+                date="2026-10-27",
+                amount="10000.00",
+                document="П/п 17",
+                comment="частичная оплата",
+            ),
+            Operation(
+                kind="Приход",
+                counterparty_id=eee.id,
+                date="2026-10-27",
+                due_date="2026-10-27",
+                amount="25000.00",
+                document="Счёт 8",
+                comment="предоплата",
+            ),
+            Operation(
+                kind="Реализация",
+                counterparty_id=buyer.id,
+                date="2026-10-28",
+                amount="12345.67",
+                document="Реализация 3",
+            ),
+        ]
+    )
+    # Касса и карты за 27.10 и более ранние дни: видны итоги
+    # «Неделя / Месяц / Квартал / Год».
+    add_cash_receipt(store.data, "cash", "2026-10-27", Decimal("15000"))
+    add_cash_receipt(store.data, "card", "2026-10-27", Decimal("42500.50"))
+    add_cash_receipt(store.data, "cash", "2026-10-26", Decimal("9800"))
+    add_cash_receipt(store.data, "card", "2026-10-21", Decimal("31400"))
+    add_cash_receipt(store.data, "cash", "2026-10-05", Decimal("120000"))
+    store.data.operations.append(
+        Operation(
+            kind="Оплата",
+            counterparty_id=buyer.id,
+            date="2026-10-27",
+            amount="12345.67",
+            comment="Поступление от покупателя",
+        )
+    )
+    # Перенос остатков на 1 января: плашка «Данные» и «Сводка» с цифрами.
+    set_year_start_funds(store.data, Decimal("250000"))
+    set_year_start_supplier_debt(
+        store.data, eee.id, "2026-01-20", Decimal("48000")
+    )
+    store.save()
+
+
 def main() -> int:
     app = QApplication(sys.argv[:1])
 
@@ -58,6 +138,7 @@ def main() -> int:
     OUT.mkdir(parents=True, exist_ok=True)
     with tempfile.TemporaryDirectory() as tmp:
         store = DataStore(Path(tmp) / "data.json")
+        seed_demo(store)  # данные для снимков: снимки страниц идут сразу
         window = MainWindow(store)
         # На документационном снимке не нужен случайный временный путь:
         # показываем реальное расположение данных у пользователя Windows.
@@ -83,8 +164,9 @@ def main() -> int:
                 return
             ggg = next(s for s in store.data.suppliers if s.name == "ггг")
             eee = next(s for s in store.data.suppliers if s.name == "eee")
-            buyer = Counterparty(name="Покупатель А")
-            store.data.customers.append(buyer)
+            buyer = next(
+                c for c in store.data.customers if c.name == "Покупатель А"
+            )
             first = Operation(
                 kind="Приход",
                 counterparty_id=ggg.id,

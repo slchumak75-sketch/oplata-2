@@ -95,6 +95,10 @@ class MainWindow(QMainWindow):
             store, on_calendar_saved=self.refresh_after_calendar_change
         )
 
+        # «Сводка» пересчитывается сразу после ввода: любое сохранение
+        # данных обновляет её (v0.15.0).
+        self.store.on_saved.append(self.summary_view.refresh)
+
         self.stack = QStackedWidget()
         for view in (
             self.receipts_view,
