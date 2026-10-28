@@ -39,7 +39,7 @@ def test_main_window_all_pages(qt_app, store):
         "Поступление и оплаты",
         "Поставщики",
         "Покупатели",
-        "Данные",
+        "Конфигурация",  # v0.14.0: прежняя вкладка «Данные»
     ]
     assert window.stack.count() == 4  # вкладки «Сводка» больше нет
     # Вкладка «Поступление и оплаты»: два блока один под другим, в каждом
@@ -77,8 +77,12 @@ def test_main_window_all_pages(qt_app, store):
     for index in range(4):
         window.show_page(index)
         assert window.stack.currentIndex() == index
-    # В сводке — 5 демо-поставщиков с макетов
-    assert window.summary_view.table.rowCount() == 5
+    # Сводка — построчная плашка из трёх блоков (v0.14.0)
+    summary = window.summary_view
+    assert summary.caption_text("funds") == "Остаток на счету"
+    assert summary.caption_text("debt_total") == "Всего задолженность"
+    assert summary.caption_text("month_income") == "Приход с начала месяца"
+    assert summary.caption_text("plan_1").startswith("Оплата ")
     # В покупателях справа «0»
     assert window.customers_view.right_value_label.text() == "0"
     window.close()
@@ -358,35 +362,45 @@ def test_summary_print_snapshot_and_pdf_render(qt_app, store, tmp_path):
     """Печать «Сводки» берёт экранный снимок и реально рисуется в PDF."""
     from datetime import datetime
 
+    from decimal import Decimal
+
     from PySide6.QtGui import QPageLayout, QPageSize
     from PySide6.QtPrintSupport import QPrinter
 
     from oplata.app import MainWindow
+    from oplata.models import add_delivery
 
     window = MainWindow(store)
     view = window.summary_view
     assert view.print_button.text() == "🖨  Печать"
 
+    # Поставка со сроком 20.10 попадает в задолженность поставщика.
     archived = store.data.suppliers[0]
-    archived.archived = True
+    add_delivery(
+        store.data, archived.id, "2026-10-10", "2026-10-20", Decimal("1000")
+    )
     view.refresh()
+    hidden_total = view.value_text("debt_total")
+    assert hidden_total == "1 000,00"
+    assert view.value_text("debt_overdue") == "1 000,00"
     hidden_html = view.build_print_html(datetime(2026, 10, 27, 12, 0))
-    assert view.table.rowCount() == 4
-    assert archived.name not in hidden_html
     assert "Архивные поставщики: скрыты" in hidden_html
+    assert "Задолженность поставщикам" in hidden_html
+    assert "Средства" in hidden_html
+    assert "Месяц" in hidden_html
 
+    archived.archived = True
     view.show_archived.setChecked(True)  # сигнал сам вызовет refresh()
     shown_html = view.build_print_html(datetime(2026, 10, 27, 12, 0))
-    assert view.table.rowCount() == 5
-    assert archived.name in shown_html
+    assert view.value_text("debt_total") == hidden_total
     assert "Архивные поставщики: показаны" in shown_html
-    assert "Задолженность по поставщикам" in shown_html
+    assert "1 000,00" in shown_html
 
     document = view.create_print_document(datetime(2026, 10, 27, 12, 0))
     printer = view.configure_print_printer(
         QPrinter(QPrinter.PrinterMode.HighResolution)
     )
-    assert printer.pageLayout().orientation() == QPageLayout.Orientation.Landscape
+    assert printer.pageLayout().orientation() == QPageLayout.Orientation.Portrait
     assert printer.pageLayout().pageSize().id() == QPageSize.PageSizeId.A4
     pdf_path = tmp_path / "summary.pdf"
     printer.setOutputFormat(QPrinter.OutputFormat.PdfFormat)
@@ -810,7 +824,7 @@ def test_receipts_popup_keeps_saved_amounts(qt_app, store):
     window.close()
 
 
-def test_other_payment_rows_add_rename_and_remove(qt_app, store):
+def test_other_payment_rows_add_rename_and_remove(qt_app, store, monkeypatch):
     """Блок «Оплата»: свои виды оплат, кнопки «+» и «−»."""
     from datetime import date
 
@@ -845,14 +859,12 @@ def test_other_payment_rows_add_rename_and_remove(qt_app, store):
     view.add_other_row()
     assert len(view.outgoing.row_keys) == 3
     view.outgoing.table.setCurrentCell(1, 0)
-    monkeypatched = QMessageBox.question
-    QMessageBox.question = staticmethod(
-        lambda *args, **kwargs: QMessageBox.StandardButton.Yes
+    monkeypatch.setattr(
+        QMessageBox,
+        "question",
+        staticmethod(lambda *args, **kwargs: QMessageBox.StandardButton.Yes),
     )
-    try:
-        view.remove_other_row("other:Аренда")
-    finally:
-        QMessageBox.question = monkeypatched
+    view.remove_other_row("other:Аренда")
     assert view.outgoing.row_keys == [
         "suppliers",
         "other:Новый вид оплаты",
@@ -864,13 +876,13 @@ def test_other_payment_rows_add_rename_and_remove(qt_app, store):
     ] == ["Новый вид оплаты"]
 
     # Постоянную строку «Поставщики» удалить нельзя.
-    monkeypatched = QMessageBox.information
-    QMessageBox.information = staticmethod(lambda *args, **kwargs: None)
-    try:
-        view.outgoing.table.setCurrentCell(0, 0)
-        view.outgoing._remove_selected()
-    finally:
-        QMessageBox.information = monkeypatched
+    monkeypatch.setattr(
+        QMessageBox,
+        "information",
+        staticmethod(lambda *args, **kwargs: None),
+    )
+    view.outgoing.table.setCurrentCell(0, 0)
+    view.outgoing._remove_selected()
     assert view.outgoing.row_keys[0] == "suppliers"
     window.close()
 
@@ -1115,62 +1127,6 @@ def test_quarter_column_and_period_bounds(qt_app, store):
     window.close()
 
 
-def test_row_journals_open_for_income_and_payment(qt_app, store):
-    """Клик по названию строки: журнал поступлений / журнал оплат."""
-    from datetime import date
-    from decimal import Decimal
-
-    from oplata.app import MainWindow
-    from oplata.models import (
-        INCOMING,
-        OUTGOING,
-        set_daily_cash_receipt,
-        set_daily_other_payment,
-    )
-
-    window = MainWindow(store)
-    window.show()
-    qt_app.processEvents()
-    view = window.receipts_view
-    view.set_date(date(2026, 10, 27))
-    set_daily_cash_receipt(store.data, "cash", "2026-10-20", Decimal("1000"))
-    set_daily_other_payment(
-        store.data, "Прочие поступления", "2026-10-21", Decimal("250"), INCOMING
-    )
-
-    cash_journal = view.open_row_journal("cash")
-    qt_app.processEvents()
-    assert cash_journal.windowTitle() == "Журнал поступлений"
-    assert cash_journal.table.rowCount() == 1
-    assert cash_journal.total_label.text() == "1 000,00"
-    cash_journal.close()
-
-    income_journal = view.open_row_journal("other:Прочие поступления")
-    qt_app.processEvents()
-    assert income_journal.table.rowCount() == 1
-    assert income_journal.total_label.text() == "250,00"
-    income_journal.close()
-
-    # Журнал оплат — по своей строке блока «Оплата».
-    view.add_other_row(OUTGOING)
-    view.outgoing.table.item(1, COL_NAME).setText("Аренда")
-    view.outgoing.table.item(1, COL_AMOUNT).setText("12 000")
-    qt_app.processEvents()
-    payment_journal = view.open_row_journal("other:Аренда")
-    qt_app.processEvents()
-    assert payment_journal.windowTitle() == "Журнал оплат"
-    assert payment_journal.table.rowCount() == 1
-    assert payment_journal.total_label.text() == "12 000,00"
-    payment_journal.close()
-
-    # Клик по названию строки (не по ячейке суммы) открывает журнал.
-    before = len(view._journal_dialogs)
-    view.incoming.table.cellClicked.emit(0, COL_NAME)
-    qt_app.processEvents()
-    assert len(view._journal_dialogs) == before + 1
-    window.close()
-
-
 def test_arrows_are_bold_and_row_hover_installed(qt_app, store):
     """Стрелки жирные; в таблицах есть подсветка строки под курсором."""
     from PySide6.QtGui import QFont
@@ -1203,3 +1159,278 @@ def test_arrows_are_bold_and_row_hover_installed(qt_app, store):
         delegate.set_hover_row(0)  # не падает — подсветка применилась
         delegate.set_hover_row(-1)
     window.close()
+
+
+def test_year_start_panel_saves_opening_balances(qt_app, store):
+    """Плашка «Данные»: перенос остатков на 1 января сохраняется в файл."""
+    from decimal import Decimal
+
+    from oplata.app import MainWindow
+    from oplata.models import (
+        year_start_customer_debt,
+        year_start_supplier_debt,
+    )
+    from oplata.storage import DataStore
+
+    from oplata.models import Counterparty
+
+    buyer = Counterparty(name="Покупатель З")
+    store.data.customers.append(buyer)
+    window = MainWindow(store)
+    window.show()
+    qt_app.processEvents()
+    view = window.data_view
+    supplier = next(s for s in store.data.suppliers if s.name == "ббб")
+
+    # Плашка свёрнута по умолчанию, таблицы заполнены контрагентами.
+    assert view.data_panel is not None
+    assert view.supplier_debts_table.rowCount() == len(
+        [s for s in store.data.suppliers if not s.archived]
+    )
+    assert view.customer_debts_table.rowCount() == len(
+        [c for c in store.data.customers if not c.archived]
+    )
+
+    # Вводим долг поставщику: дата оплаты и сумма.
+    row = [s.id for s in store.data.suppliers if not s.archived].index(supplier.id)
+    view.supplier_debts_table.item(row, 1).setText("15.01.2026")
+    view.supplier_debts_table.item(row, 2).setText("10 000")
+    # Задолженность покупателя и текущие средства.
+    brow = [c.id for c in store.data.customers if not c.archived].index(buyer.id)
+    view.customer_debts_table.item(brow, 1).setText("2 500")
+    view.funds_edit.setText("75 000")
+    view._save_year_start()
+
+    data = store.data
+    assert data.year_start.date.startswith("2026-01-01")
+    entry = year_start_supplier_debt(data, supplier.id)
+    assert entry is not None
+    assert (entry.due_date, entry.amount) == ("2026-01-15", "10000.00")
+    debt = year_start_customer_debt(data, buyer.id)
+    assert debt is not None and debt.amount == "2500.00"
+    assert data.year_start.funds == "75000.00"
+
+    # Прочитали файл заново — перенос на месте.
+    reloaded = DataStore(store.path).data
+    assert len(reloaded.year_start.supplier_debts) == 1
+    assert reloaded.year_start.funds == "75000.00"
+
+    # Пустая сумма убирает запись переноса.
+    view.supplier_debts_table.item(row, 2).setText("")
+    view._save_year_start()
+    assert year_start_supplier_debt(store.data, supplier.id) is None
+    window.close()
+
+
+def test_outgoing_arrows_in_right_corner_and_no_scroll_in_incoming(qt_app, store):
+    """Стрелки «Оплаты» — справа; скроллинга в «Поступлении» нет."""
+    from PySide6.QtCore import Qt
+
+    from oplata.app import MainWindow
+
+    window = MainWindow(store)
+    window.show()
+    qt_app.processEvents()
+    view = window.receipts_view
+
+    # В блоке «Оплата» стрелки правее кнопки «Сегодня».
+    outgoing = view.outgoing
+    assert outgoing.next_btn.x() > outgoing.today_btn.x()
+    assert outgoing.prev_btn.x() > outgoing.today_btn.x()
+    assert outgoing.next_btn.x() > outgoing.add_btn.x()
+    # Стрелки стоят в правом углу: до правого края панели меньше 90 px.
+    free = outgoing.width() - (outgoing.next_btn.x() + outgoing.next_btn.width())
+    assert 0 <= free < 90
+
+    # В блоке «Поступление» стрелки остались рядом с датой (левее, чем
+    # у «Оплаты»), скролла нет.
+    incoming = view.incoming
+    assert incoming.next_btn.x() < outgoing.next_btn.x()
+    assert (
+        incoming.table.verticalScrollBarPolicy()
+        == Qt.ScrollBarPolicy.ScrollBarAlwaysOff
+    )
+    assert (
+        outgoing.table.verticalScrollBarPolicy()
+        == Qt.ScrollBarPolicy.ScrollBarAlwaysOn
+    )
+    window.close()
+
+
+def test_week_table_overdue_and_debt_headers_are_separate(qt_app, store):
+    """«ПРОСРОЧЕН.» и «ЗАДОЛЖ.» — отдельные ячейки, без объединения."""
+    from oplata.app import MainWindow
+
+    window = MainWindow(store)
+    window.show()
+    qt_app.processEvents()
+    table = window.suppliers_view.table
+    assert table.item(1, 1).text() == "ПРОСРОЧЕН."
+    assert table.item(1, 2).text() == "ЗАДОЛЖ."
+    assert table.columnSpan(1, 1) == 1
+    assert table.columnSpan(1, 2) == 1
+    window.close()
+
+
+def test_popup_closes_on_mouse_click_anywhere(qt_app, store):
+    """Окно сумм закрывается по клику мышью по нему (кроме полей ввода)."""
+    from PySide6.QtCore import QEvent, QPointF, Qt
+    from PySide6.QtGui import QMouseEvent
+    from PySide6.QtWidgets import QApplication
+
+    from oplata.app import MainWindow
+    from oplata.models import Counterparty
+
+    store.data.customers.append(Counterparty(name="Покупатель И"))
+    window = MainWindow(store)
+    window.show()
+    qt_app.processEvents()
+    view = window.receipts_view
+    view.show()
+    qt_app.processEvents()
+    popup = view.open_popup("customers", row=2)
+    qt_app.processEvents()
+    assert popup.isVisible()
+
+    def press(widget, point):
+        QApplication.sendEvent(
+            widget,
+            QMouseEvent(
+                QEvent.Type.MouseButtonPress,
+                QPointF(point),
+                Qt.MouseButton.LeftButton,
+                Qt.MouseButton.LeftButton,
+                Qt.KeyboardModifier.NoModifier,
+            ),
+        )
+        qt_app.processEvents()
+
+    # Клик по свободному месту окна (не по полю ввода) — окно закрыто.
+    press(popup, QPointF(popup.width() - 10, 10))
+    assert not popup.isVisible()
+
+    # Клик по таблице под окном тоже закрывает его.
+    popup = view.open_popup("customers", row=2)
+    qt_app.processEvents()
+    assert popup.isVisible()
+    press(view.incoming.table, QPointF(5.0, 5.0))
+    assert not popup.isVisible()
+
+    # Клик по самому полю ввода окно не закрывает (ввод продолжается).
+    popup = view.open_popup("customers", row=2)
+    qt_app.processEvents()
+    edit = next(iter(popup.edits.values()))
+    press(popup, QPointF(edit.mapTo(popup, edit.rect().center())))
+    assert popup.isVisible()
+    window.close()
+
+
+def test_summary_panel_shows_three_blocks_line_by_line(qt_app, store):
+    """Плашка «Сводка»: три блока, все значения построчно."""
+    from datetime import date
+    from decimal import Decimal
+
+    from PySide6.QtCore import QDate
+
+    from oplata.app import MainWindow
+    from oplata.models import (
+        CASH_SOURCE,
+        add_cash_receipt,
+        add_delivery,
+        add_supplier_payment,
+        set_daily_other_payment,
+        set_year_start_funds,
+    )
+
+    # 27.10.2026 — вторник; неделя 26.10–01.11, следующие: 02.11–08.11,
+    # 09.11–15.11, 16.11–22.11.
+    on_date = date(2026, 10, 27)
+    supplier = store.data.suppliers[0]
+
+    # Средства: 50 000 на счету, поступление 3 000, оплата 1 200.
+    set_year_start_funds(store.data, Decimal("50000"))
+    add_cash_receipt(store.data, CASH_SOURCE, "2026-10-27", Decimal("3000"))
+    add_supplier_payment(store.data, supplier.id, "2026-10-27", Decimal("1200"))
+
+    # Задолженность: срок сегодня (27.10), просрочка (20.10) и план на
+    # вторую неделю вперёд (09.11–15.11).
+    add_delivery(store.data, supplier.id, "2026-10-20", "2026-10-27", Decimal("500"))
+    add_delivery(store.data, supplier.id, "2026-10-10", "2026-10-20", Decimal("700"))
+    add_delivery(store.data, supplier.id, "2026-10-05", "2026-11-10", Decimal("900"))
+    # Прочий вид оплаты с начала месяца.
+    set_daily_other_payment(
+        store.data, "Аренда", "2026-10-15", Decimal("250")
+    )
+
+    window = MainWindow(store)
+    window.show()
+    qt_app.processEvents()
+    view = window.summary_view
+    view.date_edit.setDate(QDate(2026, 10, 27))
+    view.refresh()
+    qt_app.processEvents()
+
+    # Блок «Средства».
+    assert view.caption_text("funds") == "Остаток на счету"
+    assert view.value_text("funds") == "50 000,00"
+    assert view.value_text("income") == "3 000,00"
+    assert view.value_text("payments") == "1 450,00"
+    assert view.value_text("balance") == "51 550,00"
+
+    # Блок «Задолженность поставщикам».
+    assert view.value_text("debt_total") == "2 100,00"
+    assert view.value_text("debt_week") == "500,00"
+    assert view.value_text("debt_today") == "500,00"
+    assert view.value_text("debt_overdue") == "700,00"
+    assert view.caption_text("plan_1") == "Оплата 02.11 – 08.11"
+    assert view.value_text("plan_1") == "0,00"
+    assert view.caption_text("plan_2") == "Оплата 09.11 – 15.11"
+    assert view.value_text("plan_2") == "900,00"
+    assert view.caption_text("plan_3") == "Оплата 16.11 – 22.11"
+    assert view.value_text("plan_3") == "0,00"
+
+    # Блок «Месяц»: приход 05.10 + 10.10 + 20.10, оплаты 27.10 + аренда.
+    assert view.value_text("month_income") == "2 100,00"
+    assert view.value_text("month_payments") == "1 450,00"
+
+    # Все значения построчно: подписи и числа лежат в сетке блоками.
+    assert view.panel.isVisible()
+    assert len(view._values) == len(view._captions) == 4 + 7 + 2
+    window.close()
+
+
+def test_summary_calc_helpers_are_pure(qt_app, store):
+    """Расчёты сводки — простые суммы по сохранённым данным."""
+    from datetime import date
+    from decimal import Decimal
+
+    from oplata import calc
+    from oplata.models import add_delivery, set_year_start_supplier_debt
+
+    supplier = store.data.suppliers[0]
+    add_delivery(store.data, supplier.id, "2026-10-10", "2026-10-20", Decimal("700"))
+    set_year_start_supplier_debt(
+        store.data, supplier.id, "2026-10-28", Decimal("300")
+    )
+
+    schedule = calc.debt_schedule(store.data)
+    assert schedule == {date(2026, 10, 20): Decimal("700"), date(2026, 10, 28): Decimal("300")}
+
+    totals = calc.debt_totals(store.data, date(2026, 10, 28))
+    assert totals.total == Decimal("1000")
+    assert totals.today == Decimal("300")
+    # Неделя 26.10–01.11: срок 20.10 уже в прошлой неделе.
+    assert totals.week == Decimal("300")
+    assert totals.overdue == Decimal("700")
+
+    plan = calc.weekly_payment_plan(store.data, date(2026, 10, 28))
+    assert [week.amount for week in plan] == [Decimal("0")] * 3
+    assert [week.monday.isoformat() for week in plan] == [
+        "2026-11-02",
+        "2026-11-09",
+        "2026-11-16",
+    ]
+
+    funds = calc.funds_totals(store.data)
+    assert funds.funds == Decimal("0")   # «текущие средства» не задавали
+    assert funds.balance == funds.income - funds.payments

@@ -22,6 +22,22 @@ from .dates import fmt_date, fmt_money, fmt_money_plain
 
 
 @dataclass(frozen=True)
+class SummaryLine:
+    """Одна строка построчной «Сводки» (подпись и уже посчитанное значение)."""
+
+    title: str
+    value: str
+
+
+@dataclass(frozen=True)
+class SummarySection:
+    """Блок строк построчной «Сводки» (v0.14.0)."""
+
+    title: str
+    lines: list[SummaryLine]
+
+
+@dataclass(frozen=True)
 class SummaryReportRow:
     """Одна строка таблицы поставщиков в печатной «Сводке»."""
 
@@ -259,3 +275,99 @@ def build_summary_report_html(
 </body>
 </html>
 """
+
+
+def build_summary_sections_html(
+    *,
+    on_date: date,
+    sections: Iterable[SummarySection],
+    include_archived: bool,
+    generated_at: datetime | None = None,
+    app_name: str = "Оплаты — Строймаркет",
+    app_version: str | None = None,
+) -> str:
+    """HTML печатной формы построчной «Сводки» (v0.14.0).
+
+    Отчёт получает уже посчитанные строки — ровно те, что показаны на
+    экране; ничего не пересчитывается.
+    """
+
+    materialized = list(sections)
+    generated = generated_at or datetime.now()
+    generated_text = generated.strftime("%d.%m.%Y %H:%M")
+    archived_text = "показаны" if include_archived else "скрыты"
+    footer = f"Сформировано в программе «{escape(app_name)}»"
+    if app_version:
+        footer += f", версия {escape(app_version)}"
+    footer += f" · {escape(generated_text)}"
+
+    blocks: list[str] = []
+    for section in materialized:
+        rows = "".join(
+            "<tr>"
+            f"<td>{escape(line.title)}</td>"
+            f"<td class=\"money\">{escape(line.value)}</td>"
+            "</tr>"
+            for line in section.lines
+        )
+        blocks.append(
+            f"<h2>{escape(section.title)}</h2>"
+            f"<table class=\"lines-table\">{rows}</table>"
+        )
+
+    return f"""<!doctype html>
+<html>
+<head>
+<meta charset=\"utf-8\">
+<style>
+  body {{
+    font-family: 'Segoe UI', Arial, sans-serif;
+    font-size: 11pt;
+    color: #17233b;
+  }}
+  h1 {{
+    font-size: 20pt;
+    margin: 0 0 4px 0;
+    color: #13294b;
+  }}
+  h2 {{
+    font-size: 13pt;
+    margin: 16px 0 6px 0;
+    color: #13294b;
+  }}
+  .meta {{
+    color: #5b6a82;
+    font-size: 9pt;
+    margin-bottom: 10px;
+  }}
+  .lines-table {{
+    width: 100%;
+    border-collapse: collapse;
+  }}
+  .lines-table td {{
+    border: 1px solid #d7dfeb;
+    padding: 5px 8px;
+  }}
+  .lines-table .money {{
+    text-align: right;
+    white-space: nowrap;
+    font-weight: 700;
+    width: 35%;
+  }}
+  .footer {{
+    margin-top: 16px;
+    font-size: 8.5pt;
+    color: #5b6a82;
+  }}
+</style>
+</head>
+<body>
+  <h1>Сводка</h1>
+  <div class=\"meta\">
+    Сводка на {escape(fmt_date(on_date))} ·
+    Архивные поставщики: {escape(archived_text)}
+  </div>
+  {''.join(blocks)}
+  <div class=\"footer\">{footer}</div>
+</body>
+</html>"""

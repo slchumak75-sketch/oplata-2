@@ -73,6 +73,7 @@ def main() -> int:
                 if page == "data":
                     # Плашки свёрнуты по умолчанию — для снимка раскрываем.
                     window.data_view.calendar_panel.set_expanded(True)
+                    window.data_view.data_panel.set_expanded(True)
                     window.data_view.admin_panel.set_expanded(True)
                 window.show_page(index)
                 app.processEvents()
@@ -210,17 +211,6 @@ def main() -> int:
             supplier_popup.grab().save(str(OUT / "receipts-suppliers-popup.png"))
             print("saved receipts-suppliers-popup")
             supplier_popup.close()
-            # Журналы по клику на название строки (v0.13.0).
-            income_journal = receipts.open_row_journal("cash")
-            app.processEvents()
-            income_journal.grab().save(str(OUT / "receipts-income-journal.png"))
-            print("saved receipts-income-journal")
-            income_journal.close()
-            payment_journal = receipts.open_row_journal("other:Аренда")
-            app.processEvents()
-            payment_journal.grab().save(str(OUT / "receipts-payment-journal.png"))
-            print("saved receipts-payment-journal")
-            payment_journal.close()
             window.customers_view.refresh()
             window.customers_view.goto_date(date(2026, 10, 28))
             window.show_page(2)
@@ -261,6 +251,12 @@ def main() -> int:
             operation.grab().save(str(OUT / "operation-dialog.png"))
             print("saved operation-dialog")
             operation.close()
+
+            # Плашка «Сводка» крупным планом (три блока построчно).
+            summary_panel = window.summary_view
+            app.processEvents()
+            summary_panel.grab().save(str(OUT / "summary.png"))
+            print("saved summary")
 
             # Печатная форма «Сводки»: первая страница A4, отрисованная
             # тем же QTextDocument и с той же настройкой принтера, что и

@@ -38,19 +38,20 @@ oplata-2/
     styles.py                   # цвета по макетам + QSS
     widgets.py                  # панели, цветные кнопки, поля даты/сумм, KPI-карточки
     dates.py       [без Qt]     # недели Пн–Вс, русские месяцы, формат сумм
-    models.py      [без Qt]     # Counterparty, Operation, CashReceipt, AppData, seed_data()
+    models.py      [без Qt]     # Counterparty, Operation, CashReceipt, AppData, YearStart, seed_data()
     storage.py     [без Qt]     # DataStore: JSON в %APPDATA%\OplataStroymarket\data.json
     styles.py      [без Qt]     # цвета и QSS; FONT_SCALE — шрифты интерфейса +30% (v0.12.0)
     widgets.py                 # AmountLineEdit, CollapsiblePanel, RowHoverMixin (подсветка строки v0.13.0), arrow_button
-    calc.py        [без Qt]     # срок/долг поставщиков; «Сводка» пока заглушки
+    calc.py        [без Qt]     # срок/долг поставщиков; блоки «Сводки» (средства, долги, месяц)
     reports.py     [без Qt]     # HTML печатной формы «Сводки» из экранного снимка
     views/
-      summary_view.py           # Сводка + снимок значений и QPrintPreviewDialog
       week_view.py              # Поставщики и Покупатели (kind="supplier"/"customer")
-      receipts_view.py          # Поступление и оплаты: слева блоки-таблицы (ввод в ячейки, окно справа), справа панель «Сводка»
-                                 # свои строки блока «Оплата», «Прочие поступления», колонка «Квартал», журналы строк
+      receipts_view.py          # Поступление и оплаты: слева блоки-таблицы (ввод в ячейки, окно справа), справа плашка «Сводка»
+                                 # свои строки блока «Оплата», «Прочие поступления», колонка «Квартал»
       operations_view.py        # Журнал операций (окно из карточки контрагента)
-      data_view.py              # Данные: «Настройка календаря» + «Администрирование»
+      summary_view.py            # Плашка «Сводка»: три блока построчно (средства, долги, месяц) + печать
+      data_view.py              # Конфигурация: «Настройка календаря» + «Данные»
+                              # (перенос остатков на 1 января, v0.14.0) + «Администрирование»
     dialogs/
       counterparty_card.py      # Карточки поставщика/покупателя
       operations_journal_dialog.py  # Окно «Операции контрагента» (журнал)
@@ -74,7 +75,7 @@ data.json ──DataStore──> AppData ──> экраны (views) ──кл
     └────────────────── DataStore.save() <───────────────┘
                              
 экраны ──спрашивают суммы──> calc.py ──> срок оплаты и долг поставщиков (v0.3.0);
-                             «Сводка» пока получает нули-заглушки
+                             блоки «Сводки» считаются простыми суммами
 ```
 
 - `MainWindow.refresh_all()` перестраивает экраны после правок в карточках.

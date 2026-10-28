@@ -626,8 +626,10 @@ class WeekView(QWidget):
         # Строка 1: дни недели (шрифт шапки увеличен по запросу пользователя)
         put(1, 0, "ПОСТАВЩИК" if self.kind == "supplier" else "ПОКУПАТЕЛЬ",
             bold=True, size=13)
-        put(1, 1, "ПРОСРОЧЕН. ЗАДОЛЖ.", bold=True, size=styles.fs(12))
-        table.setSpan(1, 1, 1, 2)
+        # v0.14.0: «ПРОСРОЧЕН.» и «ЗАДОЛЖ.» — разные ячейки, без
+        # объединения: каждая подпись стоит над своей колонкой.
+        put(1, 1, "ПРОСРОЧЕН.", bold=True, size=styles.fs(12))
+        put(1, 2, "ЗАДОЛЖ.", bold=True, size=styles.fs(12))
         for i, day in enumerate(days):
             c = self._day_column(i, 0)
             put(1, c, f"{day.day}  {WEEKDAYS_RU_SHORT[day.weekday()]}",

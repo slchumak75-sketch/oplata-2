@@ -168,6 +168,80 @@ def other_payment_amount(payment: OtherPayment) -> Decimal:
 
 
 @dataclass
+class YearStartDebt:
+    """Разовый перенос на 1 января: долг **поставщику** (v0.14.0).
+
+    Пользователь вносит в плашке «Данные» вкладки «Конфигурация» дату
+    оплаты и сумму по каждому поставщику — это входящий остаток, с
+    которого начинается год. Формул расчёта к этим цифрам нет: они
+    хранятся и показываются как есть (правило «не придумывать формулы
+    без ТЗ»).
+    """
+
+    counterparty_id: str = ""
+    due_date: str = ""   # ISO ``YYYY-MM-DD`` — дата оплаты
+    amount: str = "0"    # Decimal строкой
+
+
+@dataclass
+class YearStartCustomerDebt:
+    """Разовый перенос на 1 января: задолженность **покупателя**."""
+
+    counterparty_id: str = ""
+    amount: str = "0"    # Decimal строкой
+
+
+@dataclass
+class YearStart:
+    """Разовые переносимые данные на начало года (v0.14.0).
+
+    * ``date`` — на какую дату внесены остатки (обычно 1 января);
+    * ``supplier_debts`` — долги поставщикам: дата оплаты и сумма;
+    * ``customer_debts`` — задолженности покупателей: сумма;
+    * ``funds`` — текущие средства на счету.
+    """
+
+    date: str = ""
+    supplier_debts: list[YearStartDebt] = field(default_factory=list)
+    customer_debts: list[YearStartCustomerDebt] = field(default_factory=list)
+    funds: str = "0"
+
+    @classmethod
+    def from_dict(cls, data: dict | None) -> "YearStart":
+        payload = data if isinstance(data, dict) else {}
+        return cls(
+            date=str(payload.get("date", "")),
+            supplier_debts=[
+                YearStartDebt(
+                    counterparty_id=str(item.get("counterparty_id", "")),
+                    due_date=str(item.get("due_date", "")),
+                    amount=str(item.get("amount", "0")),
+                )
+                for item in payload.get("supplier_debts", [])
+                if isinstance(item, dict)
+            ],
+            customer_debts=[
+                YearStartCustomerDebt(
+                    counterparty_id=str(item.get("counterparty_id", "")),
+                    amount=str(item.get("amount", "0")),
+                )
+                for item in payload.get("customer_debts", [])
+                if isinstance(item, dict)
+            ],
+            funds=str(payload.get("funds", "0")),
+        )
+
+
+def year_start_amount(entry) -> Decimal:
+    """Сумма записи переноса как Decimal (битая строка — 0)."""
+
+    try:
+        return Decimal(getattr(entry, "amount", "0") or "0")
+    except InvalidOperation:
+        return Decimal("0")
+
+
+@dataclass
 class AppData:
     """Весь сохраняемый набор данных (один JSON-файл, см. storage.py)."""
 
@@ -185,6 +259,10 @@ class AppData:
     # "YYYY-MM-DD" -> "off" (выходной) | "work" (рабочий).
     # Без отметки Сб/Вс считаются выходными, Пн–Пт — рабочими.
     day_overrides: dict[str, str] = field(default_factory=dict)
+    # Разовые переносимые данные на 1 января (плашка «Данные» вкладки
+    # «Конфигурация»). Поле добавлено в v0.14.0; в старых файлах его
+    # нет — from_dict подставит пустую структуру.
+    year_start: YearStart = field(default_factory=YearStart)
 
     def to_dict(self) -> dict:
         return {
@@ -195,6 +273,16 @@ class AppData:
             "cash_receipts": [asdict(r) for r in self.cash_receipts],
             "other_payments": [asdict(p) for p in self.other_payments],
             "day_overrides": dict(self.day_overrides),
+            "year_start": {
+                "date": self.year_start.date,
+                "supplier_debts": [
+                    asdict(d) for d in self.year_start.supplier_debts
+                ],
+                "customer_debts": [
+                    asdict(d) for d in self.year_start.customer_debts
+                ],
+                "funds": self.year_start.funds,
+            },
         }
 
     @classmethod
@@ -212,6 +300,7 @@ class AppData:
             day_overrides={
                 str(k): str(v) for k, v in data.get("day_overrides", {}).items()
             },
+            year_start=YearStart.from_dict(data.get("year_start")),
         )
         # Миграция v0.8.0: у покупателей прежний «Приход» теперь называется
         # «Реализация» и не имеет срока оплаты.
@@ -589,3 +678,71 @@ def delete_other_payment(
             and getattr(item, "direction", OUTGOING) == direction
         )
     ]
+
+
+# ------------------------------------------------- перенос остатков на 1 января
+def year_start_supplier_debt(
+    data: AppData, counterparty_id: str
+) -> YearStartDebt | None:
+    for item in data.year_start.supplier_debts:
+        if item.counterparty_id == counterparty_id:
+            return item
+    return None
+
+
+def set_year_start_supplier_debt(
+    data: AppData,
+    counterparty_id: str,
+    due_date: str,
+    amount: Decimal | None,
+) -> None:
+    """Задать/убрать долг поставщику на начало года (дата оплаты + сумма)."""
+
+    entry = year_start_supplier_debt(data, counterparty_id)
+    if amount is None or amount == 0:
+        if entry is not None:
+            data.year_start.supplier_debts.remove(entry)
+        return
+    if entry is None:
+        entry = YearStartDebt(counterparty_id=counterparty_id)
+        data.year_start.supplier_debts.append(entry)
+    entry.due_date = due_date or ""
+    entry.amount = f"{amount.quantize(Decimal('0.01')):.2f}"
+
+
+def year_start_customer_debt(
+    data: AppData, counterparty_id: str
+) -> YearStartCustomerDebt | None:
+    for item in data.year_start.customer_debts:
+        if item.counterparty_id == counterparty_id:
+            return item
+    return None
+
+
+def set_year_start_customer_debt(
+    data: AppData, counterparty_id: str, amount: Decimal | None
+) -> None:
+    """Задать/убрать задолженность покупателя на начало года."""
+
+    entry = year_start_customer_debt(data, counterparty_id)
+    if amount is None or amount == 0:
+        if entry is not None:
+            data.year_start.customer_debts.remove(entry)
+        return
+    if entry is None:
+        entry = YearStartCustomerDebt(counterparty_id=counterparty_id)
+        data.year_start.customer_debts.append(entry)
+    entry.amount = f"{amount.quantize(Decimal('0.01')):.2f}"
+
+
+def set_year_start_funds(data: AppData, amount: Decimal | None) -> None:
+    """Текущие средства на счету (остаток денег на начало года)."""
+
+    value = amount if amount is not None else Decimal("0")
+    data.year_start.funds = f"{value.quantize(Decimal('0.01')):.2f}"
+
+
+def set_year_start_date(data: AppData, day_iso: str) -> None:
+    """Дата, на которую внесены остатки (обычно 1 января)."""
+
+    data.year_start.date = day_iso or ""

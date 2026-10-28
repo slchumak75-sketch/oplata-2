@@ -17,3 +17,44 @@ import pytest
 def _collect_after_test():
     yield
     gc.collect()
+
+
+@pytest.hookimpl(trylast=True)
+def pytest_sessionfinish(session, exitstatus):
+    """Заморозить объекты перед выходом из процесса.
+
+    В headless-окружении (offscreen + stub-библиотеки) PySide6 иногда
+    роняет интерпретатор уже ПОСЛЕ успешного прогона — ``Fatal Python
+    error: none_dealloc`` на сборке мусора при завершении. ``gc.freeze``
+    переводит дожившие до конца объекты в постоянное поколение, и
+    финальная сборка их не трогает: прогон завершается штатно.
+    """
+
+    _close_leftover_windows()
+    gc.collect()
+    gc.freeze()
+
+
+def _close_leftover_windows() -> None:
+    """Закрыть и удалить все окна Qt, дожившие до конца прогона.
+
+    Окно, которое тест не закрыл, остаётся владельцем C++-объекта до
+    самого выхода из процесса — именно такие «хвосты» и роняют
+    интерпретатор на финальной сборке мусора.
+    """
+
+    try:
+        from PySide6.QtWidgets import QApplication
+    except Exception:  # Qt не установлен — нечего закрывать
+        return
+
+    app = QApplication.instance()
+    if app is None:
+        return
+    for widget in list(app.topLevelWidgets()):
+        try:
+            widget.close()
+            widget.deleteLater()
+        except RuntimeError:  # C++-объект уже удалён
+            pass
+    app.processEvents()

@@ -64,11 +64,6 @@ from PySide6.QtWidgets import (
 
 from .. import styles
 from ..dates import fmt_money_plain, parse_money, week_monday
-from ..dialogs.payments_journal_dialog import (
-    CARD_TITLE,
-    CASH_TITLE,
-    PaymentsJournalDialog,
-)
 from ..models import (
     CARD_SOURCE,
     CASH_SOURCE,
@@ -477,10 +472,10 @@ class MoneyBlock(QFrame):
         on_name_edited: Callable[[str, str], None] | None = None,
         on_add_row: Callable[[], None] | None = None,
         on_remove_row: Callable[[str], None] | None = None,
-        on_open_journal: Callable[[str], None] | None = None,
         parent: QWidget | None = None,
         direction: str = OUTGOING,
         stretch_table: bool = False,
+        arrows_at_end: bool = False,
     ) -> None:
         super().__init__(parent)
         self.setObjectName("Panel")
@@ -488,6 +483,8 @@ class MoneyBlock(QFrame):
         # Блок «Оплата» тянется до низа экрана (v0.13.0), поэтому его
         # таблица растягиваемая и всегда с широким скроллбаром.
         self._stretch_table = stretch_table
+        # Стрелки даты у блока «Оплата» стоят в правом углу (v0.14.0).
+        self._arrows_at_end = arrows_at_end
         self.row_keys = list(row_keys)
         self.on_open_popup = on_open_popup
         self.on_amount_entered = on_amount_entered
@@ -495,7 +492,6 @@ class MoneyBlock(QFrame):
         self.on_name_edited = on_name_edited
         self.on_add_row = on_add_row
         self.on_remove_row = on_remove_row
-        self.on_open_journal = on_open_journal
         self._updating = False  # заполнение таблицы не считается вводом
 
         root = QVBoxLayout(self)
@@ -518,17 +514,11 @@ class MoneyBlock(QFrame):
         self.today_btn.clicked.connect(self.go_today)
         top.addWidget(self.today_btn)
 
-        self.prev_btn = arrow_button("←", "День назад")
-        self.prev_btn.clicked.connect(lambda: self.shift_date(-1))
-        top.addWidget(self.prev_btn)
+        if arrows_at_end:
+            # В блоке «Оплата» стрелки уходят в правый угол: всё
+            # остальное прижато к левому краю заголовка.
+            top.addStretch(1)
 
-        self.next_btn = arrow_button("→", "День вперёд")
-        self.next_btn.clicked.connect(lambda: self.shift_date(1))
-        top.addWidget(self.next_btn)
-
-        # Кнопки «+» и «−» живут в заголовке блока (v0.13.0) — рядом с
-        # датой и стрелками, а не под таблицей.
-        top.addSpacing(14)
         if on_add_row is not None:
             self.add_btn = arrow_button("+", "Добавить свою строку")
             self.add_btn.clicked.connect(on_add_row)
@@ -538,7 +528,18 @@ class MoneyBlock(QFrame):
             self.remove_btn.clicked.connect(self._remove_selected)
             top.addWidget(self.remove_btn)
 
-        top.addStretch(1)
+        if arrows_at_end:
+            top.addSpacing(10)
+        self.prev_btn = arrow_button("←", "День назад")
+        self.prev_btn.clicked.connect(lambda: self.shift_date(-1))
+        top.addWidget(self.prev_btn)
+
+        self.next_btn = arrow_button("→", "День вперёд")
+        self.next_btn.clicked.connect(lambda: self.shift_date(1))
+        top.addWidget(self.next_btn)
+
+        if not arrows_at_end:
+            top.addStretch(1)
         root.addLayout(top)
 
         # --- таблица: строка + сумма + нарастающие итоги ---
@@ -644,8 +645,13 @@ class MoneyBlock(QFrame):
             self.table.setMaximumHeight(
                 header_height + visible * row_height + 2
             )
+            # Скроллинга в блоке «Поступление» нет (v0.14.0): строк там
+            # немного, а полоса прокрутки только мешала.
             self.table.setVerticalScrollBarPolicy(
-                Qt.ScrollBarPolicy.ScrollBarAsNeeded
+                Qt.ScrollBarPolicy.ScrollBarAlwaysOff
+            )
+            self.table.setHorizontalScrollBarPolicy(
+                Qt.ScrollBarPolicy.ScrollBarAlwaysOff
             )
         for column, width in COLUMN_WIDTHS.items():
             self.table.setColumnWidth(column, width)
@@ -657,12 +663,9 @@ class MoneyBlock(QFrame):
     @staticmethod
     def _row_tooltip(key: str) -> str:
         if key.startswith(OTHER_PREFIX) and key != FIXED_OTHER_ROW:
-            return (
-                "Название и сумма вводятся прямо в ячейки; клик по "
-                "названию — журнал строки"
-            )
+            return "Название и сумма вводятся прямо в ячейки"
         if key in DIRECT_INPUT_ROWS:
-            return "Сумма вводится прямо в ячейку; клик по названию — журнал"
+            return "Сумма вводится прямо в ячейку"
         return "Клик — окно со списком и полями сумм"
 
     def set_amount(self, row_key: str, column: int, text: str) -> None:
@@ -724,10 +727,7 @@ class MoneyBlock(QFrame):
         if key in POPUP_ROWS:
             self.on_open_popup(key, self.table, row)
             return
-        # Клик по названию строки (не по ячейке суммы, которая уходит в
-        # режим ввода) показывает журнал поступлений/оплат этой строки.
-        if column == COL_NAME and self.on_open_journal is not None:
-            self.on_open_journal(key)
+        _ = column  # клик по ячейке суммы уходит в режим ввода
 
     def _remove_selected(self) -> None:
         row = self.table.currentRow()
@@ -761,7 +761,6 @@ class ReceiptsView(QWidget):
         self.on_data_changed = on_data_changed
         self.summary_widget = summary_widget
         self._popup: AmountPopup | None = None
-        self._journal_dialogs: list[PaymentsJournalDialog] = []
 
         root = QHBoxLayout(self)
         root.setContentsMargins(10, 10, 10, 10)
@@ -783,7 +782,6 @@ class ReceiptsView(QWidget):
             on_open_popup=self.open_popup,
             on_amount_entered=self.save_direct_amount,
             on_date_changed=self.refresh,
-            on_open_journal=self.open_row_journal,
             direction=INCOMING,
         )
         self.outgoing = MoneyBlock(
@@ -797,9 +795,9 @@ class ReceiptsView(QWidget):
             ),
             on_add_row=lambda: self.add_other_row(OUTGOING),
             on_remove_row=lambda key: self.remove_other_row(key, OUTGOING),
-            on_open_journal=self.open_row_journal,
             direction=OUTGOING,
             stretch_table=True,
+            arrows_at_end=True,
         )
         # «Поступление» — по высоте содержимого, «Оплата» тянется до
         # низа экрана (v0.13.0).
@@ -1072,37 +1070,71 @@ class ReceiptsView(QWidget):
     def _forget_popup(self, *_args) -> None:
         self._popup = None
 
-    # --------------------------------------------------------------- журналы
-    def open_row_journal(self, row_key: str) -> PaymentsJournalDialog | None:
-        """Журнал поступлений/оплат по клику на название строки (v0.13.0)."""
+    # -------------------------------------------------------------- выпадающее
+    def open_popup(
+        self, row_key: str, anchor: QWidget | None = None, row: int | None = None
+    ) -> AmountPopup | None:
+        """Открыть окно со списком контрагентов справа от строки."""
 
-        block = (
-            self.incoming
-            if row_key in self.incoming.row_keys
-            else self.outgoing
-        )
-        if row_key == CASH_ROW:
-            title = CASH_TITLE
-        elif row_key == CARD_ROW:
-            title = CARD_TITLE
-        elif row_key.startswith(OTHER_PREFIX):
-            title = other_row_name(row_key)
+        block = self.outgoing if row_key == SUPPLIERS_ROW else self.incoming
+        table = block.table
+        if row is None:
+            row = block.row_keys.index(row_key) if row_key in block.row_keys else 0
+        row_top = table.rowViewportPosition(row)
+        if anchor is None:
+            anchor = table
+        title = ROW_TITLES[row_key]
+        day_iso = block.current_date().isoformat()
+
+        if row_key == CUSTOMERS_ROW:
+            people = [c for c in self.store.data.customers if not c.archived]
+            empty_title = "Нет покупателей"
+            empty_text = (
+                "Добавьте покупателя через кнопку «Карточка покупателя»."
+            )
+            hint = "Сумма поступит в колонку «Оплата» покупателя за дату."
         else:
-            title = ROW_TITLES.get(row_key, row_key)
+            people = [s for s in self.store.data.suppliers if not s.archived]
+            empty_title = "Нет поставщиков"
+            empty_text = (
+                "Добавьте поставщика через кнопку «Карточка поставщика»."
+            )
+            hint = "Сумма появится в колонке «Оплата» поставщика за дату."
 
-        dialog = PaymentsJournalDialog(
-            self.store, block.direction, title, row_key, self
-        )
-        dialog.show()  # немодально: журнал смотрят рядом с таблицами
-        self._journal_dialogs.append(dialog)
-        dialog.finished.connect(
-            lambda *_: self._forget_journal_dialog(dialog)
-        )
-        return dialog
+        if not people:
+            QMessageBox.information(self, empty_title, empty_text)
+            return None
 
-    def _forget_journal_dialog(self, dialog: PaymentsJournalDialog) -> None:
-        if dialog in self._journal_dialogs:
-            self._journal_dialogs.remove(dialog)
+        # Поля заполняем уже сохранёнными суммами: при повторном
+        # открытии окна введённое не должно «пропадать».
+        values = {
+            person.id: self.daily_payment_amount(person.id, day_iso)
+            for person in people
+        }
+        popup = AmountPopup(
+            title,
+            [(person.id, person.name) for person in people],
+            self._make_saver(block, row_key, [person.id for person in people]),
+            self,
+            hint,
+            values,
+        )
+        # Прежнее окно больше не нужно: скрываем и удаляем его, чтобы на
+        # каждый клик по строке не копились виджеты.
+        if self._popup is not None:
+            previous = self._popup
+            self._popup = None
+            previous._closing = True
+            previous._stop_watching()
+            previous.hide()
+            previous.deleteLater()
+        self._popup = popup
+        popup.destroyed.connect(self._forget_popup)
+        popup.open_beside(anchor, row_top)
+        return popup
+
+    def _forget_popup(self, *_args) -> None:
+        self._popup = None
 
     def _make_saver(self, block: MoneyBlock, row_key: str, ids: list[str]):
         def save(values: dict[str, Decimal]) -> None:

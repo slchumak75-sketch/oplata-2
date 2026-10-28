@@ -63,10 +63,13 @@ jobs:
       - name: Install dependencies
         run: python -m pip install --disable-pip-version-check -r requirements.txt "pytest>=8,<9"
 
+      # Частями (scripts/run_tests.sh): один длинный процесс с десятками
+      # Qt-окон в offscreen-режиме может не дойти до конца прогона.
       - name: Run tests
         env:
           QT_QPA_PLATFORM: offscreen
-        run: pytest -q
+          TEST_PARTS: "4"
+        run: bash scripts/run_tests.sh
 
   build-windows:
     name: Build Windows packages

@@ -33,18 +33,22 @@ from __future__ import annotations
 from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import date, timedelta
-from decimal import Decimal
+from decimal import Decimal, InvalidOperation
 
-from .dates import fmt_money_plain
+from .dates import fmt_money_plain, week_monday
 from .models import (
+    INCOMING,
     KIND_INCOME,
     KIND_PAYMENT,
     KIND_SALE,
     AppData,
     Counterparty,
     Operation,
+    cash_receipt_amount,
     daily_operation_total,
     operation_amount,
+    other_payment_amount,
+    year_start_amount,
 )
 
 ZERO = Decimal("0")
@@ -95,6 +99,202 @@ def supplier_debt_row(supplier_id: str, on_date: date) -> SupplierDebtRow:
 def overdue_payments(on_date: date) -> list:
     """TODO(формулы Сводки): список просроченных оплат для панели на «Сводке»."""
     return []
+
+
+# ---------------------------------------------------------------------------
+# Плашка «Сводка»: три блока построчно (v0.14.0)
+#
+# Формулы дал пользователь: блок «Средства» (остаток на счету, итого
+# поступление, итого оплаты, итого остаток), блок «Задолженность
+# поставщикам» (всего, на неделе, на сегодня, просрочено, оплата
+# понедельно на три недели вперёд) и блок «Месяц» (приход и оплаты с
+# начала месяца). Считаются простые суммы по сохранённым данным; долг
+# берётся архивным графиком ``debt_by_due_date`` (оплата долг не
+# уменьшает — требование v0.3.1).
+# ---------------------------------------------------------------------------
+
+@dataclass(frozen=True)
+class FundsTotals:
+    """Блок «Средства» плашки «Сводка»."""
+
+    funds: Decimal = ZERO        # остаток на счету (перенос на 1 января)
+    income: Decimal = ZERO       # итого поступление
+    payments: Decimal = ZERO     # итого оплаты
+    balance: Decimal = ZERO      # итого остаток = остаток + поступление − оплаты
+
+
+@dataclass(frozen=True)
+class DebtTotals:
+    """Блок «Задолженность поставщикам» плашки «Сводка»."""
+
+    total: Decimal = ZERO        # всего задолженность по всем поставщикам
+    week: Decimal = ZERO         # задолженность на текущей неделе
+    today: Decimal = ZERO        # задолженность на сегодня
+    overdue: Decimal = ZERO      # просрочено (срок раньше сегодня)
+
+
+@dataclass(frozen=True)
+class WeekPlan:
+    """Одна неделя блока «Оплата понедельно»."""
+
+    monday: date
+    sunday: date
+    amount: Decimal = ZERO
+
+
+@dataclass(frozen=True)
+class MonthTotals:
+    """Блок «Месяц» плашки «Сводка»."""
+
+    income: Decimal = ZERO       # приход с начала месяца
+    payments: Decimal = ZERO     # оплаты с начала месяца
+
+
+def _iso_day(value: str) -> date | None:
+    """Дата из ISO-строки; битая или пустая — ``None``."""
+
+    try:
+        return date.fromisoformat(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def debt_schedule(
+    data: AppData,
+    suppliers: Sequence[Counterparty] | None = None,
+) -> dict[date, Decimal]:
+    """График долга поставщикам: дата срока -> сумма.
+
+    Складываются суммы поставок (``debt_by_due_date``) и разовые долги
+    переноса на 1 января (плашка «Данные» вкладки «Конфигурация») — у
+    них тоже есть дата оплаты. Оплаты долг не уменьшают (v0.3.1).
+    """
+
+    if suppliers is None:
+        suppliers = data.suppliers
+    schedule: dict[date, Decimal] = {}
+    for supplier in suppliers:
+        for due, amount in debt_by_due_date(data, supplier).items():
+            schedule[due] = schedule.get(due, ZERO) + amount
+    for entry in data.year_start.supplier_debts:
+        due = _iso_day(entry.due_date)
+        amount = year_start_amount(entry)
+        if due is None or amount == 0:
+            continue
+        schedule[due] = schedule.get(due, ZERO) + amount
+    return schedule
+
+
+def _schedule_sum(
+    schedule: Mapping[date, Decimal], start: date, end: date
+) -> Decimal:
+    return sum(
+        (amount for due, amount in schedule.items() if start <= due <= end),
+        ZERO,
+    )
+
+
+def visible_suppliers(data: AppData, include_archived: bool) -> list[Counterparty]:
+    return [s for s in data.suppliers if include_archived or not s.archived]
+
+
+def funds_totals(data: AppData) -> FundsTotals:
+    """Блок «Средства»: остаток, поступления и оплаты за всё время."""
+
+    funds = ZERO
+    try:
+        funds = Decimal(data.year_start.funds or "0")
+    except InvalidOperation:
+        funds = ZERO
+
+    income = ZERO
+    for receipt in data.cash_receipts:
+        income += cash_receipt_amount(receipt)
+    for payment in data.other_payments:
+        if payment.direction == INCOMING:
+            income += other_payment_amount(payment)
+    for op in data.operations:
+        if op.kind == KIND_SALE:
+            income += operation_amount(op)
+
+    payments = ZERO
+    for payment in data.other_payments:
+        if payment.direction != INCOMING:
+            payments += other_payment_amount(payment)
+    for op in data.operations:
+        if op.kind == KIND_PAYMENT:
+            payments += operation_amount(op)
+
+    return FundsTotals(
+        funds=funds,
+        income=income,
+        payments=payments,
+        balance=funds + income - payments,
+    )
+
+
+def debt_totals(
+    data: AppData, on_date: date, include_archived: bool = False
+) -> DebtTotals:
+    """Блок «Задолженность поставщикам» на дату ``on_date``."""
+
+    schedule = debt_schedule(data, visible_suppliers(data, include_archived))
+    monday = week_monday(on_date)
+    return DebtTotals(
+        total=sum(schedule.values(), ZERO),
+        week=_schedule_sum(schedule, monday, monday + timedelta(days=6)),
+        today=schedule.get(on_date, ZERO),
+        overdue=sum(
+            (amount for due, amount in schedule.items() if due < on_date), ZERO
+        ),
+    )
+
+
+def weekly_payment_plan(
+    data: AppData,
+    on_date: date,
+    weeks: int = 3,
+    include_archived: bool = False,
+) -> list[WeekPlan]:
+    """«Оплата понедельно»: ``weeks`` недель, следующих за текущей."""
+
+    schedule = debt_schedule(data, visible_suppliers(data, include_archived))
+    current_monday = week_monday(on_date)
+    result: list[WeekPlan] = []
+    for index in range(1, weeks + 1):
+        monday = current_monday + timedelta(days=7 * index)
+        sunday = monday + timedelta(days=6)
+        result.append(
+            WeekPlan(
+                monday=monday,
+                sunday=sunday,
+                amount=_schedule_sum(schedule, monday, sunday),
+            )
+        )
+    return result
+
+
+def month_totals(data: AppData, on_date: date) -> MonthTotals:
+    """Блок «Месяц»: приход и оплаты с 1-го числа месяца по ``on_date``."""
+
+    start = on_date.replace(day=1)
+    income = ZERO
+    payments = ZERO
+    for op in data.operations:
+        day = _iso_day(op.date)
+        if day is None or not (start <= day <= on_date):
+            continue
+        if op.kind == KIND_INCOME:
+            income += operation_amount(op)
+        elif op.kind == KIND_PAYMENT:
+            payments += operation_amount(op)
+    for payment in data.other_payments:
+        day = _iso_day(payment.date)
+        if day is None or not (start <= day <= on_date):
+            continue
+        if payment.direction != INCOMING:
+            payments += other_payment_amount(payment)
+    return MonthTotals(income=income, payments=payments)
 
 
 # ---------------------------------------------------------------------------
