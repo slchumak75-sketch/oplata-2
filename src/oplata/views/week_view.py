@@ -153,6 +153,11 @@ class DaySeparatorDelegate(RowHoverMixin, QStyledItemDelegate):
         painter.restore()
 
 
+# Сколько дней показывает недельная таблица: понедельник–суббота, без
+# воскресенья (v0.18.0, запрос пользователя).
+TABLE_DAYS = 6
+
+
 class WeekView(QWidget):
     """``kind``: ``"supplier"`` | ``"customer"``."""
 
@@ -193,23 +198,32 @@ class WeekView(QWidget):
         # v0.16.0: у поставщиков три итоговых столбца — «просрочено»
         # (срок оплаты уже прошёл), «на сегодня» и «за неделю».
         self.lead_columns = 3 if kind == "supplier" else 1
-        self.column_count = 1 + self.lead_columns + 7 * self.columns_per_day
+        # v0.18.0: в таблице шесть дней — без воскресенья. Седьмая
+        # колонка съедала место, и сумма «88 888,88» не влезала.
+        # Расчёты при этом по-прежнему идут по полной неделе (пн–вс).
+        self.table_days = TABLE_DAYS
+        self.column_count = (
+            1 + self.lead_columns + self.table_days * self.columns_per_day
+        )
         self.separator_after_cols = {self.lead_columns} | {
             self.lead_columns + (day_index + 1) * self.columns_per_day
-            for day_index in range(6)
+            for day_index in range(self.table_days - 1)
         }
         # Ширины выросли вместе со шрифтом (+30%, v0.12.0): колонкам дней
         # нужно место под «88 888,88», иначе подгонка снизит шрифт сумм
         # до нечитаемого. Если окно узкое — появится горизонтальный скролл.
+        # v0.18.0: колонкам дней отдаём больше места (78 -> 92), чтобы
+        # «88 888,88» влезало при возможно большем шрифте: воскресенье
+        # убрали, и освободившееся место делим между днями.
         self.base_widths = (
             [200]
             + [110] * self.lead_columns
-            + [78] * (7 * self.columns_per_day)
+            + [92] * (self.table_days * self.columns_per_day)
         )
         self.min_widths = (
             [170]
             + [90] * self.lead_columns
-            + [68] * (7 * self.columns_per_day)
+            + [72] * (self.table_days * self.columns_per_day)
         )
         self.week_start = week_monday(date.today())
         self._partners: list[Counterparty] = []
@@ -523,6 +537,7 @@ class WeekView(QWidget):
         days: list[date],
         today: date,
         open_ended: bool = False,
+        week_end: date | None = None,
     ) -> tuple[Decimal, Decimal, Decimal]:
         """(просрочено на сегодня, итог за показанную неделю).
 
@@ -538,7 +553,9 @@ class WeekView(QWidget):
         """
         if not days:
             return ZERO, ZERO, ZERO
-        monday, sunday = days[0], days[-1]
+        # v0.18.0: ``days`` — это дни таблицы (без воскресенья), а
+        # считать надо по полной неделе, поэтому конец передают отдельно.
+        monday, sunday = days[0], week_end or days[-1]
         limit = monday - timedelta(days=1) if today < monday else min(today, sunday)
         overdue = (
             ZERO
@@ -582,7 +599,9 @@ class WeekView(QWidget):
         total_week = ZERO
         total_late = ZERO
         total_customer = ZERO
-        days = self._days
+        # v0.18.0: колонки дней в таблице — без воскресенья, расчёты
+        # при этом идут по полной неделе (self._days / self._week_end).
+        days = self._days[: self.table_days]
         self._rebuilding = True
         try:
             for r, (due_map, remaining_map) in enumerate(
@@ -596,6 +615,7 @@ class WeekView(QWidget):
                     days,
                     today,
                     open_ended=calc.is_open_ended(self._partners[r]),
+                    week_end=self._week_end,
                 )
                 total_overdue += overdue
                 total_week += week
@@ -610,13 +630,13 @@ class WeekView(QWidget):
                     # Покупатели: «Всего» = Реализация − Оплата (v0.15.0).
                     partner = self._partners[r]
                     debt = calc.customer_debt_amount(
-                        self.store.data, partner, days[0], days[-1]
+                        self.store.data, partner, days[0], self._week_end
                     )
                     total_customer += debt
                     self._set_cell_text(row, 1, _money_text(debt))
                 if "debt" in self.subheader_kinds:
                     debt_index = self.subheader_kinds.index("debt")
-                    for i, day in enumerate(self._days):
+                    for i, day in enumerate(days):
                         self._set_cell_text(
                             row,
                             self._day_column(i, debt_index),
@@ -628,7 +648,7 @@ class WeekView(QWidget):
                 self._set_cell_text(TOTAL_ROW, 3, _money_text(total_week))
             else:
                 self._set_cell_text(TOTAL_ROW, 1, _money_text(total_customer))
-            for i, day in enumerate(self._days):
+            for i, day in enumerate(days):
                 for j, kind_name in enumerate(self.subheader_kinds):
                     if kind_name == "debt":
                         amount = sum((m.get(day, ZERO) for m in due_maps), ZERO)
@@ -656,7 +676,10 @@ class WeekView(QWidget):
         partners = self.counterparties()
         days = week_days(self.week_start)
         self._partners = partners
+        # Расчётная неделя — полная (пн–вс): долги и оплаты считаются
+        # по всем семи дням, даже если в таблице их не показываем.
         self._days = days
+        self._week_end = days[-1]
         today = date.today()
         set_date_edit(self.date_edit, self.week_start)
         self.week_label.setText(
@@ -664,7 +687,8 @@ class WeekView(QWidget):
         )
         if self.kind == "customer":
             self.right_value_label.setText(str(len(partners)))
-        self._rebuild_table(partners, days, today)
+        # В таблицу уходят только первые TABLE_DAYS дней (без воскресенья).
+        self._rebuild_table(partners, days[: self.table_days], today)
 
     # --------------------------------------------------------------- таблица
     def _rebuild_table(self, partners, days, today) -> None:
@@ -793,7 +817,11 @@ class WeekView(QWidget):
         remaining_maps = self._remaining_due_maps()
         debt_columns = [
             self._debt_columns(
-                m, days, today, open_ended=calc.is_open_ended(partner)
+                m,
+                days,
+                today,
+                open_ended=calc.is_open_ended(partner),
+                week_end=self._week_end,
             )
             for m, partner in zip(remaining_maps, partners)
         ]
@@ -809,7 +837,7 @@ class WeekView(QWidget):
         if self.kind != "supplier":
             customer_debts = [
                 calc.customer_debt_amount(
-                    self.store.data, partner, days[0], days[-1]
+                    self.store.data, partner, days[0], self._week_end
                 )
                 for partner in partners
             ]
@@ -960,7 +988,11 @@ class WeekView(QWidget):
                 diff += 1
         for col, width in enumerate(widths):
             table.setColumnWidth(col, width)
-        self._fit_amount_font(widths[3])
+        # v0.18.0: ширину берём у колонки дня (первая после итоговых),
+        # а не у фиксированного индекса: тот указывал на итоговую
+        # колонку, и шрифт сумм подбирался слишком крупным —
+        # «88 888,88» не влезало.
+        self._fit_amount_font(min(widths[1 + self.lead_columns:]))
 
     def _fit_amount_font(self, day_column_width: int) -> None:
         """Подобрать размер шрифта сумм так, чтобы «88 888,88» влезало целиком."""

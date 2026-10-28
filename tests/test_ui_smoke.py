@@ -145,7 +145,9 @@ def test_week_table_income_and_payment_input(qt_app, store):
     assert bg_name(1, _DAY(view, 4, 0)) == styles.WEEK_TABLE_WEEKEND_PINK  # праздник
     assert bg_name(FIRST_DATA_ROW, _DAY(view, 4, 0)) == styles.WEEK_TABLE_WEEKEND_PINK
     assert bg_name(FIRST_DATA_ROW, _DAY(view, 5, 0)) is None  # рабочая суббота
-    assert bg_name(FIRST_DATA_ROW, _DAY(view, 6, 0)) == styles.WEEK_TABLE_WEEKEND_PINK
+    # v0.18.0: воскресенье из таблицы убрали — колонок дней шесть.
+    assert view.table_days == 6
+    assert table.columnCount() == 1 + view.lead_columns + 6 * view.columns_per_day
     assert bg_name(FIRST_DATA_ROW, 3) is None  # обычный понедельник без заливки
     assert view.date_edit.minimumWidth() >= 138  # год не под стрелкой календаря
     assert view.date_edit.calendarPopup()
@@ -531,12 +533,12 @@ def test_customer_sale_table_and_direct_input(qt_app, store):
     today = date(2026, 10, 27)
     view.goto_date(monday)
     store.data.day_overrides[today.isoformat()] = "off"
-    view._rebuild_table(view._partners, view._days, today)
+    view._rebuild_table(view._partners, view._days[: view.table_days], today)
     table = view.table
 
     # v0.15.0: у покупателей нет столбца «просрочено» — 1 имя + 1 итог
-    # («Всего») + 7 дней * 2 подколонки.
-    assert table.columnCount() == 16
+    # («Всего»). v0.18.0: дней в таблице шесть, без воскресенья.
+    assert table.columnCount() == 14
     assert table.item(1, 1).text() == "ЗАДОЛЖ."
     assert table.item(2, 1).text() == "Всего"
     assert table.item(2, 2).text() == "Реализация"
@@ -1878,4 +1880,41 @@ def test_users_are_listed_in_configuration_and_password_gate(
     window.data_view.users_save_btn.click()
     qt_app.processEvents()
     assert "Кладовщик" in [user.name for user in access_module.load_users()]
+    window.close()
+
+
+def test_amount_text_fits_into_day_column(qt_app, store):
+    """v0.18.0: «88 888,88» влезает в колонку дня при любой ширине окна."""
+    from PySide6.QtGui import QFont, QFontMetrics
+
+    from oplata.app import MainWindow
+    from oplata.views.week_view import MAX_AMOUNT_TEXT, TABLE_DAYS
+
+    window = MainWindow(store)
+    window.show()
+    qt_app.processEvents()
+
+    view = window.suppliers_view
+    # Воскресенье из таблицы убрали: дней шесть.
+    assert view.table_days == TABLE_DAYS == 6
+    assert view.table.columnCount() == (
+        1 + view.lead_columns + TABLE_DAYS * view.columns_per_day
+    )
+
+    for width in (640, 1200, 1880):
+        view.table.setFixedWidth(width)
+        view._fit_columns_to_width()
+        qt_app.processEvents()
+        col = view._day_column(0, 0)  # первый день, первая подколонка
+        day_width = view.table.columnWidth(col)
+        item = view.table.item(4, col)  # строка первого контрагента
+        assert item is not None
+        font = QFont(view.table.font())
+        font.setPixelSize(item.font().pixelSize())
+        font.setBold(True)
+        advance = QFontMetrics(font).horizontalAdvance(MAX_AMOUNT_TEXT)
+        assert advance <= day_width - 8, (
+            f"ширина колонки {day_width}: «{MAX_AMOUNT_TEXT}» "
+            f"занимает {advance} px"
+        )
     window.close()
