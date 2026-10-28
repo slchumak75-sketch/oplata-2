@@ -19,6 +19,3 @@ data.json
 .vscode/
 Thumbs.db
 desktop.ini
-
-# Результат сборки установщика Inno Setup
-/installer/

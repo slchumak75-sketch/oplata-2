@@ -131,7 +131,8 @@ class DebtTotals:
     total: Decimal = ZERO        # всего задолженность по всем поставщикам
     week: Decimal = ZERO         # задолженность на текущей неделе
     today: Decimal = ZERO        # задолженность со сроком ровно на эту дату
-    overdue: Decimal = ZERO      # просрочено = столбец «на сегодня» поставщиков
+    overdue: Decimal = ZERO      # задолженность на сегодня (столбец «на сегодня»)
+    late: Decimal = ZERO         # просроченный платёж (столбец «ПРОСРОЧЕНО»)
 
 
 @dataclass(frozen=True)
@@ -331,6 +332,27 @@ def supplier_overdue_total(
     return total
 
 
+def supplier_late_total(
+    data: AppData, on_date: date, include_archived: bool = False
+) -> Decimal:
+    """«Просроченный платёж» = сумма столбца «ПРОСРОЧЕНО» поставщиков.
+
+    v0.16.0: считаются долги со сроком оплаты, который **уже истёк**
+    (строго раньше даты), за вычетом оплат. У поставщика со статусом
+    «Реализация» срок бессрочный — просрочки у него не бывает.
+    """
+
+    sunday = week_monday(on_date) + timedelta(days=6)
+    limit = min(on_date, sunday)
+    total = ZERO
+    for supplier in visible_suppliers(data, include_archived):
+        if is_open_ended(supplier):
+            continue
+        due_map = supplier_schedule_remaining(data, supplier, sunday)
+        total += sum((amount for due, amount in due_map.items() if due < limit), ZERO)
+    return total
+
+
 def debt_totals(
     data: AppData, on_date: date, include_archived: bool = False
 ) -> DebtTotals:
@@ -351,9 +373,12 @@ def debt_totals(
         total=sum(schedule.values(), ZERO),
         week=week,
         today=schedule.get(on_date, ZERO),
-        # «Просрочено» считается по столбцу «на сегодня» таблицы
-        # поставщиков (v0.15.0), а не по срокам раньше сегодня.
+        # «Задолженность на сегодня» считается по столбцу «на сегодня»
+        # таблицы поставщиков (v0.15.0), а не по срокам раньше сегодня.
         overdue=supplier_overdue_total(data, on_date, include_archived),
+        # v0.16.0: отдельная строка «Просроченный платёж» — столбец
+        # «ПРОСРОЧЕНО» (срок уже истёк).
+        late=supplier_late_total(data, on_date, include_archived),
     )
 
 
