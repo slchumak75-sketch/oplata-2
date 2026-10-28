@@ -102,6 +102,28 @@ Windows или SmartScreen ради одной загрузки. После ск
 пока без цифровой подписи. Для файла, скачанного из GitHub Actions проекта,
 нажмите **Подробнее → Выполнить в любом случае**.
 
+## Сборка установщика (Inno Setup)
+
+Установщик описывается скриптом `packaging/windows/installer.iss` и
+собирается в CI компилятором Inno Setup 6 (`ISCC.exe`) прямо на
+Windows-раннере:
+
+```
+ISCC.exe /DMyAppVersion=0.16.0 packaging\windows\installer.iss
+```
+
+Версия передаётся ключом `/D`, чтобы она не дублировалась в двух
+местах. Файлы берутся из `package-folder\Oplata` (готовой folder-сборки
+PyInstaller). Результат — `installer\Oplata-<версия>-Setup.exe`, который
+уходит в артефакт `Oplata-windows-setup-v…`.
+
+Каждая сборка проверяет установщик по-настоящему: тихая установка во
+временную папку (`/VERYSILENT /DIR=…`) и запуск `Oplata.exe --self-test`
+— то есть программа стартует именно из установленной копии.
+
+Скрипт `.iss` сохранён в UTF-8 **с BOM**: компилятор Inno Setup читает
+кириллицу только из файла с меткой BOM.
+
 ## Как устроена автосборка (GitHub Actions)
 
 Файл `.github/workflows/build-windows.yml`:
