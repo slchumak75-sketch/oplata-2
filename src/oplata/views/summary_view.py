@@ -121,7 +121,9 @@ class SummaryView(QWidget):
             [
                 ("debt_total", "Всего задолженность"),
                 ("debt_week", "Задолженность на неделе"),
-                ("debt_today", "Задолженность на сегодня"),
+                # Строки «Задолженность на сегодня» больше нет (v0.15.0):
+                # «Просрочено» берётся из столбца «на сегодня» таблицы
+                # поставщиков, отдельная строка не нужна.
                 ("debt_overdue", "Просрочено"),
             ]
             + [
@@ -236,7 +238,6 @@ class SummaryView(QWidget):
         self._set_value("balance", funds.balance)
         self._set_value("debt_total", debt.total)
         self._set_value("debt_week", debt.week)
-        self._set_value("debt_today", debt.today)
         self._set_value("debt_overdue", debt.overdue)
         for index, week in enumerate(plan, start=1):
             key = f"plan_{index}"
@@ -270,9 +271,6 @@ class SummaryView(QWidget):
                     ),
                     SummaryLine(
                         "Задолженность на неделе", fmt_money_plain(debt.week)
-                    ),
-                    SummaryLine(
-                        "Задолженность на сегодня", fmt_money_plain(debt.today)
                     ),
                     SummaryLine("Просрочено", fmt_money_plain(debt.overdue)),
                 ]

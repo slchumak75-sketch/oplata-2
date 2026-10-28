@@ -130,8 +130,8 @@ class DebtTotals:
 
     total: Decimal = ZERO        # всего задолженность по всем поставщикам
     week: Decimal = ZERO         # задолженность на текущей неделе
-    today: Decimal = ZERO        # задолженность на сегодня
-    overdue: Decimal = ZERO      # просрочено (срок раньше сегодня)
+    today: Decimal = ZERO        # задолженность со сроком ровно на эту дату
+    overdue: Decimal = ZERO      # просрочено = столбец «на сегодня» поставщиков
 
 
 @dataclass(frozen=True)
@@ -245,6 +245,28 @@ def funds_totals(data: AppData) -> FundsTotals:
     )
 
 
+def supplier_overdue_total(
+    data: AppData, on_date: date, include_archived: bool = False
+) -> Decimal:
+    """«Просрочено» = сумма столбца «на сегодня» таблицы поставщиков.
+
+    v0.15.0: пользователь задал источник явно — «Просрочено» в «Сводке»
+    берётся из столбца «на сегодня» таблицы поставщиков, то есть это
+    оплаты, просроченные на эту дату (со сроком по сегодня
+    включительно). Формула та же, что в ``WeekView._debt_columns`` для
+    текущей недели.
+    """
+
+    monday = week_monday(on_date)
+    sunday = monday + timedelta(days=6)
+    limit = monday - timedelta(days=1) if on_date < monday else min(on_date, sunday)
+    total = ZERO
+    for supplier in visible_suppliers(data, include_archived):
+        due_map = debt_by_due_date(data, supplier)
+        total += sum((amount for due, amount in due_map.items() if due <= limit), ZERO)
+    return total
+
+
 def debt_totals(
     data: AppData, on_date: date, include_archived: bool = False
 ) -> DebtTotals:
@@ -256,9 +278,9 @@ def debt_totals(
         total=sum(schedule.values(), ZERO),
         week=_schedule_sum(schedule, monday, monday + timedelta(days=6)),
         today=schedule.get(on_date, ZERO),
-        overdue=sum(
-            (amount for due, amount in schedule.items() if due < on_date), ZERO
-        ),
+        # «Просрочено» считается по столбцу «на сегодня» таблицы
+        # поставщиков (v0.15.0), а не по срокам раньше сегодня.
+        overdue=supplier_overdue_total(data, on_date, include_archived),
     )
 
 

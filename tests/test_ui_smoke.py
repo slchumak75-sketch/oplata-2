@@ -1388,8 +1388,10 @@ def test_summary_panel_shows_three_blocks_line_by_line(qt_app, store):
     # Блок «Задолженность поставщикам».
     assert view.value_text("debt_total") == "2 100,00"
     assert view.value_text("debt_week") == "500,00"
-    assert view.value_text("debt_today") == "500,00"
-    assert view.value_text("debt_overdue") == "700,00"
+    # «Задолженность на сегодня» удалена; «Просрочено» — как столбец
+    # «на сегодня» таблицы поставщиков: долги со сроком по 27.10
+    # включительно (700 просрочено + 500 со сроком сегодня).
+    assert view.value_text("debt_overdue") == "1 200,00"
     assert view.caption_text("plan_1") == "Оплата 02.11 – 08.11"
     assert view.value_text("plan_1") == "0,00"
     assert view.caption_text("plan_2") == "Оплата 09.11 – 15.11"
@@ -1405,7 +1407,7 @@ def test_summary_panel_shows_three_blocks_line_by_line(qt_app, store):
 
     # Все значения построчно: подписи и числа лежат в сетке блоками.
     assert view.panel.isVisible()
-    assert len(view._values) == len(view._captions) == 4 + 8 + 1 + 2
+    assert len(view._values) == len(view._captions) == 4 + 7 + 1 + 2
     # Блок «Задолженность покупателей» пока пуст (покупателей нет).
     assert view.value_text("cust_total") == "0,00"
     window.close()
