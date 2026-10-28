@@ -158,10 +158,25 @@ def main() -> int:
                     ),
                 ]
             )
-            # Свой вид оплаты в блоке «Оплата»: строка добавляется «+»,
-            # название и сумма вводятся прямо в ячейки.
-            from oplata.models import add_other_payment, set_daily_other_payment
+            # Свои строки: в «Поступлении» — прочие поступления, в
+            # «Оплате» — прочие виды оплат (добавляются кнопкой «+»,
+            # название и сумма вводятся прямо в ячейки).
+            from oplata.models import (
+                INCOMING,
+                add_other_payment,
+                set_daily_other_payment,
+            )
 
+            add_other_payment(
+                store.data, "Возврат поставщика", "2026-10-27", INCOMING
+            )
+            set_daily_other_payment(
+                store.data,
+                "Возврат поставщика",
+                "2026-10-27",
+                Decimal("7500"),
+                INCOMING,
+            )
             add_other_payment(store.data, "Аренда", "2026-10-27")
             set_daily_other_payment(
                 store.data, "Аренда", "2026-10-27", Decimal("45000")
@@ -170,8 +185,12 @@ def main() -> int:
             set_daily_other_payment(
                 store.data, "Зарплата", "2026-10-21", Decimal("160000")
             )
+            add_other_payment(store.data, "Транспорт", "2026-10-27")
+            set_daily_other_payment(
+                store.data, "Транспорт", "2026-10-26", Decimal("3200")
+            )
             store.save()
-            receipts.refresh_outgoing_rows()
+            receipts.refresh_rows()
             receipts.refresh()
             window.show_page(0)
             app.processEvents()

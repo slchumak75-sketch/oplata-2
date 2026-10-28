@@ -103,7 +103,7 @@ class DataView(QWidget):
         prev_year.clicked.connect(lambda: self._shift_year(-1))
         top.addWidget(prev_year)
         self.year_label = QLabel(str(self.year))
-        self.year_label.setStyleSheet("font-weight:800;font-size:16px")
+        self.year_label.setStyleSheet(f"font-weight:800;font-size:{styles.fs(16)}px")
         top.addWidget(self.year_label)
         next_year = QPushButton("→")
         next_year.clicked.connect(lambda: self._shift_year(1))
@@ -266,7 +266,7 @@ class DataView(QWidget):
 
         title = QLabel(MONTHS_RU[month - 1])
         title.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        title.setStyleSheet("font-weight:800;font-size:14px")
+        title.setStyleSheet(f"font-weight:800;font-size:{styles.fs(14)}px")
         layout.addWidget(title)
 
         days_grid = QGridLayout()

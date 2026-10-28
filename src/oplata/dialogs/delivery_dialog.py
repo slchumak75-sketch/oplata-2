@@ -36,6 +36,7 @@ from .. import calc
 from ..dates import fmt_date, parse_money
 from ..models import Counterparty, add_delivery
 from ..storage import DataStore
+from .. import styles
 from ..widgets import (
     blue_button,
     date_edit_value,
@@ -116,7 +117,7 @@ class DeliveryDialog(QDialog):
 
         top = QHBoxLayout()
         title = QLabel("Поставка")
-        title.setStyleSheet("font-size:19px;font-weight:800")
+        title.setStyleSheet(f"font-size:{styles.fs(19)}px;font-weight:800")
         top.addWidget(title)
         top.addStretch(1)
         card_btn = QPushButton("Карточка")
@@ -125,7 +126,7 @@ class DeliveryDialog(QDialog):
         root.addLayout(top)
 
         self.name_label = QLabel()
-        self.name_label.setStyleSheet("font-size:16px;font-weight:800")
+        self.name_label.setStyleSheet(f"font-size:{styles.fs(16)}px;font-weight:800")
         root.addWidget(self.name_label)
         self.conditions_label = QLabel()
         self.conditions_label.setObjectName("Muted")
@@ -154,7 +155,7 @@ class DeliveryDialog(QDialog):
         due_title.setObjectName("KpiTitle")
         due_layout.addWidget(due_title)
         self.due_label = QLabel()
-        self.due_label.setStyleSheet("font-size:19px;font-weight:800")
+        self.due_label.setStyleSheet(f"font-size:{styles.fs(19)}px;font-weight:800")
         due_layout.addWidget(self.due_label)
         self.due_reason_label = QLabel()
         self.due_reason_label.setObjectName("Muted")

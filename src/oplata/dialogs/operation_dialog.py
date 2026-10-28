@@ -37,6 +37,7 @@ from ..models import KIND_INCOME, KIND_PAYMENT, KIND_SALE, Operation
 from ..storage import DataStore
 from ..widgets import blue_button, date_edit_value, make_amount_edit, make_date_edit
 from .delivery_dialog import due_reason_text
+from .. import styles
 
 OPERATION_KINDS = (KIND_INCOME, KIND_SALE, KIND_PAYMENT)
 NO_COUNTERPARTY = "— выберите контрагента —"
@@ -89,7 +90,7 @@ class OperationDialog(QDialog):
         root.setSpacing(10)
 
         title = QLabel("Новая операция" if is_new else "Редактирование операции")
-        title.setStyleSheet("font-size:19px;font-weight:800")
+        title.setStyleSheet(f"font-size:{styles.fs(19)}px;font-weight:800")
         root.addWidget(title)
 
         root.addWidget(QLabel("Тип операции *"))
@@ -144,7 +145,7 @@ class OperationDialog(QDialog):
         due_title.setObjectName("KpiTitle")
         due_layout.addWidget(due_title)
         self.due_label = QLabel()
-        self.due_label.setStyleSheet("font-size:19px;font-weight:800")
+        self.due_label.setStyleSheet(f"font-size:{styles.fs(19)}px;font-weight:800")
         due_layout.addWidget(self.due_label)
         self.due_reason_label = QLabel()
         self.due_reason_label.setObjectName("Muted")

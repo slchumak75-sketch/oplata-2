@@ -116,9 +116,13 @@ class MainWindow(QMainWindow):
         logo = QVBoxLayout()
         logo.setSpacing(0)
         logo_title = QLabel("▦  Оплаты")
-        logo_title.setStyleSheet("color:#ffffff;font-size:19px;font-weight:800")
+        logo_title.setStyleSheet(
+            f"color:#ffffff;font-size:{styles.fs(19)}px;font-weight:800"
+        )
         logo_sub = QLabel("Строймаркет")
-        logo_sub.setStyleSheet("color:#c9d6f2;font-size:11px")
+        logo_sub.setStyleSheet(
+            f"color:#c9d6f2;font-size:{styles.fs(11)}px"
+        )
         logo.addWidget(logo_title)
         logo.addWidget(logo_sub)
         layout.addLayout(logo)
@@ -129,7 +133,8 @@ class MainWindow(QMainWindow):
         self.nav_buttons: list[QPushButton] = []
         nav_style = (
             "QPushButton{background:transparent;color:#ffffff;border:none;"
-            "border-radius:8px;padding:7px 16px;font-weight:700;font-size:14px}"
+            "border-radius:8px;padding:7px 16px;font-weight:700;"
+            f"font-size:{styles.fs(14)}px}}"
             "QPushButton:hover{background:rgba(255,255,255,0.14)}"
             f"QPushButton:checked{{background:#ffffff;color:{styles.NAVY}}}"
         )

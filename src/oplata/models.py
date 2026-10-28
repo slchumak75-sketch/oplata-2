@@ -83,6 +83,11 @@ CASH_SOURCE = "cash"   # «Поступление наличными»
 CARD_SOURCE = "card"   # «Поступление по картам»
 
 
+# Направления прочих строк на вкладке «Поступление и оплаты» (v0.12.0).
+INCOMING = "in"    # блок «Поступление» — «прочие поступления»
+OUTGOING = "out"   # блок «Оплата» — прочие виды оплат
+
+
 @dataclass
 class CashReceipt:
     """Поступление денег в кассу/на карту без привязки к покупателю.
@@ -125,15 +130,21 @@ class OtherPayment:
     """Прочий вид оплаты: своё название, сумма за дату (v0.11.0).
 
     Пользователь добавляет такие строки на вкладке «Поступление и оплаты»
-    в блоке «Оплата» кнопкой «+»: название вводится прямо в ячейку,
-    сумма — в ячейку «Сумма». Запись хранится за конкретную дату, а
-    нарастающие итоги строки считаются по названию (по всему виду
-    оплаты).
+    кнопкой «+» — в блоке «Оплата», а с v0.12.0 и в блоке «Поступление»
+    («прочие поступления»): название вводится прямо в ячейку, сумма — в
+    ячейку «Сумма». Запись хранится за конкретную дату, а нарастающие
+    итоги строки считаются по названию (по всему виду оплаты).
+
+    ``direction`` разделяет два блока: ``INCOMING`` — «Поступление»,
+    ``OUTGOING`` — «Оплата». У старых файлов поля нет, поэтому
+    ``from_dict`` подставляет ``OUTGOING``: ранее созданные виды оплат
+    остаются в блоке «Оплата».
     """
 
     date: str = ""      # ISO ``YYYY-MM-DD``
     name: str = ""      # название вида оплаты, которое ввёл пользователь
     amount: str = "0"   # Decimal строкой
+    direction: str = OUTGOING
     id: str = field(default_factory=new_id)
 
     @classmethod
@@ -143,6 +154,7 @@ class OtherPayment:
             name=str(data.get("name", "")),
             amount=str(data.get("amount", "0")),
             id=str(data.get("id") or new_id()),
+            direction=str(data.get("direction") or OUTGOING),
         )
 
 
@@ -468,40 +480,66 @@ def set_daily_cash_receipt(
     )
 
 
-def other_payment_names(data: AppData) -> list[str]:
-    """Названия прочих видов оплат в порядке появления (без пустых)."""
+def other_payment_names(
+    data: AppData, direction: str = OUTGOING
+) -> list[str]:
+    """Названия прочих строк в порядке появления (без пустых).
+
+    ``direction`` = ``INCOMING`` — блок «Поступление», ``OUTGOING`` —
+    блок «Оплата».
+    """
 
     names: list[str] = []
     for payment in data.other_payments:
+        if getattr(payment, "direction", OUTGOING) != direction:
+            continue
         if payment.name and payment.name not in names:
             names.append(payment.name)
     return names
 
 
-def add_other_payment(data: AppData, name: str, date_iso: str) -> OtherPayment:
+def add_other_payment(
+    data: AppData, name: str, date_iso: str, direction: str = OUTGOING
+) -> OtherPayment:
     """Создать строку вида оплаты (сумма 0 — строка только появилась)."""
 
-    payment = OtherPayment(date=date_iso, name=name, amount="0")
+    payment = OtherPayment(
+        date=date_iso, name=name, amount="0", direction=direction
+    )
     data.other_payments.append(payment)
     return payment
 
 
 def set_daily_other_payment(
-    data: AppData, name: str, date_iso: str, amount: Decimal | None
+    data: AppData,
+    name: str,
+    date_iso: str,
+    amount: Decimal | None,
+    direction: str = OUTGOING,
 ) -> None:
     """Задать сумму вида оплаты за день (ввод прямо в ячейку)."""
 
     def matches(item: OtherPayment) -> bool:
-        return item.name == name and item.date == date_iso
+        return (
+            item.name == name
+            and item.date == date_iso
+            and getattr(item, "direction", OUTGOING) == direction
+        )
 
     if amount is None or amount == 0:
         data.other_payments = [
             item for item in data.other_payments if not matches(item)
         ]
         # Строку вида оплаты не теряем: остаётся запись с нулевой суммой.
-        if name and not any(item.name == name for item in data.other_payments):
+        if name and not any(
+            item.name == name
+            and getattr(item, "direction", OUTGOING) == direction
+            for item in data.other_payments
+        ):
             data.other_payments.append(
-                OtherPayment(date=date_iso, name=name, amount="0")
+                OtherPayment(
+                    date=date_iso, name=name, amount="0", direction=direction
+                )
             )
         return
 
@@ -517,20 +555,35 @@ def set_daily_other_payment(
     )
 
 
-def rename_other_payment(data: AppData, old_name: str, new_name: str) -> None:
-    """Переименовать вид оплаты во всех его записях."""
+def rename_other_payment(
+    data: AppData,
+    old_name: str,
+    new_name: str,
+    direction: str = OUTGOING,
+) -> None:
+    """Переименовать вид оплаты во всех его записях блока."""
 
     cleaned = (new_name or "").strip()
     if not cleaned or cleaned == old_name:
         return
     for item in data.other_payments:
-        if item.name == old_name:
+        if (
+            item.name == old_name
+            and getattr(item, "direction", OUTGOING) == direction
+        ):
             item.name = cleaned
 
 
-def delete_other_payment(data: AppData, name: str) -> None:
+def delete_other_payment(
+    data: AppData, name: str, direction: str = OUTGOING
+) -> None:
     """Убрать вид оплаты вместе со всеми его суммами."""
 
     data.other_payments = [
-        item for item in data.other_payments if item.name != name
+        item
+        for item in data.other_payments
+        if not (
+            item.name == name
+            and getattr(item, "direction", OUTGOING) == direction
+        )
     ]

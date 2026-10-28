@@ -43,9 +43,10 @@ from collections.abc import Callable
 from datetime import date, timedelta
 from decimal import Decimal
 
-from PySide6.QtCore import QDate, QPoint, Qt
+from PySide6.QtCore import QDate, QEvent, QPoint, Qt, QTimer
 from PySide6.QtWidgets import (
     QAbstractItemView,
+    QApplication,
     QFrame,
     QHBoxLayout,
     QHeaderView,
@@ -66,7 +67,9 @@ from ..dates import fmt_money_plain, parse_money, week_monday
 from ..models import (
     CARD_SOURCE,
     CASH_SOURCE,
+    INCOMING,
     KIND_PAYMENT,
+    OUTGOING,
     add_other_payment,
     cash_receipt_amount,
     delete_other_payment,
@@ -86,9 +89,17 @@ CARD_ROW = "card"
 CUSTOMERS_ROW = "customers"
 SUPPLIERS_ROW = "suppliers"
 
-# Префикс ключей строк «прочих видов оплат»: OTHER_PREFIX + название.
+# Префикс ключей строк, которые добавляет пользователь кнопкой «+»:
+# OTHER_PREFIX + название. В блоке «Поступление» это «прочие поступления»,
+# в блоке «Оплата» — «прочие виды оплат» (v0.12.0).
 OTHER_PREFIX = "other:"
-NEW_PAYMENT_NAME = "Новый вид оплаты"
+NEW_ROW_NAME = {
+    INCOMING: "Новое поступление",
+    OUTGOING: "Новый вид оплаты",
+}
+NEW_PAYMENT_NAME = NEW_ROW_NAME[OUTGOING]  # короткий псевдоним
+# Сколько строк видно в блоке без прокрутки; дальше включается скроллбар.
+MAX_VISIBLE_ROWS = 8
 
 ROW_TITLES = {
     CASH_ROW: "Поступление наличными",
@@ -104,7 +115,11 @@ POPUP_ROWS = (CUSTOMERS_ROW, SUPPLIERS_ROW)
 
 COL_NAME, COL_AMOUNT, COL_WEEK, COL_MONTH, COL_YEAR = range(5)
 HEADERS = ("", "Сумма", "Неделя", "Месяц", "Год")
-COLUMN_WIDTHS = {COL_AMOUNT: 150, COL_WEEK: 150, COL_MONTH: 150, COL_YEAR: 170}
+# Ширины числовых колонок подобраны под шрифт +30% (v0.12.0): в них
+# должно влезать «88 888,88», а колонке названия — остаться место на
+# «Поступление наличными». Первая колонка растягивается на остаток.
+COLUMN_WIDTHS = {COL_AMOUNT: 120, COL_WEEK: 120, COL_MONTH: 120, COL_YEAR: 120}
+ROW_HEIGHT = 34
 
 ZERO = Decimal("0")
 
@@ -132,10 +147,26 @@ def other_row_name(key: str) -> str:
 
 
 class AmountItemDelegate(QStyledItemDelegate):
-    """Редактор суммы для ячейки: без мешающих нулей (AmountLineEdit)."""
+    """Редактор суммы для ячейки: без мешающих нулей (AmountLineEdit).
+
+    Ссылку на созданный редактор держим сами: иначе Python-обёртка
+    остаётся без владельца и сборка мусора падает на уже удалённом
+    C++-объекте (видели ``none_dealloc`` на прогонах тестов).
+    """
+
+    def __init__(self, parent=None) -> None:
+        super().__init__(parent)
+        self._editors: list[AmountLineEdit] = []
 
     def createEditor(self, parent, option, index):  # noqa: N802 - Qt API
-        return AmountLineEdit(parent=parent)
+        editor = AmountLineEdit(parent=parent)
+        self._editors.append(editor)
+        editor.destroyed.connect(
+            lambda *_: self._editors.remove(editor)
+            if editor in self._editors
+            else None
+        )
+        return editor
 
 
 class AmountPopup(QFrame):
@@ -162,13 +193,14 @@ class AmountPopup(QFrame):
         self.setStyleSheet(
             "QFrame#Popup{background:#ffffff;border:1px solid #b9c9ef;"
             "border-radius:10px}"
-            "QLabel#PopupTitle{font-weight:800;font-size:15px}"
-            "QLabel#PopupTotal{font-weight:800;font-size:15px;"
+            f"QLabel#PopupTitle{{font-weight:800;font-size:{styles.fs(15)}px}}"
+            f"QLabel#PopupTotal{{font-weight:800;font-size:{styles.fs(15)}px;"
             f"color:{styles.BLUE}}}"
         )
-        # Закрытие по клику вне окна или по Esc удаляет его: держать
-        # скрытые окна на каждый клик незачем.
-        self.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose)
+        # Окно НЕ удаляем на Qt-уровне при каждом закрытии: объект
+        # живёт, пока его не заменит следующее открытие (см.
+        # ``ReceiptsView.open_popup``). При удалении окна Qt (вместе с
+        # главным окном) Python-ссылка снимается через ``destroyed``.
         self._on_save = on_save
         self.edits: dict[str, AmountLineEdit] = {}
         # Были ли уже сохранённые суммы: если да, то пустые поля — это
@@ -221,16 +253,19 @@ class AmountPopup(QFrame):
         total_row.addWidget(self.total_label)
         root.addLayout(total_row)
 
-        buttons = QHBoxLayout()
-        buttons.addStretch(1)
-        close_btn = QPushButton("Закрыть")
-        close_btn.clicked.connect(self.close)
-        buttons.addWidget(close_btn)
-        save_btn = blue_button("Сохранить")
-        save_btn.clicked.connect(self._save)
-        buttons.addWidget(save_btn)
-        root.addLayout(buttons)
+        # Кнопок «Закрыть»/«Сохранить» нет (v0.12.0): окно сохраняет
+        # введённое и скрывается, как только вы кликнете левой кнопкой
+        # в любом месте вне полей ввода сумм.
+        hint_bottom = QLabel(
+            "Сумма сохраняется при клике вне поля ввода; Esc — отмена."
+        )
+        hint_bottom.setObjectName("Muted")
+        hint_bottom.setWordWrap(True)
+        hint_bottom.setMaximumWidth(360)
+        root.addWidget(hint_bottom)
 
+        self._closing = False  # True — закрыть без сохранения (Esc)
+        self._watching = False  # слушаем клики по всему приложению
         self._update_total()
 
     # ------------------------------------------------------------------ вид
@@ -280,6 +315,7 @@ class AmountPopup(QFrame):
         anchor = widget.mapToGlobal(QPoint(widget.width(), row_top))
         self.adjustSize()
         self.move(QPoint(anchor.x() + 8, anchor.y()))
+        self._watch_clicks()
         self.show()
         screen = self.screen()
         if screen is not None:  # не даём окну уехать за край экрана
@@ -288,10 +324,9 @@ class AmountPopup(QFrame):
             x = min(frame.x(), free.right() - frame.width() - 8)
             y = min(frame.y(), free.bottom() - frame.height() - 8)
             self.move(max(free.left() + 8, x), max(free.top() + 8, y))
-        first = next(iter(self.edits.values()), None)
-        if first is not None:
-            first.setFocus()
-            first.selectAll()
+        # Фокус и выделение текста в первое поле НЕ ставим (v0.12.0):
+        # подсветка мешала — сохранённая сумма выглядела «выбранной»,
+        # и любая цифра затирала её вместо дописывания.
 
     # ------------------------------------------------------------- сохранение
     def collected(self) -> dict[str, Decimal]:
@@ -313,23 +348,90 @@ class AmountPopup(QFrame):
             result[key] = value
         return result
 
-    def _save(self) -> None:
+    def _commit(self) -> bool:
+        """Записать введённое. ``False`` — остаться в окне (ошибка ввода)."""
+
         try:
             values = self.collected()
         except ValueError as error:
             QMessageBox.warning(self, "Проверьте суммы", str(error))
-            return
+            return False
         # Пустые поля означают «убрать сумму»: сохраняем и их, но нулями.
         result: dict[str, Decimal] = {key: ZERO for key in self.edits}
         for key, value in values.items():
             result[key] = value
         if not values and not self._had_values:
-            QMessageBox.information(
-                self, "Нечего сохранять", "Введите сумму хотя бы в одно поле."
-            )
-            return
+            return True  # ничего не вводили — просто закрываем окно
         self._on_save(result)
-        self.close()
+        return True
+
+    def _save(self) -> None:
+        """Сохранить и скрыть (по клику вне поля ввода)."""
+
+        if self._commit():
+            self._closing = True
+            self.hide()
+
+    def _commit_and_hide(self) -> None:
+        self._save()
+
+    def hideEvent(self, event):  # noqa: N802 - Qt API
+        # Сохранение делается до скрытия (в mousePressEvent и в
+        # eventFilter) — здесь только снимаем слушатель кликов.
+        self._stop_watching()
+        super().hideEvent(event)
+
+    def _watch_clicks(self) -> None:
+        """Слушать клики по приложению: клик вне окна — сохранение."""
+
+        app = QApplication.instance()
+        if app is not None and not self._watching:
+            app.installEventFilter(self)
+            self._watching = True
+
+    def _stop_watching(self) -> None:
+        if not self._watching:
+            return
+        app = QApplication.instance()
+        if app is not None:
+            app.removeEventFilter(self)
+        self._watching = False
+
+    def eventFilter(self, obj, event):  # noqa: N802 - Qt API
+        if (
+            self.isVisible()
+            and event.type() == QEvent.Type.MouseButtonPress
+            and event.button() == Qt.MouseButton.LeftButton
+        ):
+            widget = obj if isinstance(obj, QWidget) else None
+            if widget is not None and not self.isAncestorOf(widget):
+                # Клик вне окна: сохраняем, Qt скроет окно сам.
+                self._save()
+        return False
+
+    def mousePressEvent(self, event):  # noqa: N802 - Qt API
+        """Клик вне поля ввода суммы — сохранить и скрыть окно."""
+
+        point = event.position().toPoint() if hasattr(event, "position") else None
+        child = self.childAt(point) if point is not None else None
+        widget = child
+        while widget is not None and widget is not self:
+            if isinstance(widget, AmountLineEdit):
+                super().mousePressEvent(event)
+                return
+            widget = widget.parentWidget()
+        if event.button() != Qt.MouseButton.LeftButton:
+            super().mousePressEvent(event)
+            return
+        self._save()
+
+    def keyPressEvent(self, event):  # noqa: N802 - Qt API
+        if event.key() == Qt.Key.Key_Escape:
+            self._closing = True  # Esc — отмена, без сохранения
+            self._stop_watching()
+            self.hide()
+            return
+        super().keyPressEvent(event)
 
 
 class MoneyBlock(QFrame):
@@ -346,9 +448,11 @@ class MoneyBlock(QFrame):
         on_add_row: Callable[[], None] | None = None,
         on_remove_row: Callable[[str], None] | None = None,
         parent: QWidget | None = None,
+        direction: str = OUTGOING,
     ) -> None:
         super().__init__(parent)
         self.setObjectName("Panel")
+        self.direction = direction
         self.row_keys = list(row_keys)
         self.on_open_popup = on_open_popup
         self.on_amount_entered = on_amount_entered
@@ -399,33 +503,39 @@ class MoneyBlock(QFrame):
         self.table.verticalHeader().setVisible(False)
         self.table.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
         self.table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
-        self.table.setEditTriggers(
-            QAbstractItemView.EditTrigger.DoubleClicked
-            | QAbstractItemView.EditTrigger.EditKeyPressed
-            | QAbstractItemView.EditTrigger.AnyKeyPressed
-        )
+        # Ячейка становится полем ввода уже по одному клику (v0.12.0):
+        # «клацаешь мышкой — и сразу вводишь».
+        self.table.setEditTriggers(QAbstractItemView.EditTrigger.AllEditTriggers)
         self.table.setItemDelegateForColumn(COL_AMOUNT, AmountItemDelegate(self.table))
         self.table.itemChanged.connect(self._on_item_changed)
         self.table.cellClicked.connect(self._on_cell_clicked)
         self.table.setAlternatingRowColors(False)
         header_view = self.table.horizontalHeader()
         header_view.setSectionResizeMode(COL_NAME, QHeaderView.ResizeMode.Stretch)
+        # Числа — по правому краю: и в ячейках, и в заголовках колонок.
+        for column in (COL_AMOUNT, COL_WEEK, COL_MONTH, COL_YEAR):
+            header_item = self.table.horizontalHeaderItem(column)
+            if header_item is not None:
+                header_item.setTextAlignment(
+                    Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter
+                )
         root.addWidget(self.table)
 
         # --- кнопки «+» / «−» для строк, которые добавляет пользователь ---
         if on_add_row is not None or on_remove_row is not None:
             buttons = QHBoxLayout()
             buttons.addStretch(1)
+            kind = "поступление" if direction == INCOMING else "вид оплаты"
             if on_add_row is not None:
                 self.add_btn = QPushButton("+")
                 self.add_btn.setFixedWidth(38)
-                self.add_btn.setToolTip("Добавить свой вид оплаты")
+                self.add_btn.setToolTip(f"Добавить своё: {kind}")
                 self.add_btn.clicked.connect(on_add_row)
                 buttons.addWidget(self.add_btn)
             if on_remove_row is not None:
                 self.remove_btn = QPushButton("−")
                 self.remove_btn.setFixedWidth(38)
-                self.remove_btn.setToolTip("Убрать выделенный вид оплаты")
+                self.remove_btn.setToolTip(f"Убрать выделенное: {kind}")
                 self.remove_btn.clicked.connect(self._remove_selected)
                 buttons.addWidget(self.remove_btn)
             root.addLayout(buttons)
@@ -456,20 +566,33 @@ class MoneyBlock(QFrame):
                 if editable and column == COL_AMOUNT:
                     item_flags |= Qt.ItemFlag.ItemIsEditable
                 item.setFlags(item_flags)
-                if column == COL_AMOUNT:
-                    item.setTextAlignment(
-                        Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter
-                    )
+                item.setTextAlignment(
+                    Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter
+                )
                 self.table.setItem(row, column, item)
         self._updating = False
         self._fit_height()
 
     def _fit_height(self) -> None:
+        """Высота по числу строк; больше ``MAX_VISIBLE_ROWS`` — со скроллом.
+
+        Запрос пользователя: когда добавленные строки перестают
+        помещаться на экране, в блоке появляется вертикальная прокрутка,
+        а сам блок не разрастается за пределы окна.
+        """
+
         rows = max(len(self.row_keys), 1)
-        self.table.setFixedHeight(
-            self.table.horizontalHeader().height()
-            + rows * self.table.verticalHeader().defaultSectionSize()
-            + 2
+        visible = min(rows, MAX_VISIBLE_ROWS)
+        self.table.verticalHeader().setDefaultSectionSize(ROW_HEIGHT)
+        row_height = self.table.verticalHeader().defaultSectionSize()
+        self.table.setMinimumHeight(
+            self.table.horizontalHeader().height() + row_height + 2
+        )
+        self.table.setMaximumHeight(
+            self.table.horizontalHeader().height() + visible * row_height + 2
+        )
+        self.table.setVerticalScrollBarPolicy(
+            Qt.ScrollBarPolicy.ScrollBarAsNeeded
         )
         for column, width in COLUMN_WIDTHS.items():
             self.table.setColumnWidth(column, width)
@@ -552,8 +675,8 @@ class MoneyBlock(QFrame):
             QMessageBox.information(
                 self,
                 "Строку не удалить",
-                "«Поставщики» — постоянная строка. Удалить можно только "
-                "добавленные виды оплат.",
+                f"«{self._row_title(key)}» — постоянная строка. Удалить "
+                "можно только добавленные кнопкой «+».",
             )
             return
         if self.on_remove_row is not None:
@@ -587,12 +710,21 @@ class ReceiptsView(QWidget):
         left_layout.setContentsMargins(0, 0, 0, 0)
         left_layout.setSpacing(12)
 
+        # Оба блока умеют держать строки, добавленные кнопкой «+»:
+        # в «Поступлении» это прочие поступления, в «Оплате» — прочие
+        # виды оплат (v0.12.0). Различает их ``direction``.
         self.incoming = MoneyBlock(
             "Поступление",
-            [CASH_ROW, CARD_ROW, CUSTOMERS_ROW],
+            self._incoming_rows(),
             on_open_popup=self.open_popup,
             on_amount_entered=self.save_direct_amount,
             on_date_changed=self.refresh,
+            on_name_edited=lambda key, text: self.rename_other_row(
+                key, text, INCOMING
+            ),
+            on_add_row=lambda: self.add_other_row(INCOMING),
+            on_remove_row=lambda key: self.remove_other_row(key, INCOMING),
+            direction=INCOMING,
         )
         self.outgoing = MoneyBlock(
             "Оплата",
@@ -600,20 +732,26 @@ class ReceiptsView(QWidget):
             on_open_popup=self.open_popup,
             on_amount_entered=self.save_direct_amount,
             on_date_changed=self.refresh,
-            on_name_edited=self.rename_other_row,
-            on_add_row=self.add_other_row,
-            on_remove_row=self.remove_other_row,
+            on_name_edited=lambda key, text: self.rename_other_row(
+                key, text, OUTGOING
+            ),
+            on_add_row=lambda: self.add_other_row(OUTGOING),
+            on_remove_row=lambda key: self.remove_other_row(key, OUTGOING),
+            direction=OUTGOING,
         )
         left_layout.addWidget(self.incoming)
         left_layout.addWidget(self.outgoing)
 
         hint = QLabel(
-            "«Сумма» — за выбранную дату; наличные, карты и свои виды оплат "
-            "вводятся прямо в ячейку, название вида — текстом в первой "
-            "колонке. «Неделя/Месяц/Год» — нарастающий итог с начала "
-            "периода по эту дату. Клик по строке «Покупатели»/«Поставщики» "
-            "открывает окно справа со списком и полями сумм; суммы из "
-            "недельных таблиц видны здесь, и наоборот."
+            "«Сумма» — за выбранную дату; наличные, карты и свои строки "
+            "вводятся прямо в ячейку (поле ввода открывается по одному "
+            "клику), название строки — текстом в первой колонке. Свои "
+            "строки добавляются кнопкой «+» и убираются кнопкой «−» — и в "
+            "«Поступлении» (прочие поступления), и в «Оплате» (прочие виды "
+            "оплат). «Неделя/Месяц/Год» — нарастающий итог с начала периода "
+            "по эту дату. Клик по строке «Покупатели»/«Поставщики» открывает "
+            "окно справа: суммы в нём сохраняются при клике вне полей ввода; "
+            "суммы из недельных таблиц видны здесь, и наоборот."
         )
         hint.setObjectName("Muted")
         hint.setWordWrap(True)
@@ -646,85 +784,145 @@ class ReceiptsView(QWidget):
         self.refresh()
 
     # ------------------------------------------------------- прочие виды оплат
+    def _incoming_rows(self) -> list[str]:
+        return [CASH_ROW, CARD_ROW, CUSTOMERS_ROW] + [
+            other_row_key(name)
+            for name in other_payment_names(self.store.data, INCOMING)
+        ]
+
     def _outgoing_rows(self) -> list[str]:
         return [SUPPLIERS_ROW] + [
             other_row_key(name) for name in other_payment_names(self.store.data)
         ]
 
+    def _block(self, direction: str) -> MoneyBlock:
+        return self.incoming if direction == INCOMING else self.outgoing
+
+    @staticmethod
+    def _rows_for(direction: str, keys: list[str]) -> list[str]:
+        """Строки блока по направлению (постоянные + добавленные)."""
+
+        if direction == INCOMING:
+            return [CASH_ROW, CARD_ROW, CUSTOMERS_ROW] + [
+                key for key in keys if key.startswith(OTHER_PREFIX)
+            ]
+        return [SUPPLIERS_ROW] + [
+            key for key in keys if key.startswith(OTHER_PREFIX)
+        ]
+
+    def refresh_rows(self) -> None:
+        """Перечитать состав строк обоих блоков (после «+»/«−»)."""
+
+        self.incoming.set_rows(self._incoming_rows())
+        self.outgoing.set_rows(self._outgoing_rows())
+
+    def refresh_incoming_rows(self) -> None:
+        self.incoming.set_rows(self._incoming_rows())
+
     def refresh_outgoing_rows(self) -> None:
         self.outgoing.set_rows(self._outgoing_rows())
 
-    def add_other_row(self) -> None:
-        """Кнопка «+»: новая строка вида оплаты с вводом названия."""
+    def add_other_row(self, direction: str = OUTGOING) -> None:
+        """Кнопка «+»: новая строка с вводом названия в этом блоке."""
 
-        used = set(other_payment_names(self.store.data))
-        name = NEW_PAYMENT_NAME
+        used = set(other_payment_names(self.store.data, direction))
+        base_name = NEW_ROW_NAME[direction]
+        name = base_name
         index = 2
         while name in used:
-            name = f"{NEW_PAYMENT_NAME} {index}"
+            name = f"{base_name} {index}"
             index += 1
+        block = self._block(direction)
         add_other_payment(
-            self.store.data, name, self.outgoing.current_date().isoformat()
+            self.store.data, name, block.current_date().isoformat(), direction
         )
         self.store.save()
-        self.refresh_outgoing_rows()
+        self.refresh_rows()
         self.refresh()
         # Сразу даём переименовать строку: курсор в ячейку названия.
-        row = self.outgoing.row_keys.index(other_row_key(name))
-        self.outgoing.table.setCurrentCell(row, COL_NAME)
-        self.outgoing.table.editItem(self.outgoing.table.item(row, COL_NAME))
+        # При AllEditTriggers таблица сама открывает редактор по клику,
+        # поэтому повторно его не дёргаем (иначе Qt ругается
+        # «edit: editing failed»).
+        row = block.row_keys.index(other_row_key(name))
+        block.table.setCurrentCell(row, COL_NAME)
+        # Редактор названия открываем отложенно, уже после того как
+        # таблица перестроена: так редактор не «повисает» на удаляемых
+        # ячейках (иначе сборка мусора падала на C++-объектах Qt).
+        QTimer.singleShot(0, lambda: self._edit_row_name(block, row))
 
-    def remove_other_row(self, row_key: str) -> None:
-        """Кнопка «−»: убрать вид оплаты вместе с его суммами."""
+    def _edit_row_name(self, block: MoneyBlock, row: int) -> None:
+        if row >= block.table.rowCount():
+            return
+        item = block.table.item(row, COL_NAME)
+        if item is None:
+            return
+        block.table.setCurrentCell(row, COL_NAME)
+        if block.table.state() != QAbstractItemView.State.EditingState:
+            block.table.editItem(item)
+
+    def remove_other_row(self, row_key: str, direction: str = OUTGOING) -> None:
+        """Кнопка «−»: убрать строку вместе с её суммами."""
 
         name = other_row_name(row_key)
+        block_title = "Поступление" if direction == INCOMING else "Оплата"
         answer = QMessageBox.question(
             self,
-            "Удалить вид оплаты",
-            f"Убрать «{name}» из блока «Оплата»?\n\n"
+            "Удалить строку",
+            f"Убрать «{name}» из блока «{block_title}»?\n\n"
             "Все введённые по этой строке суммы будут удалены.",
         )
         if answer != QMessageBox.StandardButton.Yes:
             return
-        delete_other_payment(self.store.data, name)
+        delete_other_payment(self.store.data, name, direction)
         self.store.save()
-        self.refresh_outgoing_rows()
+        self.refresh_rows()
         self.refresh()
         if self.on_data_changed is not None:
             self.on_data_changed()
 
-    def rename_other_row(self, row_key: str, new_name: str) -> None:
-        """Новое название вида оплаты, введённое прямо в ячейку."""
+    def rename_other_row(
+        self, row_key: str, new_name: str, direction: str = OUTGOING
+    ) -> None:
+        """Новое название строки, введённое прямо в ячейку."""
 
         old_name = other_row_name(row_key)
         cleaned = (new_name or "").strip()
         if not cleaned or cleaned == old_name:
-            self.refresh_outgoing_rows()
+            self.refresh_rows()
             self.refresh()
             return
-        if cleaned in other_payment_names(self.store.data):
+        if cleaned in other_payment_names(self.store.data, direction):
             QMessageBox.information(
                 self,
                 "Такое название уже есть",
-                f"Вид оплаты «{cleaned}» уже есть в списке.",
+                f"Строка «{cleaned}» уже есть в этом блоке.",
             )
-            self.refresh_outgoing_rows()
+            self.refresh_rows()
             self.refresh()
             return
-        rename_other_payment(self.store.data, old_name, cleaned)
+        rename_other_payment(self.store.data, old_name, cleaned, direction)
         self.store.save()
-        self.refresh_outgoing_rows()
+        self.refresh_rows()
         self.refresh()
 
     # --------------------------------------------------------- ввод в ячейку
     def save_direct_amount(self, row_key: str, text: str) -> None:
         """Сохранить сумму, введённую прямо в ячейку."""
 
-        block = self.incoming
+        direction = OUTGOING
         if row_key == SUPPLIERS_ROW:
             block = self.outgoing  # строка поставщиков не вводится ячейкой
-        if row_key.startswith(OTHER_PREFIX):
-            block = self.outgoing
+        elif row_key.startswith(OTHER_PREFIX):
+            # Строка, добавленная кнопкой «+»: в каком блоке она лежит,
+            # тот блок и знает дату и направление записи.
+            block = (
+                self.incoming
+                if row_key in self.incoming.row_keys
+                else self.outgoing
+            )
+            direction = block.direction
+        else:
+            block = self.incoming
         day_iso = block.current_date().isoformat()
         cleaned = (text or "").strip()
         amount: Decimal | None = None
@@ -741,7 +939,11 @@ class ReceiptsView(QWidget):
             set_daily_cash_receipt(self.store.data, source, day_iso, amount)
         elif row_key.startswith(OTHER_PREFIX):
             set_daily_other_payment(
-                self.store.data, other_row_name(row_key), day_iso, amount
+                self.store.data,
+                other_row_name(row_key),
+                day_iso,
+                amount,
+                direction,
             )
         else:
             return
@@ -800,9 +1002,17 @@ class ReceiptsView(QWidget):
             hint,
             values,
         )
-        # Окно удаляется при закрытии (WA_DeleteOnClose) — не держим ссылку.
-        popup.destroyed.connect(self._forget_popup)
+        # Прежнее окно больше не нужно: скрываем и удаляем его, чтобы на
+        # каждый клик по строке не копились виджеты.
+        if self._popup is not None:
+            previous = self._popup
+            self._popup = None
+            previous._closing = True
+            previous._stop_watching()
+            previous.hide()
+            previous.deleteLater()
         self._popup = popup
+        popup.destroyed.connect(self._forget_popup)
         popup.open_beside(anchor, row_top)
         return popup
 
@@ -865,18 +1075,24 @@ class ReceiptsView(QWidget):
             ZERO,
         )
 
-    def _other_total(self, name: str, day: date) -> Decimal:
+    def _other_total(
+        self, name: str, day: date, direction: str = OUTGOING
+    ) -> Decimal:
         day_iso = day.isoformat()
         return sum(
             (
                 other_payment_amount(item)
                 for item in self.store.data.other_payments
-                if item.name == name and item.date == day_iso
+                if item.name == name
+                and item.date == day_iso
+                and getattr(item, "direction", OUTGOING) == direction
             ),
             ZERO,
         )
 
-    def _period_totals(self, key: str, day: date) -> tuple[Decimal, Decimal, Decimal]:
+    def _period_totals(
+        self, key: str, day: date, direction: str = OUTGOING
+    ) -> tuple[Decimal, Decimal, Decimal]:
         """Суммы записей за периоды: неделя (с Пн), месяц, год — по дату."""
 
         week_start = week_monday(day)
@@ -897,6 +1113,7 @@ class ReceiptsView(QWidget):
                 (item.date, other_payment_amount(item))
                 for item in self.store.data.other_payments
                 if item.name == name
+                and getattr(item, "direction", OUTGOING) == direction
             )
         elif key == CUSTOMERS_ROW:
             ids = {c.id for c in self.store.data.customers}
@@ -943,16 +1160,26 @@ class ReceiptsView(QWidget):
             _money_text(self._payment_total(customer_ids, incoming_day)),
         )
 
-        for key in self.outgoing.row_keys:
-            if key == SUPPLIERS_ROW:
-                value = self._payment_total(supplier_ids, outgoing_day)
-            else:
-                value = self._other_total(other_row_name(key), outgoing_day)
-            self.outgoing.set_amount(key, COL_AMOUNT, _money_text(value))
+        for block, day in ((self.incoming, incoming_day), (self.outgoing, outgoing_day)):
+            for key in block.row_keys:
+                if key == SUPPLIERS_ROW:
+                    value = self._payment_total(supplier_ids, day)
+                elif key == CUSTOMERS_ROW:
+                    value = self._payment_total(customer_ids, day)
+                elif key in (CASH_ROW, CARD_ROW):
+                    source = CASH_SOURCE if key == CASH_ROW else CARD_SOURCE
+                    value = self._cash_total(source, day)
+                elif key.startswith(OTHER_PREFIX):
+                    value = self._other_total(
+                        other_row_name(key), day, block.direction
+                    )
+                else:
+                    value = ZERO
+                block.set_amount(key, COL_AMOUNT, _money_text(value))
 
         for block, day in ((self.incoming, incoming_day), (self.outgoing, outgoing_day)):
             for key in block.row_keys:
-                week, month, year = self._period_totals(key, day)
+                week, month, year = self._period_totals(key, day, block.direction)
                 block.set_amount(key, COL_WEEK, _money_text(week))
                 block.set_amount(key, COL_MONTH, _money_text(month))
                 block.set_amount(key, COL_YEAR, _money_text(year))

@@ -19,10 +19,21 @@ WORKDAY_GREY = "#eceff3"    # серые ячейки рабочих дней т
 WEEK_TABLE_WEEKEND_PINK = "#ffe1e8"  # розовые колонки выходных/праздников
 WEEK_TABLE_TODAY_GREEN = "#ccf5a3"   # салатовая верхняя ячейка текущей даты
 
+# Запрос пользователя v0.12.0: шрифты интерфейса на 30% больше.
+# Базовый размер 13px -> 17px, остальные пересчитаны тем же множителем.
+FONT_SCALE = 1.3
+
+
+def fs(base_px: int) -> int:
+    """Размер шрифта, увеличенный на 30% (v0.12.0)."""
+
+    return int(round(base_px * FONT_SCALE))
+
+
 APP_STYLESHEET = f"""
 * {{
     font-family: "Segoe UI", "Arial", sans-serif;
-    font-size: 13px;
+    font-size: {fs(13)}px;
     color: {TEXT};
 }}
 QMainWindow, QWidget#PageRoot {{
@@ -39,16 +50,16 @@ QFrame#KpiCard {{
     border-radius: 10px;
 }}
 QLabel#PanelTitle {{
-    font-size: 15px;
+    font-size: {fs(15)}px;
     font-weight: 700;
 }}
 QLabel#KpiTitle {{
-    font-size: 11px;
+    font-size: {fs(11)}px;
     color: {MUTED};
     font-weight: 600;
 }}
 QLabel#KpiValue {{
-    font-size: 20px;
+    font-size: {fs(20)}px;
     font-weight: 800;
 }}
 QLabel#Muted {{

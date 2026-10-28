@@ -24,6 +24,7 @@ from .. import calc
 from ..dates import parse_money
 from ..models import Counterparty, add_realization
 from ..storage import DataStore
+from .. import styles
 from ..widgets import (
     blue_button,
     date_edit_value,
@@ -64,7 +65,7 @@ class RealizationDialog(QDialog):
 
         top = QHBoxLayout()
         title = QLabel("Реализация")
-        title.setStyleSheet("font-size:19px;font-weight:800")
+        title.setStyleSheet(f"font-size:{styles.fs(19)}px;font-weight:800")
         top.addWidget(title)
         top.addStretch(1)
         card_btn = QPushButton("Карточка")
@@ -73,7 +74,7 @@ class RealizationDialog(QDialog):
         root.addLayout(top)
 
         self.name_label = QLabel()
-        self.name_label.setStyleSheet("font-size:16px;font-weight:800")
+        self.name_label.setStyleSheet(f"font-size:{styles.fs(16)}px;font-weight:800")
         root.addWidget(self.name_label)
 
         root.addWidget(QLabel("Дата реализации *"))

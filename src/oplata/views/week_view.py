@@ -35,6 +35,7 @@ from PySide6.QtGui import (
     QShowEvent,
 )
 from PySide6.QtWidgets import (
+    QAbstractItemView,
     QHBoxLayout,
     QLabel,
     QMessageBox,
@@ -186,8 +187,11 @@ class WeekView(QWidget):
             2 + (day_index + 1) * self.columns_per_day
             for day_index in range(6)
         }
-        self.base_widths = [180, 96, 96] + [60] * (7 * self.columns_per_day)
-        self.min_widths = [146, 80, 80] + [52] * (7 * self.columns_per_day)
+        # Ширины выросли вместе со шрифтом (+30%, v0.12.0): колонкам дней
+        # нужно место под «88 888,88», иначе подгонка снизит шрифт сумм
+        # до нечитаемого. Если окно узкое — появится горизонтальный скролл.
+        self.base_widths = [200, 110, 110] + [78] * (7 * self.columns_per_day)
+        self.min_widths = [170, 90, 90] + [68] * (7 * self.columns_per_day)
         self.week_start = week_monday(date.today())
         self._partners: list[Counterparty] = []
         self._days: list[date] = []
@@ -200,11 +204,21 @@ class WeekView(QWidget):
         root.addLayout(self._build_toolbar())
 
         self.table = QTableWidget()
+        # В недельной таблице 20+ колонок: базовый шрифт интерфейса
+        # (+30% по запросу v0.12.0) съедает место у дней, поэтому для
+        # самой таблицы берём промежуточный размер — названия и шапка
+        # крупнее прежнего, а суммы остаются читаемыми.
+        self.table.setStyleSheet(f"font-size:{styles.fs(11)}px")
         self.table.horizontalHeader().setVisible(False)
         self.table.verticalHeader().setVisible(False)
         self.table.setItemDelegate(
             DaySeparatorDelegate(self.separator_after_cols, self.table)
         )
+        # Ячейка суммы становится полем ввода уже по одному клику
+        # (v0.12.0): «клацаешь мышкой — и сразу вводишь». Клик по
+        # названию контрагента (колонка 0) по-прежнему открывает окно
+        # поставки/реализации — там ячейка не редактируемая.
+        self.table.setEditTriggers(QAbstractItemView.EditTrigger.AllEditTriggers)
         self.table.itemClicked.connect(self._on_item_clicked)
         self.table.itemChanged.connect(self._on_item_changed)
         root.addWidget(self.table, stretch=1)
@@ -220,7 +234,7 @@ class WeekView(QWidget):
         bar.addWidget(prev_btn)
 
         self.week_label = QLabel()
-        self.week_label.setStyleSheet("font-weight:700;font-size:14px")
+        self.week_label.setStyleSheet(f"font-weight:700;font-size:{styles.fs(14)}px")
         bar.addWidget(self.week_label)
 
         next_btn = QPushButton("Неделя →")
@@ -262,14 +276,14 @@ class WeekView(QWidget):
             debt_title.setObjectName("Muted")
             bar.addWidget(debt_title)
             self.right_value_label = QLabel(fmt_money(ZERO))
-            self.right_value_label.setStyleSheet("font-weight:800;font-size:15px")
+            self.right_value_label.setStyleSheet(f"font-weight:800;font-size:{styles.fs(15)}px")
             bar.addWidget(self.right_value_label)
         else:
             count_title = QLabel("Покупателей:")
             count_title.setObjectName("Muted")
             bar.addWidget(count_title)
             self.right_value_label = QLabel("0")
-            self.right_value_label.setStyleSheet("font-weight:800;font-size:15px")
+            self.right_value_label.setStyleSheet(f"font-weight:800;font-size:{styles.fs(15)}px")
             bar.addWidget(self.right_value_label)
         return bar
 
@@ -519,7 +533,7 @@ class WeekView(QWidget):
         table.setColumnCount(self.column_count)
 
         for row in range(HEADER_ROWS):
-            table.setRowHeight(row, 28)  # шапка выше — шрифт увеличен
+            table.setRowHeight(row, 36)  # шапка выше — шрифт увеличен
 
         def put(row, col, text, *, bg=None, bold=False, center=True,
                 editable=False, color=None, underline=False, size=None):
@@ -545,7 +559,7 @@ class WeekView(QWidget):
 
         def money_cell(row, col, text, **kwargs) -> QTableWidgetItem:
             """Ячейка суммы: правый край + шрифт, который потом подгонит _fit_*."""
-            cell = put(row, col, text, size=11, **kwargs)
+            cell = put(row, col, text, size=styles.fs(11), **kwargs)
             cell.setTextAlignment(
                 Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter
             )
@@ -584,7 +598,7 @@ class WeekView(QWidget):
         # Строка 1: дни недели (шрифт шапки увеличен по запросу пользователя)
         put(1, 0, "ПОСТАВЩИК" if self.kind == "supplier" else "ПОКУПАТЕЛЬ",
             bold=True, size=13)
-        put(1, 1, "ПРОСРОЧЕН. ЗАДОЛЖ.", bold=True, size=12)
+        put(1, 1, "ПРОСРОЧЕН. ЗАДОЛЖ.", bold=True, size=styles.fs(12))
         table.setSpan(1, 1, 1, 2)
         for i, day in enumerate(days):
             c = self._day_column(i, 0)
@@ -594,12 +608,12 @@ class WeekView(QWidget):
 
         # Строка 2: подзаголовки; выходные розовые, сегодня здесь без заливки.
         put(2, 0, "")
-        put(2, 1, "на сегодня", bold=True, size=12)
-        put(2, 2, "за неделю", bold=True, size=12)
+        put(2, 1, "на сегодня", bold=True, size=styles.fs(12))
+        put(2, 2, "за неделю", bold=True, size=styles.fs(12))
         for i, day in enumerate(days):
             for j, sub in enumerate(self.subheaders):
                 put(2, self._day_column(i, j), sub,
-                    bg=day_body_bg(day), bold=True, size=12)
+                    bg=day_body_bg(day), bold=True, size=styles.fs(12))
 
         operations = self.store.data.operations
         partner_ids = [p.id for p in partners]
@@ -611,7 +625,7 @@ class WeekView(QWidget):
         total_week = sum((c[1] for c in debt_columns), ZERO)
         put(TOTAL_ROW, 0, "ВСЕГО", bold=True, center=False)
         for col_idx, amount in ((1, total_overdue), (2, total_week)):
-            cell = put(TOTAL_ROW, col_idx, _money_text(amount), bold=True, size=11)
+            cell = put(TOTAL_ROW, col_idx, _money_text(amount), bold=True, size=styles.fs(11))
             cell.setTextAlignment(
                 Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter
             )
@@ -643,7 +657,7 @@ class WeekView(QWidget):
                 name_item.setToolTip("Клик — окно «Реализация» для этого покупателя")
             # Просрочено «на сегодня» / задолженность «за неделю» (calc).
             for col_idx, amount in ((1, overdue), (2, week)):
-                cell = put(row, col_idx, _money_text(amount), size=11)
+                cell = put(row, col_idx, _money_text(amount), size=styles.fs(11))
                 cell.setTextAlignment(
                     Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter
                 )
@@ -741,7 +755,8 @@ class WeekView(QWidget):
         if not self._amount_items:
             return
         chosen = 8
-        for size in range(14, 7, -1):
+        # Верхняя граница тоже увеличена: шрифт интерфейса +30% (v0.12.0).
+        for size in range(styles.fs(14), 7, -1):
             font = QFont(self.table.font())
             font.setPixelSize(size)
             font.setBold(True)  # по жирной строке ВСЕГО — худший случай

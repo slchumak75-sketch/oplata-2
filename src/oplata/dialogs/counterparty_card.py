@@ -40,6 +40,7 @@ from PySide6.QtWidgets import (
 from ..models import Counterparty
 from ..storage import DataStore
 from ..widgets import blue_button, danger_button, green_button
+from .. import styles
 
 NEW_ITEM_LABEL = "— Новый —"
 
@@ -75,7 +76,7 @@ class CounterpartyCardDialog(QDialog):
         root.setSpacing(10)
 
         title = QLabel(f"{icon}  Карточка {self._noun}")
-        title.setStyleSheet("font-size:18px;font-weight:800")
+        title.setStyleSheet(f"font-size:{styles.fs(18)}px;font-weight:800")
         root.addWidget(title)
 
         root.addWidget(QLabel(self._noun_title))

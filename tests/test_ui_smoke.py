@@ -766,6 +766,8 @@ def test_data_panels_are_collapsible(qt_app, store):
 
 from oplata.views.receipts_view import (  # noqa: E402
     COL_AMOUNT,
+    COL_MONTH,
+    COL_NAME,
     COL_WEEK,
     COL_YEAR,
 )
@@ -903,4 +905,155 @@ def test_supplier_payments_sync_both_ways(qt_app, store):
     buyer_row = 4 + [c.name for c in store.data.customers].index("Покупатель Е")
     customers_table.item(buyer_row, 3 + 1 * 2 + 1).setText("1 750")
     assert view.incoming.amount_text("customers") == "1 750,00"
+    window.close()
+
+
+def test_incoming_block_has_other_income_rows(qt_app, store):
+    """Блок «Поступление» тоже умеет свои строки — «прочие поступления»."""
+    from datetime import date
+
+    from oplata.app import MainWindow
+    from oplata.models import INCOMING, OUTGOING
+
+    window = MainWindow(store)
+    window.show()
+    qt_app.processEvents()
+    view = window.receipts_view
+    view.set_date(date(2026, 10, 27))
+    assert view.incoming.row_keys == ["cash", "card", "customers"]
+
+    view.add_other_row(INCOMING)
+    assert view.incoming.row_keys == [
+        "cash",
+        "card",
+        "customers",
+        "other:Новое поступление",
+    ]
+    # Блок «Оплата» при этом не изменился.
+    assert view.outgoing.row_keys == ["suppliers"]
+
+    view.incoming.table.item(3, COL_NAME).setText("Возврат")
+    view.incoming.table.item(3, COL_AMOUNT).setText("5 000")
+    qt_app.processEvents()
+    assert view.incoming.amount_text("other:Возврат") == "5 000,00"
+    assert [
+        (p.name, p.direction, p.amount) for p in store.data.other_payments
+    ] == [("Возврат", INCOMING, "5000.00")]
+
+    # Свои строки двух блоков не мешают друг другу.
+    view.add_other_row(OUTGOING)
+    assert view.outgoing.row_keys == ["suppliers", "other:Новый вид оплаты"]
+    assert view.incoming.row_keys[-1] == "other:Возврат"
+    window.close()
+
+
+def test_receipts_popup_has_no_buttons_and_saves_on_click_outside(qt_app, store):
+    """Окно без «Закрыть»/«Сохранить»: сохраняет по клику вне поля ввода."""
+    from datetime import date
+
+    from PySide6.QtCore import QEvent, QPointF, Qt
+    from PySide6.QtGui import QMouseEvent
+    from PySide6.QtWidgets import QPushButton
+
+    from oplata.app import MainWindow
+    from oplata.models import Counterparty
+
+    buyer = Counterparty(name="Покупатель Ж")
+    store.data.customers.append(buyer)
+    window = MainWindow(store)
+    window.show()
+    qt_app.processEvents()
+    view = window.receipts_view
+    view.set_date(date(2026, 10, 27))
+
+    popup = view.open_popup("customers", row=2)
+    qt_app.processEvents()
+    assert [b.text() for b in popup.findChildren(QPushButton)] == []
+    # Автоподсветки нет: фокус не забирает ни одно из полей.
+    assert qt_app.focusWidget() is not popup.edits[buyer.id]
+
+    # Клик по полю ввода окно не закрывает.
+    edit = popup.edits[buyer.id]
+    edit.setText("7 250")
+    point = edit.mapTo(popup, edit.rect().center())
+    event = QMouseEvent(
+        QEvent.Type.MouseButtonPress,
+        QPointF(point),
+        Qt.MouseButton.LeftButton,
+        Qt.MouseButton.LeftButton,
+        Qt.KeyboardModifier.NoModifier,
+    )
+    qt_app.sendEvent(popup, event)
+    qt_app.processEvents()
+    assert popup.isVisible()
+
+    # Клик в свободном месте — сохраняет и скрывает окно.
+    point = popup.total_label.mapTo(popup, popup.total_label.rect().center())
+    event = QMouseEvent(
+        QEvent.Type.MouseButtonPress,
+        QPointF(point),
+        Qt.MouseButton.LeftButton,
+        Qt.MouseButton.LeftButton,
+        Qt.KeyboardModifier.NoModifier,
+    )
+    qt_app.sendEvent(popup, event)
+    qt_app.processEvents()
+    assert view.incoming.amount_text("customers") == "7 250,00"
+    assert [
+        (op.kind, op.date, op.amount)
+        for op in store.data.operations
+        if op.kind == "Оплата"
+    ] == [("Оплата", "2026-10-27", "7250.00")]
+    window.close()
+
+
+def test_tables_edit_on_single_click_and_numbers_right_aligned(qt_app, store):
+    """Ввод — по одному клику; числа во всех таблицах — по правому краю."""
+    from PySide6.QtCore import Qt
+    from PySide6.QtWidgets import QAbstractItemView
+
+    from oplata.app import MainWindow
+    from oplata.views.receipts_view import COL_MONTH, COL_WEEK, COL_YEAR
+
+    window = MainWindow(store)
+    window.show()
+    qt_app.processEvents()
+    view = window.receipts_view
+    right = Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter
+
+    for table in (
+        view.incoming.table,
+        view.outgoing.table,
+        window.suppliers_view.table,
+        window.customers_view.table,
+    ):
+        assert table.editTriggers() == QAbstractItemView.EditTrigger.AllEditTriggers
+
+    for column in (COL_AMOUNT, COL_WEEK, COL_MONTH, COL_YEAR):
+        assert view.incoming.table.item(0, column).textAlignment() == right
+        assert (
+            view.incoming.table.horizontalHeaderItem(column).textAlignment()
+            == right
+        )
+    window.close()
+
+
+def test_money_block_scrolls_long_row_list(qt_app, store):
+    """Длинный список своих строк прокручивается, блок не растёт дальше."""
+    from oplata.app import MainWindow
+    from oplata.models import OUTGOING
+
+    window = MainWindow(store)
+    window.show()
+    qt_app.processEvents()
+    view = window.receipts_view
+    height_before = view.outgoing.table.height()
+    for _ in range(9):  # всего 10 строк — больше видимых восьми
+        view.add_other_row(OUTGOING)
+    qt_app.processEvents()
+    assert len(view.outgoing.row_keys) == 10
+    assert view.outgoing.table.maximumHeight() <= 320
+    assert view.outgoing.table.height() <= view.outgoing.table.maximumHeight()
+    assert view.outgoing.table.height() < height_before + 10 * 30
+    assert view.outgoing.table.verticalScrollBar().isVisible()
     window.close()

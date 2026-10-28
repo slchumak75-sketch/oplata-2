@@ -15,6 +15,7 @@ from PySide6.QtWidgets import QDialog, QHBoxLayout, QLabel, QPushButton, QVBoxLa
 from ..models import Counterparty
 from ..storage import DataStore
 from ..views.operations_view import OperationsView
+from .. import styles
 
 
 class OperationsJournalDialog(QDialog):
@@ -54,7 +55,7 @@ class OperationsJournalDialog(QDialog):
         root.setSpacing(10)
 
         title = QLabel(f"Операции {noun}: {person.name if person else '—'}")
-        title.setStyleSheet("font-size:17px;font-weight:800")
+        title.setStyleSheet(f"font-size:{styles.fs(17)}px;font-weight:800")
         root.addWidget(title)
 
         # Правки в журнале должны пересчитывать таблицы главного окна.
