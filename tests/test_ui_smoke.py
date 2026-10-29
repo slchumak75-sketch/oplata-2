@@ -1964,8 +1964,8 @@ def test_journal_period_three_and_twelve_months(qt_app, store, monkeypatch):
     customer_journal.close()
 
 
-def test_money_block_marks_today_header_green(qt_app, store, monkeypatch):
-    """v0.23.2: в шапке блока салатовой — ячейка сегодняшней даты."""
+def test_money_block_paints_weekends_and_today(qt_app, store, monkeypatch):
+    """v0.23.3: столбец выходного — розовый, сегодняшняя дата — салатовая."""
 
     from datetime import date
 
@@ -1987,13 +1987,22 @@ def test_money_block_marks_today_header_green(qt_app, store, monkeypatch):
     block.set_date(date(2026, 10, 26))  # неделя 26.10 — 31.10
     green = QColor(styles.WEEK_TABLE_TODAY_GREEN)
     assert _FixedDate.today() in block.days
+    pink = QColor(styles.WEEK_TABLE_WEEKEND_PINK)
     for index, day in enumerate(block.days):
-        header_item = block.table.horizontalHeaderItem(
-            receipts_view_module.FIRST_DAY_COL + index
-        )
+        column = receipts_view_module.FIRST_DAY_COL + index
+        header_item = block.table.horizontalHeaderItem(column)
         assert header_item is not None
-        is_green = header_item.background().color() == green
-        assert is_green == (day == _FixedDate.today()), day
+        is_weekend = day.weekday() >= 5
+        if day == _FixedDate.today():
+            assert header_item.background().color() == green
+        else:
+            assert (header_item.background().color() == pink) == is_weekend, day
+        # Розовый красит весь столбец, а не только шапку.
+        for row in range(block.table.rowCount()):
+            item = block.table.item(row, column)
+            if item is None:
+                continue
+            assert (item.background().color() == pink) == is_weekend, (row, day)
     window.close()
 
 

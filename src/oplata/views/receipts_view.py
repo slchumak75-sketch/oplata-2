@@ -70,7 +70,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from .. import styles
+from .. import calc, styles
 from ..dates import (
     MONTHS_RU,
     fmt_money_plain,
@@ -692,6 +692,9 @@ class MoneyBlock(QFrame):
         # справа от «Сегодня», «+»/«−» — в правом краю.
         self._arrows_at_end = arrows_at_end
         self.row_keys = list(row_keys)
+        # Отметки календаря «Выходные и рабочие дни» (v0.23.3): блок
+        # сам store не держит, их передаёт ReceiptsView при обновлении.
+        self.day_overrides: dict[str, str] = {}
         self.on_open_popup = on_open_popup
         self.on_amount_entered = on_amount_entered
         self.on_date_changed = on_date_changed
@@ -825,15 +828,9 @@ class MoneyBlock(QFrame):
                 )
 
     def mark_current_day(self) -> None:
-        """Шапка: выбранный день — жирный, сегодняшний — салатовый.
-
-        v0.23.2: сегодняшняя дата подсвечивается салатовым, как в
-        таблицах «Поставщики»/«Покупатели», — но только одна ячейка
-        шапки с датой, а не весь столбец (просьба пользователя).
-        """
+        """Выделить в шапке день, выбранный в блоке (v0.22.0)."""
 
         current = self.current_date()
-        today = date.today()
         for index, day in enumerate(self.days):
             header_item = self.table.horizontalHeaderItem(FIRST_DAY_COL + index)
             if header_item is None:
@@ -844,13 +841,42 @@ class MoneyBlock(QFrame):
             header_item.setToolTip(
                 "День, выбранный в блоке" if day == current else ""
             )
-            if day == today:
-                header_item.setBackground(
-                    QColor(styles.WEEK_TABLE_TODAY_GREEN)
-                )
-            else:
-                header_item.setBackground(QBrush())  # снять прежнюю подсветку
+
+    def set_day_overrides(self, overrides: dict[str, str]) -> None:
+        """Запомнить отметки календаря и перекрасить колонки дней."""
+
+        self.day_overrides = dict(overrides)
+        self.paint_day_columns()
+
+    def paint_day_columns(self) -> None:
+        """Раскрасить колонки дней, как в таблицах «Поставщики» (v0.23.3).
+
+        Выходной или праздник из календаря вкладки «Данные» — весь
+        столбец розовый; сегодняшняя дата — салатовой остаётся только
+        ячейка шапки с датой, а не весь столбец (просьба пользователя).
+        """
+
+        today = date.today()
+        pink = QColor(styles.WEEK_TABLE_WEEKEND_PINK)
+        green = QColor(styles.WEEK_TABLE_TODAY_GREEN)
+        empty: QBrush = QBrush()
+        for index, day in enumerate(self.days):
+            column = FIRST_DAY_COL + index
+            is_off = calc.is_day_off(day, self.day_overrides)
+            header_item = self.table.horizontalHeaderItem(column)
+            if header_item is not None:
+                if day == today:
+                    header_item.setBackground(green)
+                elif is_off:
+                    header_item.setBackground(pink)
+                else:
+                    header_item.setBackground(empty)
+            for row in range(self.table.rowCount()):
+                item = self.table.item(row, column)
+                if item is not None:
+                    item.setBackground(pink if is_off else empty)
         self.table.horizontalHeader().viewport().update()
+        self.table.viewport().update()
 
     def set_rows(self, row_keys: list[str]) -> None:
         """Перестроить строки таблицы (состав строк меняется кнопкой «+»)."""
@@ -883,6 +909,7 @@ class MoneyBlock(QFrame):
                 )
                 self.table.setItem(row, column, item)
         self._updating = False
+        self.paint_day_columns()  # v0.23.3: розовые выходные, салатовая дата
         self._fit_height()
 
     def _fit_height(self) -> None:
@@ -1594,6 +1621,7 @@ class ReceiptsView(QWidget):
             # переходе на другую неделю колонки дней меняются сами.
             block.refresh_columns()
             block.mark_current_day()
+            block.set_day_overrides(self.store.data.day_overrides)
             day = block.current_date()
             for key in block.row_keys:
                 block.set_amount(
