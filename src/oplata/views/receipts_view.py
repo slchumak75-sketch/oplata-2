@@ -842,6 +842,8 @@ class MoneyBlock(QFrame):
         header_view = DayHeaderView(self.table)
         self.table.setHorizontalHeader(header_view)
         self.day_header = header_view
+        # v0.23.9: шапка таблицы — по центру (просьба пользователя).
+        header_view.setDefaultAlignment(Qt.AlignmentFlag.AlignCenter)
         header_view.setSectionResizeMode(COL_NAME, QHeaderView.ResizeMode.Stretch)
         self._apply_column_widths()
         root.addWidget(self.table)
@@ -881,10 +883,15 @@ class MoneyBlock(QFrame):
                 f"{day.strftime('%d.%m')} {WEEKDAY_SHORT[day.weekday()]}"
             )
         self.table.setHorizontalHeaderLabels(headers)
+        # v0.23.9: шапка таблицы — по центру во всех колонках.
+        for column in range(COLUMN_COUNT):
+            header_item = self.table.horizontalHeaderItem(column)
+            if header_item is not None:
+                header_item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
         self._apply_column_widths()
 
     def _apply_column_widths(self) -> None:
-        """Числа — по правому краю, ширины колонок фиксированы."""
+        """Ширины колонок фиксированы; шапка — по центру (v0.23.9)."""
 
         for column in range(COL_AMOUNT, COLUMN_COUNT):
             self.table.setColumnWidth(
@@ -893,9 +900,8 @@ class MoneyBlock(QFrame):
             )
             header_item = self.table.horizontalHeaderItem(column)
             if header_item is not None:
-                header_item.setTextAlignment(
-                    Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter
-                )
+                # v0.23.9: по центру, раньше числа были по правому краю.
+                header_item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
 
     def mark_current_day(self) -> None:
         """Выделить в шапке день, выбранный в блоке (v0.22.0)."""
@@ -963,6 +969,8 @@ class MoneyBlock(QFrame):
                 Qt.ItemFlag.ItemIsEnabled | Qt.ItemFlag.ItemIsSelectable
             )
             name_item.setToolTip(self._row_tooltip(key))
+            # v0.23.9: значения в таблице — по центру.
+            name_item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
             self.table.setItem(row, COL_NAME, name_item)
             for column in range(COL_AMOUNT, COLUMN_COUNT):
                 item = QTableWidgetItem("")
@@ -973,9 +981,9 @@ class MoneyBlock(QFrame):
                 if editable and column == COL_AMOUNT:
                     item_flags |= Qt.ItemFlag.ItemIsEditable
                 item.setFlags(item_flags)
-                item.setTextAlignment(
-                    Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter
-                )
+                # v0.23.9: значения в таблице — по центру, раньше числа
+                # были по правому краю.
+                item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
                 self.table.setItem(row, column, item)
         self._updating = False
         self.paint_day_columns()  # v0.23.3: розовые выходные, салатовая дата

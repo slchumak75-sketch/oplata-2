@@ -34,13 +34,14 @@ class OperationsJournalDialog(QDialog):
         self.kind = kind
         self.on_data_changed = on_data_changed
         noun = "поставщика" if kind == "supplier" else "покупателя"
-        # v0.23.2: журнал поставщика вдвое у́же и ведётся за 3 месяца,
-        # журнал покупателя — широкий, за 12 месяцев (просьба
-        # пользователя).
+        # v0.23.2: журнал поставщика ведётся за 3 месяца, журнал
+        # покупателя — за 12 месяцев (просьба пользователя).
+        # v0.23.9: оба журнала одной ширины — 800 px: в ней четыре
+        # колонки влезают целиком, без горизонтального скроллинга.
         if kind == "supplier":
-            width, months = 590, 3
+            width, months = 800, 3
         else:
-            width, months = 1180, 12
+            width, months = 800, 12
         person: Counterparty | None = next(
             (
                 item

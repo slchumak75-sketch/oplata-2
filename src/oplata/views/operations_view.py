@@ -237,7 +237,10 @@ class OperationsView(QWidget):
         headers = ["Тип", "Контрагент", "Дата", "Сумма", "Документ", "Комментарий"]
         self.money_column = 3
         if self.supplier_journal:
-            headers = ["Дата поставки", "Сумма", "Отсрочка, дней", "Дата оплаты"]
+            # v0.23.9: длинные названия перенесены на две строки, чтобы
+            # они влезали в узкий журнал без горизонтального
+            # скроллинга и не обрезались.
+            headers = ["Дата\nпоставки", "Сумма", "Отсрочка,\nдней", "Дата\nоплаты"]
             self.money_column = 1
         elif self.counterparty_kind == "customer":
             # v0.23.2: в журнале покупателя колонок «Документ» и
@@ -265,15 +268,35 @@ class OperationsView(QWidget):
         )
         header = self.table.horizontalHeader()
         if self.supplier_journal:
-            # Даты и отсрочка — фиксированной ширины, свободное место
-            # достаётся сумме.
-            for column in (0, 2, 3):
-                self.table.setColumnWidth(column, 150)
-            header.setSectionResizeMode(1, QHeaderView.ResizeMode.Stretch)
-        elif self.counterparty_kind == "customer":
-            for column, width in ((0, 120), (2, 130), (3, 150)):
+            # v0.23.9: все четыре колонки делят ширину журнала
+            # пропорционально и всегда влезают целиком — сумма видна без
+            # горизонтального скроллинга (просьба пользователя). Раньше
+            # три колонки были фиксированы по 150 px, сумма дожималась до
+            # минимума и уезжала за край.
+            header.setMinimumSectionSize(70)
+            for column, width in ((0, 130), (1, 120), (2, 130), (3, 130)):
                 self.table.setColumnWidth(column, width)
-            header.setSectionResizeMode(1, QHeaderView.ResizeMode.Stretch)
+            for column in range(len(headers)):
+                header.setSectionResizeMode(column, QHeaderView.ResizeMode.Stretch)
+            self.table.setHorizontalScrollBarPolicy(
+                Qt.ScrollBarPolicy.ScrollBarAlwaysOff
+            )
+            # Шапка и значения в журнале поставщика — по центру.
+            header.setDefaultAlignment(Qt.AlignmentFlag.AlignCenter)
+        elif self.counterparty_kind == "customer":
+            # v0.23.9: журнал покупателя такой же узкий, как журнал
+            # поставщика, — колонки делят ширину целиком, горизонтального
+            # скроллинга нет; шапка и значения — по центру (просьба
+            # пользователя).
+            header.setMinimumSectionSize(70)
+            for column, width in ((0, 110), (1, 180), (2, 120), (3, 120)):
+                self.table.setColumnWidth(column, width)
+            for column in range(len(headers)):
+                header.setSectionResizeMode(column, QHeaderView.ResizeMode.Stretch)
+            self.table.setHorizontalScrollBarPolicy(
+                Qt.ScrollBarPolicy.ScrollBarAlwaysOff
+            )
+            header.setDefaultAlignment(Qt.AlignmentFlag.AlignCenter)
         else:
             # Фиксированные колонки не должны ужиматься до «Накладная …»,
             # свободную ширину делят контрагент и комментарий.
@@ -551,7 +574,12 @@ class OperationsView(QWidget):
                 item = QTableWidgetItem(text)
                 if col == 0:
                     item.setData(Qt.ItemDataRole.UserRole, op.id)
-                if col == self.money_column:
+                if self.supplier_journal or self.counterparty_kind == "customer":
+                    # v0.23.9: в узких журналах поставщика и покупателя
+                    # все значения — по центру, включая сумму (просьба
+                    # пользователя).
+                    item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
+                elif col == self.money_column:
                     item.setTextAlignment(
                         Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter
                     )

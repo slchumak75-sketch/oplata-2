@@ -348,7 +348,7 @@ def test_operation_dialog_and_journal_crud(qt_app, store):
     assert journal.table.rowCount() == 1
     assert [
         journal.table.horizontalHeaderItem(col).text() for col in range(4)
-    ] == ["Дата поставки", "Сумма", "Отсрочка, дней", "Дата оплаты"]
+    ] == ["Дата\nпоставки", "Сумма", "Отсрочка,\nдней", "Дата\nоплаты"]
 
     # Полный журнал (с фильтрами и правкой) живёт отдельным виджетом —
     # его и проверяем на фильтры и удаление.
@@ -1116,8 +1116,8 @@ def test_receipts_popup_has_no_buttons_and_saves_on_click_outside(qt_app, store)
     window.close()
 
 
-def test_tables_edit_on_single_click_and_numbers_right_aligned(qt_app, store):
-    """Ввод — по одному клику; числа во всех таблицах — по правому краю."""
+def test_tables_edit_on_single_click_and_numbers_centered(qt_app, store):
+    """Ввод — по одному клику; значения в таблицах — по центру (v0.23.9)."""
     from PySide6.QtCore import Qt
     from PySide6.QtWidgets import QAbstractItemView
 
@@ -1128,7 +1128,7 @@ def test_tables_edit_on_single_click_and_numbers_right_aligned(qt_app, store):
     window.show()
     qt_app.processEvents()
     view = window.receipts_view
-    right = Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter
+    center = Qt.AlignmentFlag.AlignCenter  # v0.23.9: не по правому краю
 
     for table in (
         view.incoming.table,
@@ -1138,12 +1138,12 @@ def test_tables_edit_on_single_click_and_numbers_right_aligned(qt_app, store):
     ):
         assert table.editTriggers() == QAbstractItemView.EditTrigger.AllEditTriggers
 
-    # «Сумма» и все колонки дней недели.
+    # «Сумма» и все колонки дней недели — по центру (v0.23.9).
     for column in range(COL_AMOUNT, COLUMN_COUNT):
-        assert view.incoming.table.item(0, column).textAlignment() == right
+        assert view.incoming.table.item(0, column).textAlignment() == center
         assert (
             view.incoming.table.horizontalHeaderItem(column).textAlignment()
-            == right
+            == center
         )
     window.close()
 
@@ -1985,6 +1985,55 @@ def test_journal_period_three_and_twelve_months(qt_app, store, monkeypatch):
     customer_journal.close()
 
 
+def test_journals_are_same_width_and_centered(qt_app, store):
+    """v0.23.9: журналы одной ширины, без горизонтального скроллинга,
+    шапка и значения — по центру."""
+
+    from PySide6.QtCore import Qt
+
+    from oplata.dialogs.operations_journal_dialog import OperationsJournalDialog
+    from oplata.models import Counterparty, Operation
+
+    supplier = next(s for s in store.data.suppliers if s.name == "ггг")
+    customer = Counterparty(name="Покупатель Тест")
+    store.data.customers.append(customer)
+    for counterparty in (supplier, customer):
+        store.data.operations.append(
+            Operation(
+                kind="Приход",
+                counterparty_id=counterparty.id,
+                date="2026-10-20",
+                due_date="2026-11-03",
+                amount="100.00",
+            )
+        )
+
+    journals = [
+        OperationsJournalDialog(store, kind, counterparty_id=person.id)
+        for kind, person in (("supplier", supplier), ("customer", customer))
+    ]
+    # Оба журнала одной ширины (v0.23.9).
+    assert journals[0].width() == journals[1].width()
+    for journal in journals:
+        table = journal.view.table
+        header = table.horizontalHeader()
+        # Горизонтального скроллинга нет, колонки занимают всю ширину.
+        assert (
+            table.horizontalScrollBarPolicy()
+            == Qt.ScrollBarPolicy.ScrollBarAlwaysOff
+        )
+        assert sum(
+            header.sectionSize(column) for column in range(table.columnCount())
+        ) == table.viewport().width()
+        # Шапка и значения — по центру.
+        assert header.defaultAlignment() & Qt.AlignmentFlag.AlignHCenter
+        for column in range(table.columnCount()):
+            assert table.item(0, column).textAlignment() & (
+                Qt.AlignmentFlag.AlignHCenter
+            ), column
+        journal.close()
+
+
 def test_summary_panel_font_is_larger_others_unchanged(qt_app, store):
     """v0.23.6: шрифт увеличен только в панели «Сводка»."""
 
@@ -2057,6 +2106,31 @@ def test_money_block_paints_weekends_and_today(qt_app, store, monkeypatch):
         assert table.showGrid() is True
         assert f"gridline-color:{styles.TABLE_GRID}" in table.styleSheet()
         assert f"border:1px solid {styles.BORDER}" in table.styleSheet()
+
+
+def test_money_block_header_and_values_are_centered(qt_app, store):
+    """v0.23.9: в таблицах «Поступление» и «Оплата» шапка и значения —
+    по центру."""
+
+    from PySide6.QtCore import Qt
+
+    from oplata.app import MainWindow
+
+    window = MainWindow(store)
+    center = Qt.AlignmentFlag.AlignHCenter
+    for block in (window.receipts_view.incoming, window.receipts_view.outgoing):
+        table = block.table
+        header = table.horizontalHeader()
+        assert header.defaultAlignment() & center
+        for column in range(table.columnCount()):
+            header_item = table.horizontalHeaderItem(column)
+            assert header_item is not None
+            assert header_item.textAlignment() & center, column
+            for row in range(table.rowCount()):
+                item = table.item(row, column)
+                if item is not None:
+                    assert item.textAlignment() & center, (row, column)
+    window.close()
     window.close()
 
 
@@ -2093,8 +2167,9 @@ def test_supplier_journal_shows_delivery_columns(qt_app, store):
         table.item(0, col).text() for col in range(table.columnCount())
     ] == ["26.10.2026", "1 000,50", "10", "05.11.2026"]
 
-    # Журнал поставщика вдвое у́же и с широким скроллбаром (v0.23.2).
-    assert window.width() == 590
+    # Журнал поставщика — той же ширины, что и журнал покупателя
+    # (v0.23.9), и с широким скроллбаром (v0.23.2).
+    assert window.width() == 800
     assert (
         table.verticalScrollBarPolicy()
         == Qt.ScrollBarPolicy.ScrollBarAlwaysOn
