@@ -195,6 +195,10 @@ class SummaryView(QWidget):
             label.setSizePolicy(
                 QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred
             )
+            # v0.22.0: панель «Сводка» вдвое у́же, поэтому длинные
+            # подписи («Задолженность покупателей») переносятся на
+            # вторую строку, а не обрезаются.
+            label.setWordWrap(True)
             value = QLabel(fmt_money_plain(Decimal("0")))
             value.setAlignment(
                 Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter

@@ -97,14 +97,13 @@ def test_main_window_all_pages(qt_app, store):
         "Прочие поступления",  # постоянная строка, v0.13.0
     ]
     assert view.outgoing.table.item(0, 0).text() == "Поставщики"
-    assert [view.incoming.table.horizontalHeaderItem(c).text() for c in range(6)] == [
-        "",
-        "Сумма",
-        "Неделя",
-        "Месяц",
-        "Квартал",
-        "Год",
-    ]
+    # v0.22.0: вместо «Неделя/Месяц/Квартал/Год» — колонки дней недели.
+    assert [
+        view.incoming.table.horizontalHeaderItem(c).text()
+        for c in range(COLUMN_COUNT)
+    ][:2] == ["", "Сумма"]
+    assert view.incoming.days == view.incoming.week_days()
+    assert len(view.incoming.days) == TABLE_DAYS
     # Кнопок «+»/«−» в блоке «Поступление» нет, в «Оплате» — есть.
     assert not hasattr(view.incoming, "add_btn")
     assert view.outgoing.add_btn.text() == "+"
@@ -655,16 +654,11 @@ def test_realization_dialog_saves_without_due_date(qt_app, store):
 
 
 def test_receipts_table_direct_input_and_totals(qt_app, store):
-    """Таблица «Поступление»: ввод в ячейку и нарастающие итоги."""
+    """Таблица «Поступление»: ввод в ячейку и суммы по дням недели."""
     from datetime import date
 
     from oplata.app import MainWindow
-    from oplata.views.receipts_view import (
-        COL_AMOUNT,
-        COL_MONTH,
-        COL_WEEK,
-        COL_YEAR,
-    )
+    from oplata.views.receipts_view import COL_AMOUNT
 
     window = MainWindow(store)
     view = window.receipts_view
@@ -698,23 +692,24 @@ def test_receipts_table_direct_input_and_totals(qt_app, store):
     ]
     assert incoming.amount_text("card") == "2 000,00"
 
-    # Нарастающий итог: неделя (с Пн 26.10), месяц, год — по выбранную дату.
+    # Колонки дней недели (Пн 26.10 – Сб 31.10): сумма видна в колонке
+    # своего дня, а «Сумма» — за дату, выбранную в блоке (v0.22.0).
     incoming.table.item(0, COL_AMOUNT).setText("1 000")
+    col_26 = _DAY_COL(incoming, date(2026, 10, 26))
+    col_27 = _DAY_COL(incoming, date(2026, 10, 27))
     assert incoming.amount_text("cash", COL_AMOUNT) == "1 000,00"
-    assert incoming.amount_text("cash", COL_WEEK) == "1 000,00"
-    assert incoming.amount_text("cash", COL_MONTH) == "1 000,00"
-    assert incoming.amount_text("cash", COL_YEAR) == "1 000,00"
+    assert incoming.amount_text("cash", col_27) == "1 000,00"
+    assert incoming.amount_text("cash", col_26) == ""
 
-    # Сумма предыдущего дня этой же недели входит в итог недели.
+    # Сумма другого дня этой же недели стоит в своей колонке.
     view.incoming.set_date(date(2026, 10, 26))
     view.incoming.table.item(0, COL_AMOUNT).setText("500")
     assert view.incoming.amount_text("cash", COL_AMOUNT) == "500,00"
     view.incoming.set_date(date(2026, 10, 27))
     assert view.incoming.amount_text("cash", COL_AMOUNT) == "1 000,00"
-    assert view.incoming.amount_text("cash", COL_WEEK) == "1 500,00"
-    assert view.incoming.amount_text("cash", COL_MONTH) == "1 500,00"
-    assert view.incoming.amount_text("cash", COL_YEAR) == "1 500,00"
-    assert view.incoming.amount_text("card", COL_WEEK) == "2 000,00"
+    assert view.incoming.amount_text("cash", col_26) == "500,00"
+    assert view.incoming.amount_text("cash", col_27) == "1 000,00"
+    assert view.incoming.amount_text("card", col_27) == "2 000,00"
 
     # Пустая ячейка убирает запись дня (только по своему источнику).
     view.incoming.table.item(0, COL_AMOUNT).setText("")
@@ -854,10 +849,9 @@ def test_data_panels_are_collapsible(qt_app, store):
 
 from oplata.views.receipts_view import (  # noqa: E402
     COL_AMOUNT,
-    COL_MONTH,
     COL_NAME,
-    COL_WEEK,
-    COL_YEAR,
+    COLUMN_COUNT,
+    TABLE_DAYS,
 )
 
 
@@ -904,6 +898,7 @@ def test_other_payment_rows_add_sum_and_remove(qt_app, store, monkeypatch):
     patch_other_payment_card(monkeypatch, ["Новый вид оплаты", "Второй вид"])
     window = MainWindow(store)
     view = window.receipts_view
+    day_column = _DAY_COL(view.outgoing, date(2026, 10, 27))
     view.outgoing.set_date(date(2026, 10, 27))
     assert view.outgoing.row_keys == ["suppliers"]  # пока только поставщики
 
@@ -920,8 +915,7 @@ def test_other_payment_rows_add_sum_and_remove(qt_app, store, monkeypatch):
     # Сумма — прямо в ячейку, итоги считаются по названию.
     view.outgoing.table.item(1, COL_AMOUNT).setText("12 000")
     assert view.outgoing.amount_text("other:Новый вид оплаты") == "12 000,00"
-    assert view.outgoing.amount_text("other:Новый вид оплаты", COL_WEEK) == "12 000,00"
-    assert view.outgoing.amount_text("other:Новый вид оплаты", COL_YEAR) == "12 000,00"
+    assert view.outgoing.amount_text("other:Новый вид оплаты", day_column) == "12 000,00"
     assert [
         (p.name, p.date, p.amount, p.direction)
         for p in store.data.other_payments
@@ -1113,7 +1107,7 @@ def test_tables_edit_on_single_click_and_numbers_right_aligned(qt_app, store):
     from PySide6.QtWidgets import QAbstractItemView
 
     from oplata.app import MainWindow
-    from oplata.views.receipts_view import COL_MONTH, COL_WEEK, COL_YEAR
+    from oplata.views.receipts_view import COL_AMOUNT, COLUMN_COUNT
 
     window = MainWindow(store)
     window.show()
@@ -1129,7 +1123,8 @@ def test_tables_edit_on_single_click_and_numbers_right_aligned(qt_app, store):
     ):
         assert table.editTriggers() == QAbstractItemView.EditTrigger.AllEditTriggers
 
-    for column in (COL_AMOUNT, COL_WEEK, COL_MONTH, COL_YEAR):
+    # «Сумма» и все колонки дней недели.
+    for column in range(COL_AMOUNT, COLUMN_COUNT):
         assert view.incoming.table.item(0, column).textAlignment() == right
         assert (
             view.incoming.table.horizontalHeaderItem(column).textAlignment()
@@ -1164,14 +1159,14 @@ def test_money_block_scrolls_long_row_list(qt_app, store, monkeypatch):
     window.close()
 
 
-def test_quarter_column_and_period_bounds(qt_app, store):
-    """Колонка «Квартал»: границы периодов — Пн, 1-е число, квартал, год."""
+def test_week_day_columns_show_daily_amounts(qt_app, store):
+    """Колонки дней недели: сумма за каждый день (v0.22.0)."""
     from datetime import date
     from decimal import Decimal
 
     from oplata.app import MainWindow
     from oplata.models import set_daily_cash_receipt
-    from oplata.views.receipts_view import COL_QUARTER
+    from oplata.views.receipts_view import COLUMN_COUNT, TABLE_DAYS
 
     window = MainWindow(store)
     window.show()
@@ -1179,26 +1174,41 @@ def test_quarter_column_and_period_bounds(qt_app, store):
     view = window.receipts_view
     # 27.10.2026 — вторник; неделя начинается 26.10 (понедельник).
     view.set_date(date(2026, 10, 27))
-    # Прошлый квартал (июль) и начало года попадают только в «Год».
-    set_daily_cash_receipt(store.data, "cash", "2026-07-02", Decimal("500"))
-    # Тот же квартал, но раньше: попадает в месяц? нет — октябрь, 05.10.
-    set_daily_cash_receipt(store.data, "cash", "2026-10-05", Decimal("1000"))
-    # Текущая неделя (понедельник 26.10).
+    # День текущей недели (понедельник 26.10).
     set_daily_cash_receipt(store.data, "cash", "2026-10-26", Decimal("2000"))
     # Выбранный день.
     set_daily_cash_receipt(store.data, "cash", "2026-10-27", Decimal("3000"))
+    # Прошлые даты: в колонках этой недели их не видно.
+    set_daily_cash_receipt(store.data, "cash", "2026-10-05", Decimal("1000"))
+    set_daily_cash_receipt(store.data, "cash", "2026-07-02", Decimal("500"))
     view.refresh()
     qt_app.processEvents()
 
+    # Шесть дней недели: Пн 26.10 – Сб 31.10 (воскресенья нет).
+    assert view.incoming.table.columnCount() == COLUMN_COUNT == 2 + TABLE_DAYS
+    assert view.incoming.days[0] == date(2026, 10, 26)
+    assert view.incoming.days[-1] == date(2026, 10, 31)
+    headers = [
+        view.incoming.table.horizontalHeaderItem(column).text()
+        for column in range(COLUMN_COUNT)
+    ]
+    assert headers[0] == "" and headers[1] == "Сумма"
+    assert headers[2].startswith("26.10") and headers[-1].startswith("31.10")
+
     row = view.incoming.row_keys.index("cash")
-    cells = [view.incoming.table.item(row, column).text() for column in range(1, 6)]
-    amount, week, month, quarter, year = cells
-    assert amount == "3 000,00"        # только за выбранную дату
-    assert week == "5 000,00"          # 26.10 + 27.10 (неделя Пн–Вс)
-    assert month == "6 000,00"         # с 1 октября
-    assert quarter == "6 000,00"       # с 1 октября (IV квартал)
-    assert year == "6 500,00"          # с 1 января: + июльская запись
-    assert COL_QUARTER == 4
+    assert view.incoming.amount_text("cash") == "3 000,00"  # выбранный день
+    assert (
+        view.incoming.amount_text("cash", _DAY_COL(view.incoming, date(2026, 10, 26)))
+        == "2 000,00"
+    )
+    assert (
+        view.incoming.amount_text("cash", _DAY_COL(view.incoming, date(2026, 10, 27)))
+        == "3 000,00"
+    )
+    # Остальные дни недели пустые: суммы вне недели (05.10, 02.07) в
+    # колонки дней не попадают.
+    for day in (date(2026, 10, 28), date(2026, 10, 29), date(2026, 10, 30)):
+        assert view.incoming.amount_text("cash", _DAY_COL(view.incoming, day)) == ""
     window.close()
 
 
@@ -1635,6 +1645,13 @@ def test_week_customer_debt_column_is_sales_minus_payments(qt_app, store):
     assert table.item(4, 1).text() == "3 000,00"
     assert table.item(3, 1).text() == "3 000,00"  # строка «ВСЕГО»
     window.close()
+
+
+def _DAY_COL(block, day):
+    """Номер колонки дня в блоке «Поступление»/«Оплата» (v0.22.0)."""
+    from oplata.views.receipts_view import FIRST_DAY_COL
+
+    return FIRST_DAY_COL + block.days.index(day)
 
 
 def _DAY(view, day_index, subcolumn):

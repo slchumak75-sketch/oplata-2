@@ -9,8 +9,10 @@
 * вверху каждого блока **одна строчка**: заголовок, подпись «Дата»,
   поле даты с выпадающим календарём, кнопка «Сегодня» и стрелки
   «←»/«→»;
-* ниже в блоке — **таблица** со столбцами «Сумма / Неделя / Месяц /
-  Год», где Неделя, Месяц и Год — нарастающий итог с начала периода
+* ниже в блоке — **таблица** со столбцами «Сумма / дни текущей
+  недели», где «Сумма» — за выбранную дату, а колонки дней (Пн–Сб)
+  показывают сумму за каждый день (v0.22.0; раньше здесь были
+  нарастающие итоги «Неделя / Месяц / Квартал / Год»)
   (понедельника недели, 1-го числа месяца, 1 января) по выбранную дату
   включительно. Это агрегаты по сохранённым записям, без формул долгов
   (ADR-017).
@@ -68,7 +70,13 @@ from PySide6.QtWidgets import (
 )
 
 from .. import styles
-from ..dates import MONTHS_RU, fmt_money_plain, parse_money, week_monday
+from ..dates import (
+    MONTHS_RU,
+    fmt_money_plain,
+    parse_money,
+    week_days,
+    week_monday,
+)
 from ..models import (
     CARD_SOURCE,
     CASH_SOURCE,
@@ -161,11 +169,17 @@ def _fmt_day(iso: str) -> str:
         return f"{iso[8:10]}.{iso[5:7]}.{iso[0:4]}"
     return iso
 
-COL_NAME, COL_AMOUNT, COL_WEEK, COL_MONTH, COL_QUARTER, COL_YEAR = range(6)
-HEADERS = ("", "Сумма", "Неделя", "Месяц", "Квартал", "Год")
-# Ширины числовых колонок подобраны под шрифт +30% (v0.12.0) с учётом
-# пятой колонки «Квартал» (v0.13.0): в них влезает «88 888,88», а
-# колонке названия остаётся место на «Поступление наличными».
+COL_NAME, COL_AMOUNT = 0, 1
+# v0.22.0: вместо итоговых колонок «Неделя / Месяц / Квартал / Год» в
+# таблице стоят колонки дней текущей недели — как в недельных таблицах,
+# шесть дней (Пн–Сб, воскресенья нет, v0.19.0).
+FIRST_DAY_COL = 2
+TABLE_DAYS = 6
+COLUMN_COUNT = FIRST_DAY_COL + TABLE_DAYS
+WEEKDAY_SHORT = ("Пн", "Вт", "Ср", "Чт", "Пт", "Сб", "Вс")
+# Ширины числовых колонок подобраны под шрифт +30% (v0.12.0): в них
+# влезает «88 888,88», а колонке названия остаётся место на
+# «Поступление наличными».
 # Широкий, всегда видимый вертикальный скроллбар блока «Оплата»
 # (v0.13.0): «закрепить и сделать широкий».
 WIDE_SCROLLBAR = (
@@ -177,13 +191,10 @@ WIDE_SCROLLBAR = (
     "QScrollBar::add-page:vertical,QScrollBar::sub-page:vertical{"
     "background:#f2f5fa}"
 )
-COLUMN_WIDTHS = {
-    COL_AMOUNT: 104,
-    COL_WEEK: 100,
-    COL_MONTH: 100,
-    COL_QUARTER: 100,
-    COL_YEAR: 104,
-}
+COLUMN_WIDTHS = {COL_AMOUNT: 104}
+# Колонки дней уже итогов «Неделя/Месяц/Квартал/Год»: в них день и сумма
+# за день («88 888,88» влезает и в 92 px).
+DAY_COLUMN_WIDTH = 96
 # Высота строки: с запасом под перенос длинного названия строки на две
 # строки (wordWrap включён, колонка названия ограничена пятью
 # числовыми колонками).
@@ -728,9 +739,10 @@ class MoneyBlock(QFrame):
             top.addStretch(1)
         root.addLayout(top)
 
-        # --- таблица: строка + сумма + нарастающие итоги ---
-        self.table = QTableWidget(0, len(HEADERS))
-        self.table.setHorizontalHeaderLabels(list(HEADERS))
+        # --- таблица: строка + сумма + дни текущей недели (v0.22.0) ---
+        self.table = QTableWidget(0, COLUMN_COUNT)
+        self.days: list[date] = []  # дни недели, показанные в шапке
+        self.refresh_columns()
         self.table.verticalHeader().setVisible(False)
         self.table.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
         self.table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
@@ -748,13 +760,7 @@ class MoneyBlock(QFrame):
         self.table.setAlternatingRowColors(False)
         header_view = self.table.horizontalHeader()
         header_view.setSectionResizeMode(COL_NAME, QHeaderView.ResizeMode.Stretch)
-        # Числа — по правому краю: и в ячейках, и в заголовках колонок.
-        for column in (COL_AMOUNT, COL_WEEK, COL_MONTH, COL_YEAR):
-            header_item = self.table.horizontalHeaderItem(column)
-            if header_item is not None:
-                header_item.setTextAlignment(
-                    Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter
-                )
+        self._apply_column_widths()
         root.addWidget(self.table)
         # Подсветка всей строки бежевым при наведении (v0.13.0).
         self._hover_delegate = _HoverDelegate(self.table)
@@ -768,6 +774,61 @@ class MoneyBlock(QFrame):
         self.set_rows(self.row_keys)
 
     # ------------------------------------------------------------------ вид
+    def week_days(self) -> list[date]:
+        """Шесть дней недели выбранной даты: Пн–Сб (без воскресенья)."""
+
+        return week_days(week_monday(self.current_date()))[:TABLE_DAYS]
+
+    def refresh_columns(self) -> None:
+        """Шапка таблицы под неделю выбранной даты (v0.22.0).
+
+        Колонки дней: «26.10 Пн», «27.10 Вт» и так далее. Если дата
+        ушла на другую неделю, шапка перестраивается сама.
+        """
+
+        days = self.week_days()
+        if days == self.days and self.table.columnCount() == COLUMN_COUNT:
+            return
+        self.days = days
+        if self.table.columnCount() != COLUMN_COUNT:
+            self.table.setColumnCount(COLUMN_COUNT)
+        headers = ["", "Сумма"]
+        for day in days:
+            headers.append(
+                f"{day.strftime('%d.%m')} {WEEKDAY_SHORT[day.weekday()]}"
+            )
+        self.table.setHorizontalHeaderLabels(headers)
+        self._apply_column_widths()
+
+    def _apply_column_widths(self) -> None:
+        """Числа — по правому краю, ширины колонок фиксированы."""
+
+        for column in range(COL_AMOUNT, COLUMN_COUNT):
+            self.table.setColumnWidth(
+                column,
+                COLUMN_WIDTHS.get(column, DAY_COLUMN_WIDTH),
+            )
+            header_item = self.table.horizontalHeaderItem(column)
+            if header_item is not None:
+                header_item.setTextAlignment(
+                    Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter
+                )
+
+    def mark_current_day(self) -> None:
+        """Выделить в шапке день, выбранный в блоке (v0.22.0)."""
+
+        current = self.current_date()
+        for index, day in enumerate(self.days):
+            header_item = self.table.horizontalHeaderItem(FIRST_DAY_COL + index)
+            if header_item is None:
+                continue
+            font = header_item.font()
+            font.setBold(day == current)
+            header_item.setFont(font)
+            header_item.setToolTip(
+                "День, выбранный в блоке" if day == current else ""
+            )
+
     def set_rows(self, row_keys: list[str]) -> None:
         """Перестроить строки таблицы (состав строк меняется кнопкой «+»)."""
 
@@ -785,13 +846,7 @@ class MoneyBlock(QFrame):
             )
             name_item.setToolTip(self._row_tooltip(key))
             self.table.setItem(row, COL_NAME, name_item)
-            for column in (
-                COL_AMOUNT,
-                COL_WEEK,
-                COL_MONTH,
-                COL_QUARTER,
-                COL_YEAR,
-            ):
+            for column in range(COL_AMOUNT, COLUMN_COUNT):
                 item = QTableWidgetItem("")
                 item_flags = (
                     Qt.ItemFlag.ItemIsEnabled | Qt.ItemFlag.ItemIsSelectable
@@ -1033,15 +1088,18 @@ class ReceiptsView(QWidget):
         left_layout.addWidget(self.outgoing, stretch=1)
 
         # Пояснений под блоками нет (v0.13.0): всё видно по заголовкам
-        # колонок «Сумма / Неделя / Месяц / Квартал / Год».
+        # колонок «Сумма» и дней недели (v0.22.0).
 
         self.left_layout = left_layout
-        root.addWidget(left, stretch=1)
+        # v0.22.0: «Сводка» вдвое у́же — раньше обе половины делили окно
+        # поровну (stretch 1 : 1), теперь левым блокам уходит три доли
+        # из четырёх, а сводке — одна (было 50% ширины, стало 25%).
+        root.addWidget(left, stretch=3 if summary_widget is not None else 1)
 
         # --- справа на всю высоту — «Сводка» ---
         if summary_widget is not None:
             # Ignored по горизонтали: сводка не должна отжимать блоки
-            # влево — обе половины получают ровно по 50% ширины.
+            # влево — ширину держим долями раскладки (3 : 1).
             summary_widget.setSizePolicy(
                 QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Expanding
             )
@@ -1449,67 +1507,6 @@ class ReceiptsView(QWidget):
             ZERO,
         )
 
-    def _period_totals(
-        self, key: str, day: date, direction: str = OUTGOING
-    ) -> tuple[Decimal, Decimal, Decimal, Decimal]:
-        """Итоги нарастанием: неделя, месяц, квартал, год — по дату.
-
-        Границы периодов (v0.13.0): неделя — понедельник…воскресенье,
-        месяц — с 1-го числа, квартал — с первого дня квартала, год —
-        с 1 января. Считаются все сохранённые записи от начала периода
-        до выбранной даты включительно (простые суммы, без формул).
-        """
-
-        week_start = week_monday(day)
-        month_start = day.replace(day=1)
-        quarter_start = date(day.year, 3 * ((day.month - 1) // 3) + 1, 1)
-        year_start = day.replace(month=1, day=1)
-        week = month = quarter = year = ZERO
-
-        if key in (CASH_ROW, CARD_ROW):
-            source = CASH_SOURCE if key == CASH_ROW else CARD_SOURCE
-            items = (
-                (receipt.date, cash_receipt_amount(receipt))
-                for receipt in self.store.data.cash_receipts
-                if receipt.source == source
-            )
-        elif key.startswith(OTHER_PREFIX):
-            name = other_row_name(key)
-            items = (
-                (item.date, other_payment_amount(item))
-                for item in self.store.data.other_payments
-                if item.name == name
-                and getattr(item, "direction", OUTGOING) == direction
-            )
-        elif key == CUSTOMERS_ROW:
-            ids = {c.id for c in self.store.data.customers}
-            items = (
-                (op.date, operation_amount(op))
-                for op in self.store.data.operations
-                if op.kind == KIND_PAYMENT and op.counterparty_id in ids
-            )
-        else:
-            ids = {s.id for s in self.store.data.suppliers}
-            items = (
-                (op.date, operation_amount(op))
-                for op in self.store.data.operations
-                if op.kind == KIND_PAYMENT and op.counterparty_id in ids
-            )
-
-        for item_date, amount in items:
-            item_day = _parse_day(item_date)
-            if item_day is None or item_day > day:
-                continue
-            if item_day >= week_start:
-                week += amount
-            if item_day >= month_start:
-                month += amount
-            if item_day >= quarter_start:
-                quarter += amount
-            if item_day >= year_start:
-                year += amount
-        return week, month, quarter, year
-
     def set_read_only(self, read_only: bool) -> None:
         """Права пользователя: «только просмотр» или полный доступ (v0.18.0)."""
 
@@ -1517,50 +1514,63 @@ class ReceiptsView(QWidget):
         self.incoming.set_read_only(read_only)
         self.outgoing.set_read_only(read_only)
 
+    def _row_total(
+        self,
+        key: str,
+        day: date,
+        direction: str,
+        customer_ids: set[str],
+        supplier_ids: set[str],
+    ) -> Decimal:
+        """Сумма строки за день (v0.22.0): та же формула, что в «Сумме»."""
+
+        if key == SUPPLIERS_ROW:
+            return self._payment_total(supplier_ids, day)
+        if key == CUSTOMERS_ROW:
+            return self._payment_total(customer_ids, day)
+        if key in (CASH_ROW, CARD_ROW):
+            source = CASH_SOURCE if key == CASH_ROW else CARD_SOURCE
+            return self._cash_total(source, day)
+        if key.startswith(OTHER_PREFIX):
+            return self._other_total(other_row_name(key), day, direction)
+        return ZERO
+
     def refresh(self) -> None:
-        incoming_day = self.incoming.current_date()
-        outgoing_day = self.outgoing.current_date()
+        """Заполнить «Сумму» за выбранный день и колонки дней недели."""
+
         customer_ids = {c.id for c in self.store.data.customers}
         supplier_ids = {s.id for s in self.store.data.suppliers}
 
-        self.incoming.set_amount(
-            CASH_ROW, COL_AMOUNT, _money_text(self._cash_total(CASH_SOURCE, incoming_day))
-        )
-        self.incoming.set_amount(
-            CARD_ROW, COL_AMOUNT, _money_text(self._cash_total(CARD_SOURCE, incoming_day))
-        )
-        self.incoming.set_amount(
-            CUSTOMERS_ROW,
-            COL_AMOUNT,
-            _money_text(self._payment_total(customer_ids, incoming_day)),
-        )
-
-        for block, day in ((self.incoming, incoming_day), (self.outgoing, outgoing_day)):
+        for block in (self.incoming, self.outgoing):
+            # v0.22.0: шапка строится под неделю выбранной даты — при
+            # переходе на другую неделю колонки дней меняются сами.
+            block.refresh_columns()
+            block.mark_current_day()
+            day = block.current_date()
             for key in block.row_keys:
-                if key == SUPPLIERS_ROW:
-                    value = self._payment_total(supplier_ids, day)
-                elif key == CUSTOMERS_ROW:
-                    value = self._payment_total(customer_ids, day)
-                elif key in (CASH_ROW, CARD_ROW):
-                    source = CASH_SOURCE if key == CASH_ROW else CARD_SOURCE
-                    value = self._cash_total(source, day)
-                elif key.startswith(OTHER_PREFIX):
-                    value = self._other_total(
-                        other_row_name(key), day, block.direction
-                    )
-                else:
-                    value = ZERO
-                block.set_amount(key, COL_AMOUNT, _money_text(value))
-
-        for block, day in ((self.incoming, incoming_day), (self.outgoing, outgoing_day)):
-            for key in block.row_keys:
-                week, month, quarter, year = self._period_totals(
-                    key, day, block.direction
+                block.set_amount(
+                    key,
+                    COL_AMOUNT,
+                    _money_text(
+                        self._row_total(
+                            key, day, block.direction, customer_ids, supplier_ids
+                        )
+                    ),
                 )
-                block.set_amount(key, COL_WEEK, _money_text(week))
-                block.set_amount(key, COL_MONTH, _money_text(month))
-                block.set_amount(key, COL_QUARTER, _money_text(quarter))
-                block.set_amount(key, COL_YEAR, _money_text(year))
+                for index, column_day in enumerate(block.days):
+                    block.set_amount(
+                        key,
+                        FIRST_DAY_COL + index,
+                        _money_text(
+                            self._row_total(
+                                key,
+                                column_day,
+                                block.direction,
+                                customer_ids,
+                                supplier_ids,
+                            )
+                        ),
+                    )
 
 
 def _parse_day(value: str) -> date | None:
