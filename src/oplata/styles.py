@@ -53,8 +53,9 @@ WIDE_SCROLLBAR_ON_AREA = (
     "QScrollArea > QWidget > QWidget{background:#ffffff}" + WIDE_SCROLLBAR
 )
 WIDE_SCROLLBAR_ON_TABLE = (
-    "QTableWidget{background:#ffffff;border:0px;"
-    "gridline-color:transparent;"
+    "QTableWidget{background:#ffffff;"
+    f"border:1px solid {BORDER};border-radius:8px;"
+    f"gridline-color:{TABLE_GRID};"
     f"selection-background-color:{SELECTION_BG};"
     f"selection-color:{TEXT}}}"
     + WIDE_SCROLLBAR

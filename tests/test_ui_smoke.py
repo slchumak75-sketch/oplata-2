@@ -2032,21 +2032,31 @@ def test_money_block_paints_weekends_and_today(qt_app, store, monkeypatch):
     green = QColor(styles.WEEK_TABLE_TODAY_GREEN)
     assert _FixedDate.today() in block.days
     pink = QColor(styles.WEEK_TABLE_WEEKEND_PINK)
+    # Фон секции рисует сама шапка: в Windows BackgroundRole ячейки
+    # шапки Qt игнорирует (v0.23.7).
+    assert isinstance(block.day_header, receipts_view_module.DayHeaderView)
     for index, day in enumerate(block.days):
         column = receipts_view_module.FIRST_DAY_COL + index
-        header_item = block.table.horizontalHeaderItem(column)
-        assert header_item is not None
         is_weekend = day.weekday() >= 5
+        color = block.day_header.section_color(column)
         if day == _FixedDate.today():
-            assert header_item.background().color() == green
+            assert color == green, day
         else:
-            assert (header_item.background().color() == pink) == is_weekend, day
+            assert (color == pink) == is_weekend, day
         # Розовый красит весь столбец, а не только шапку.
         for row in range(block.table.rowCount()):
             item = block.table.item(row, column)
             if item is None:
                 continue
             assert (item.background().color() == pink) == is_weekend, (row, day)
+    # Сетка таблицы (вертикальная и горизонтальная разметка) на месте:
+    # у блока «Поступление» — из общего стиля, у блока «Оплата» (со
+    # своей таблицей стилей) — задана явно (v0.23.7).
+    assert block.table.showGrid() is True
+    outgoing = window.receipts_view.outgoing
+    assert f"gridline-color:{styles.TABLE_GRID}" in outgoing.table.styleSheet()
+    assert f"border:1px solid {styles.BORDER}" in outgoing.table.styleSheet()
+    assert outgoing.table.showGrid() is True
     window.close()
 
 

@@ -46,7 +46,8 @@ from datetime import date, timedelta
 from decimal import Decimal
 
 from PySide6.QtCore import QDate, QEvent, QPoint, Qt, QTimer
-from PySide6.QtGui import QBrush, QColor
+from PySide6.QtGui import QBrush, QColor, QFontMetrics
+from PySide6.QtWidgets import QStyle, QStyleOptionHeader
 from PySide6.QtWidgets import (
     QAbstractItemView,
     QApplication,
@@ -178,6 +179,71 @@ FIRST_DAY_COL = 2
 TABLE_DAYS = 6
 COLUMN_COUNT = FIRST_DAY_COL + TABLE_DAYS
 WEEKDAY_SHORT = ("Пн", "Вт", "Ср", "Чт", "Пт", "Сб", "Вс")
+
+
+class DayHeaderView(QHeaderView):
+    """Горизонтальная шапка с подсветкой отдельных дней (v0.23.7).
+
+    Фон секции рисуется самим классом: в стиле Windows Qt игнорирует
+    ``BackgroundRole`` ячейки шапки, поэтому ``setBackground`` у
+    ``horizontalHeaderItem`` там не видно — приходится заливать
+    прямоугольник секции перед штатной отрисовкой.
+    """
+
+    def __init__(self, table: QTableWidget) -> None:
+        super().__init__(Qt.Orientation.Horizontal, table)
+        self._colors: dict[int, QColor] = {}
+
+    def set_section_colors(self, colors: dict[int, QColor]) -> None:
+        """Задать фон секциям шапки: ``{номер колонки: цвет}``."""
+
+        self._colors = dict(colors)
+        self.viewport().update()
+
+    def section_color(self, column: int) -> QColor | None:
+        """Фон секции ``column`` (``None`` — без подсветки)."""
+
+        return self._colors.get(column)
+
+    def paintSection(self, painter, rect, logicalIndex) -> None:  # noqa: N802
+        color = self._colors.get(int(logicalIndex))
+        if color is None:
+            super().paintSection(painter, rect, logicalIndex)
+            return
+        # Штатная отрисовка секции заливает свой фон из палитры и
+        # перекрывает заливку, поэтому подсвеченную секцию рисуем сами:
+        # сначала фон, потом только текст (CE_HeaderLabel).
+        painter.save()
+        painter.fillRect(rect, color)
+        option = QStyleOptionHeader()
+        self.initStyleOption(option)
+        option.rect = rect
+        option.section = int(logicalIndex)
+        model = self.model()
+        option.text = str(
+            model.headerData(
+                int(logicalIndex),
+                Qt.Orientation.Horizontal,
+                Qt.ItemDataRole.DisplayRole,
+            )
+            or ""
+        )
+        alignment = model.headerData(
+            int(logicalIndex),
+            Qt.Orientation.Horizontal,
+            Qt.ItemDataRole.TextAlignmentRole,
+        )
+        if alignment is not None:
+            option.textAlignment = Qt.AlignmentFlag(int(alignment))
+        font = model.headerData(
+            int(logicalIndex), Qt.Orientation.Horizontal, Qt.ItemDataRole.FontRole
+        )
+        option.font = font if font is not None else self.font()
+        option.fontMetrics = QFontMetrics(option.font)
+        self.style().drawControl(
+            QStyle.ControlElement.CE_HeaderLabel, option, painter, self
+        )
+        painter.restore()
 # Ширины числовых колонок подобраны под шрифт +30% (v0.12.0): в них
 # влезает «88 888,88», а колонке названия остаётся место на
 # «Поступление наличными».
@@ -771,7 +837,11 @@ class MoneyBlock(QFrame):
         self.read_only = False
         self.table.cellClicked.connect(self._on_cell_clicked)
         self.table.setAlternatingRowColors(False)
-        header_view = self.table.horizontalHeader()
+        # v0.23.7: своя шапка — чтобы подсветка дня была видна и в
+        # Windows (фон секции рисует сам класс).
+        header_view = DayHeaderView(self.table)
+        self.table.setHorizontalHeader(header_view)
+        self.day_header = header_view
         header_view.setSectionResizeMode(COL_NAME, QHeaderView.ResizeMode.Stretch)
         self._apply_column_widths()
         root.addWidget(self.table)
@@ -860,22 +930,21 @@ class MoneyBlock(QFrame):
         pink = QColor(styles.WEEK_TABLE_WEEKEND_PINK)
         green = QColor(styles.WEEK_TABLE_TODAY_GREEN)
         empty: QBrush = QBrush()
+        header_colors: dict[int, QColor] = {}
         for index, day in enumerate(self.days):
             column = FIRST_DAY_COL + index
             is_off = calc.is_day_off(day, self.day_overrides)
-            header_item = self.table.horizontalHeaderItem(column)
-            if header_item is not None:
-                if day == today:
-                    header_item.setBackground(green)
-                elif is_off:
-                    header_item.setBackground(pink)
-                else:
-                    header_item.setBackground(empty)
+            # v0.23.7: салатовой — только ячейка шапки с сегодняшней
+            # датой, розовым — выходной/праздник (просьба пользователя).
+            if day == today:
+                header_colors[column] = green
+            elif is_off:
+                header_colors[column] = pink
             for row in range(self.table.rowCount()):
                 item = self.table.item(row, column)
                 if item is not None:
                     item.setBackground(pink if is_off else empty)
-        self.table.horizontalHeader().viewport().update()
+        self.day_header.set_section_colors(header_colors)
         self.table.viewport().update()
 
     def set_rows(self, row_keys: list[str]) -> None:
