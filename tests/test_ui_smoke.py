@@ -1331,13 +1331,14 @@ def test_year_start_panel_saves_opening_balances(qt_app, store):
 
 
 def test_year_start_customer_debt_goes_to_total_column_once(qt_app, store):
-    """v0.25.0: задолженность из «Данных» попадает в колонку «Всего»
-    таблицы «Покупатели» один раз — на неделю даты остатков."""
+    """v0.25.0/v0.25.2: задолженность из «Данных» попадает в колонку
+    «Всего» таблицы «Покупатели» один раз и остаётся там на всех
+    следующих неделях; до даты остатков её нет."""
 
     from datetime import date
 
     from oplata.app import MainWindow
-    from oplata.models import Counterparty, YearStartCustomerDebt
+    from oplata.models import Counterparty, Operation, YearStartCustomerDebt
 
     customer = store.data.customers[0] if store.data.customers else None
     if customer is None:
@@ -1347,6 +1348,15 @@ def test_year_start_customer_debt_goes_to_total_column_once(qt_app, store):
     store.data.year_start.customer_debts = [
         YearStartCustomerDebt(counterparty_id=customer.id, amount="5000")
     ]
+    # Реализация на неделе 19—25.10.2026: +1 000 к перенесённому долгу.
+    store.data.operations.append(
+        Operation(
+            kind="Реализация",
+            counterparty_id=customer.id,
+            date="2026-10-23",
+            amount="1000",
+        )
+    )
 
     window = MainWindow(store)
     window.resize(1400, 900)
@@ -1354,26 +1364,36 @@ def test_year_start_customer_debt_goes_to_total_column_once(qt_app, store):
     qt_app.processEvents()
     view = window.customers_view
 
-    # Неделя с датой остатков: долг виден и у покупателя, и в «ВСЕГО».
-    view.goto_date(date(2026, 1, 1))
-    qt_app.processEvents()
-    table = view.table
-    rows = {
-        table.item(row, 0).text(): (table.item(row, 1).text() if table.item(row, 1) else "")
-        for row in range(table.rowCount())
-        if table.item(row, 0)
-    }
+    def total_for(day: date) -> dict[str, str]:
+        view.goto_date(day)
+        qt_app.processEvents()
+        table = view.table
+        return {
+            table.item(row, 0).text(): (
+                table.item(row, 1).text() if table.item(row, 1) else ""
+            )
+            for row in range(table.rowCount())
+            if table.item(row, 0)
+        }
+
+    # Неделя с датой остатков: виден только перенос.
+    rows = total_for(date(2026, 1, 1))
     assert rows.get(customer.name) == "5 000,00"
     assert rows.get("ВСЕГО") == "5 000,00"
 
-    # Следующая неделя: переноса нет — он добавляется один раз.
-    view.goto_date(date(2026, 1, 8))
-    qt_app.processEvents()
-    rows = {
-        table.item(row, 0).text(): (table.item(row, 1).text() if table.item(row, 1) else "")
-        for row in range(table.rowCount())
-        if table.item(row, 0)
-    }
+    # Текущая неделя: перенос + реализация за неделю, без задвоения.
+    rows = total_for(date(2026, 10, 20))
+    assert rows.get(customer.name) == "6 000,00"
+    assert rows.get("ВСЕГО") == "6 000,00"
+
+    # Следующая неделя: реализация уходит, перенос остаётся (не
+    # прибавляется повторно).
+    rows = total_for(date(2026, 10, 26))
+    assert rows.get(customer.name) == "5 000,00"
+    assert rows.get("ВСЕГО") == "5 000,00"
+
+    # Неделя до даты остатков: долг ещё не возник.
+    rows = total_for(date(2025, 12, 22))
     assert rows.get(customer.name) == ""
     assert rows.get("ВСЕГО") == ""
     window.close()

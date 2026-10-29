@@ -940,9 +940,14 @@ class WeekView(QWidget):
             start_debts = calc.year_start_customer_debts(
                 self.store.data, days[0], self._week_end
             )
+            # v0.25.2: операции до даты остатков уже входят в перенос,
+            # поэтому период начинаем с даты остатков — иначе долг
+            # считался бы дважды.
+            start_day = calc.year_start_date(self.store.data)
+            period_start = max(days[0], start_day) if start_day else days[0]
             customer_debts = [
                 calc.customer_debt_amount(
-                    self.store.data, partner, days[0], self._week_end
+                    self.store.data, partner, period_start, self._week_end
                 )
                 + start_debts.get(partner.id, ZERO)
                 for partner in partners
