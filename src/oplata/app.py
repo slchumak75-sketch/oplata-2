@@ -108,6 +108,12 @@ class MainWindow(QMainWindow):
             lambda sid: self.open_counterparty_card("supplier", sid),
             on_data_changed=self.refresh_after_week_edit,
             on_open_delivery=self.open_delivery_dialog,
+            # v0.23.1: клик по поставщику открывает его журнал операций
+            # так же, как у покупателя (просьба пользователя); окно
+            # «Поставка» осталось на двойном клике.
+            on_open_operations=lambda sid: self.open_operations_journal(
+                "supplier", sid
+            ),
         )
         self.customers_view = WeekView(
             store,
@@ -460,6 +466,21 @@ class MainWindow(QMainWindow):
             return
         self.stack.setCurrentIndex(index)
         self.nav_buttons[index].setChecked(True)
+        # v0.23.1: на любой вкладке дата начинается с сегодняшнего дня —
+        # иначе после перехода на другую неделю и обратно в окошке
+        # оставался прежний день (просьба пользователя).
+        self._reset_page_date(index)
+
+    def _reset_page_date(self, index: int) -> None:
+        """Показать сегодняшний день на вкладке, на которую перешли."""
+
+        today = date.today()
+        if index == IDX_RECEIPTS:
+            self.receipts_view.set_date(today)
+        elif index == IDX_SUPPLIERS:
+            self.suppliers_view.goto_date(today)
+        elif index == IDX_CUSTOMERS:
+            self.customers_view.goto_date(today)
 
     def _ask_config_password(self) -> bool:
         """Пароль на вкладку «Конфигурация» (v0.18.0).

@@ -54,6 +54,22 @@ def _display_amount(amount: str) -> str:
         return amount
 
 
+def _deferment_days(operation: Operation) -> str:
+    """Сколько дней отсрочки у поставки: разница «дата оплаты − поставка».
+
+    Пусто, если срок оплаты не сохранён (старые записи, ручной ввод).
+    """
+
+    if not operation.due_date:
+        return ""
+    try:
+        start = date.fromisoformat(operation.date)
+        due = date.fromisoformat(operation.due_date)
+    except ValueError:
+        return ""
+    return str((due - start).days)
+
+
 def _parse_filter_date(text: str) -> date | None:
     """Полностью введённая дата фильтра дд.мм.гггг; неполная/битая — None."""
     cleaned = (text or "").strip()
@@ -79,10 +95,25 @@ class OperationsView(QWidget):
         on_data_changed: Callable[[], None] | None = None,
         fixed_kind: str | None = None,
         parent: QWidget | None = None,
+        show_filters: bool = True,
+        show_actions: bool = True,
+        counterparty_kind: str | None = None,
     ) -> None:
         super().__init__(parent)
         self.store = store
         self.fixed_kind = fixed_kind
+        # v0.23.1: журнал из карточки контрагента показывается без
+        # фильтров и без кнопок «Добавить/Изменить/Удалить» — только
+        # список операций выбранного контрагента.
+        self.show_filters = show_filters
+        self.show_actions = show_actions
+        # Чьи операции показывать, когда фильтров на экране нет.
+        self.counterparty_id: str = ""
+        # v0.23.1: журнал **поставщика** показывает не все операции, а
+        # поставки четырьмя колонками: дата поставки, сумма, дней
+        # отсрочки, дата (срок) оплаты.
+        self.counterparty_kind = counterparty_kind or ""
+        self.supplier_journal = self.counterparty_kind == "supplier"
         # После добавления/правки/удаления главное окно обновляет таблицы
         # поставщиков/покупателей и «Сводку»; сам журнал обновляется здесь.
         self.on_data_changed = on_data_changed
@@ -91,62 +122,70 @@ class OperationsView(QWidget):
         root.setContentsMargins(10, 10, 10, 10)
         root.setSpacing(12)
 
-        # --- фильтры ---
-        filters = QHBoxLayout()
-        filters.setSpacing(8)
-        self.supplier_filter = QComboBox()
-        self.supplier_filter.setMinimumWidth(220)
-        self.supplier_filter.currentIndexChanged.connect(lambda *_: self.refresh())
-        filters.addWidget(self.supplier_filter)
+        self.supplier_filter = None
+        self.kind_filter = None
+        self.date_from = None
+        self.date_to = None
+        self.search = None
+        self.found_label = None
 
-        self.kind_filter = QComboBox()
-        if self.fixed_kind is None:
-            self.kind_filter.addItems(
-                [ALL_OPERATIONS, KIND_INCOME, KIND_SALE, KIND_PAYMENT]
+        if self.show_filters:
+            # --- фильтры ---
+            filters = QHBoxLayout()
+            filters.setSpacing(8)
+            self.supplier_filter = QComboBox()
+            self.supplier_filter.setMinimumWidth(220)
+            self.supplier_filter.currentIndexChanged.connect(lambda *_: self.refresh())
+            filters.addWidget(self.supplier_filter)
+
+            self.kind_filter = QComboBox()
+            if self.fixed_kind is None:
+                self.kind_filter.addItems(
+                    [ALL_OPERATIONS, KIND_INCOME, KIND_SALE, KIND_PAYMENT]
+                )
+            else:
+                # Фиксированный тип — как было на прежнем экране «Оплаты».
+                self.kind_filter.addItems([self.fixed_kind])
+                self.kind_filter.setVisible(False)
+            self.kind_filter.currentIndexChanged.connect(lambda *_: self.refresh())
+            filters.addWidget(self.kind_filter)
+
+            # Даты «от/до»: на макете два пустых поля дд.мм.гггг.
+            # QDateEdit без значения не бывает, поэтому на этапе оболочки
+            # используем текстовые поля с маской-подсказкой.
+            self.date_from = QLineEdit()
+            self.date_from.setPlaceholderText("дд.мм.гггг")
+            self.date_from.setInputMask("00.00.0000;_")
+            self.date_from.setMaximumWidth(120)
+            self.date_from.setToolTip("Дата операции, от")
+            self.date_from.textChanged.connect(lambda *_: self.refresh())
+            filters.addWidget(self.date_from)
+            self.date_to = QLineEdit()
+            self.date_to.setPlaceholderText("дд.мм.гггг")
+            self.date_to.setInputMask("00.00.0000;_")
+            self.date_to.setMaximumWidth(120)
+            self.date_to.setToolTip("Дата операции, до")
+            self.date_to.textChanged.connect(lambda *_: self.refresh())
+            filters.addWidget(self.date_to)
+
+            self.search = QLineEdit()
+            self.search.setPlaceholderText(
+                "Поиск: контрагент, документ, комментарий…"
             )
-        else:
-            # Фиксированный тип — как было на прежнем экране «Оплаты».
-            self.kind_filter.addItems([self.fixed_kind])
-            self.kind_filter.setVisible(False)
-        self.kind_filter.currentIndexChanged.connect(lambda *_: self.refresh())
-        filters.addWidget(self.kind_filter)
+            self.search.setMinimumWidth(260)
+            self.search.setMaximumWidth(560)
+            self.search.textChanged.connect(lambda *_: self.refresh())
+            filters.addWidget(self.search, stretch=1)
 
-        # Даты «от/до»: на макете два пустых поля дд.мм.гггг.
-        # QDateEdit без значения не бывает, поэтому на этапе оболочки
-        # используем текстовые поля с маской-подсказкой.
-        self.date_from = QLineEdit()
-        self.date_from.setPlaceholderText("дд.мм.гггг")
-        self.date_from.setInputMask("00.00.0000;_")
-        self.date_from.setMaximumWidth(120)
-        self.date_from.setToolTip("Дата операции, от")
-        self.date_from.textChanged.connect(lambda *_: self.refresh())
-        filters.addWidget(self.date_from)
-        self.date_to = QLineEdit()
-        self.date_to.setPlaceholderText("дд.мм.гггг")
-        self.date_to.setInputMask("00.00.0000;_")
-        self.date_to.setMaximumWidth(120)
-        self.date_to.setToolTip("Дата операции, до")
-        self.date_to.textChanged.connect(lambda *_: self.refresh())
-        filters.addWidget(self.date_to)
+            reset_btn = QPushButton("Сбросить")
+            reset_btn.clicked.connect(self.reset_filters)
+            filters.addWidget(reset_btn)
 
-        self.search = QLineEdit()
-        self.search.setPlaceholderText(
-            "Поиск: контрагент, документ, комментарий…"
-        )
-        self.search.setMinimumWidth(260)
-        self.search.setMaximumWidth(560)
-        self.search.textChanged.connect(lambda *_: self.refresh())
-        filters.addWidget(self.search, stretch=1)
-
-        reset_btn = QPushButton("Сбросить")
-        reset_btn.clicked.connect(self.reset_filters)
-        filters.addWidget(reset_btn)
-
-        filters.addStretch(1)
-        self.found_label = QLabel("Найдено: 0")
-        self.found_label.setObjectName("Muted")
-        filters.addWidget(self.found_label)
-        root.addLayout(filters)
+            filters.addStretch(1)
+            self.found_label = QLabel("Найдено: 0")
+            self.found_label.setObjectName("Muted")
+            filters.addWidget(self.found_label)
+            root.addLayout(filters)
 
         # --- журнал ---
         panel, panel_layout = make_panel()
@@ -155,21 +194,36 @@ class OperationsView(QWidget):
         title.setObjectName("PanelTitle")
         title_row.addWidget(title)
         title_row.addStretch(1)
-        self.add_btn = green_button("+ Добавить")
-        self.add_btn.clicked.connect(self._add_operation)
-        title_row.addWidget(self.add_btn)
-        self.edit_btn = QPushButton("Изменить")
-        self.edit_btn.clicked.connect(lambda: self._edit_selected_operation())
-        title_row.addWidget(self.edit_btn)
-        self.delete_btn = danger_button("Удалить")
-        self.delete_btn.clicked.connect(self._delete_selected_operation)
-        title_row.addWidget(self.delete_btn)
+        # v0.23.1: кнопки «Добавить/Изменить/Удалить» убраны из журнала
+        # контрагента (просьба пользователя) — журнал только показывает
+        # операции. Полный журнал с правкой остался на экране «Оплаты».
+        self.add_btn = None
+        self.edit_btn = None
+        self.delete_btn = None
+        if self.show_actions:
+            self.add_btn = green_button("+ Добавить")
+            self.add_btn.clicked.connect(self._add_operation)
+            title_row.addWidget(self.add_btn)
+            self.edit_btn = QPushButton("Изменить")
+            self.edit_btn.clicked.connect(
+                lambda: self._edit_selected_operation()
+            )
+            title_row.addWidget(self.edit_btn)
+            self.delete_btn = danger_button("Удалить")
+            self.delete_btn.clicked.connect(self._delete_selected_operation)
+            title_row.addWidget(self.delete_btn)
         panel_layout.addLayout(title_row)
 
-        self.table = QTableWidget(0, 6)
-        self.table.setHorizontalHeaderLabels(
-            ["Тип", "Контрагент", "Дата", "Сумма", "Документ", "Комментарий"]
-        )
+        if self.supplier_journal:
+            self.table = QTableWidget(0, 4)
+            self.table.setHorizontalHeaderLabels(
+                ["Дата поставки", "Сумма", "Отсрочка, дней", "Дата оплаты"]
+            )
+        else:
+            self.table = QTableWidget(0, 6)
+            self.table.setHorizontalHeaderLabels(
+                ["Тип", "Контрагент", "Дата", "Сумма", "Документ", "Комментарий"]
+            )
         self.table.verticalHeader().setVisible(False)
         self.table.setSelectionBehavior(
             QAbstractItemView.SelectionBehavior.SelectRows
@@ -183,12 +237,19 @@ class OperationsView(QWidget):
             lambda item: self._edit_selected_operation()
         )
         header = self.table.horizontalHeader()
-        # Фиксированные колонки не должны ужиматься до «Накладная …»,
-        # свободную ширину делят контрагент и комментарий.
-        for column, width in ((0, 110), (2, 110), (3, 140), (4, 240)):
-            self.table.setColumnWidth(column, width)
-        header.setSectionResizeMode(1, QHeaderView.ResizeMode.Stretch)
-        header.setSectionResizeMode(5, QHeaderView.ResizeMode.Stretch)
+        if self.supplier_journal:
+            # Даты и отсрочка — фиксированной ширины, свободное место
+            # достаётся сумме.
+            for column in (0, 2, 3):
+                self.table.setColumnWidth(column, 150)
+            header.setSectionResizeMode(1, QHeaderView.ResizeMode.Stretch)
+        else:
+            # Фиксированные колонки не должны ужиматься до «Накладная …»,
+            # свободную ширину делят контрагент и комментарий.
+            for column, width in ((0, 110), (2, 110), (3, 140), (4, 240)):
+                self.table.setColumnWidth(column, width)
+            header.setSectionResizeMode(1, QHeaderView.ResizeMode.Stretch)
+            header.setSectionResizeMode(5, QHeaderView.ResizeMode.Stretch)
         panel_layout.addWidget(self.table)
         root.addWidget(panel, stretch=1)
 
@@ -199,6 +260,8 @@ class OperationsView(QWidget):
     def refresh_counterparty_filter(self) -> None:
         """Список фильтра: поставщики и покупатели (ввод есть в обеих таблицах)."""
 
+        if self.supplier_filter is None:
+            return
         current_id = self.supplier_filter.currentData()
         self.supplier_filter.blockSignals(True)
         self.supplier_filter.clear()
@@ -215,6 +278,10 @@ class OperationsView(QWidget):
     refresh_supplier_filter = refresh_counterparty_filter
 
     def set_counterparty_filter(self, counterparty_id: str) -> None:
+        self.counterparty_id = counterparty_id or ""
+        if self.supplier_filter is None:
+            self.refresh()
+            return
         index = self.supplier_filter.findData(counterparty_id)
         if index >= 0:
             self.supplier_filter.setCurrentIndex(index)
@@ -224,6 +291,8 @@ class OperationsView(QWidget):
         self.set_counterparty_filter(supplier_id)
 
     def reset_filters(self) -> None:
+        if self.supplier_filter is None:
+            return
         self.supplier_filter.setCurrentIndex(0)
         self.kind_filter.setCurrentIndex(0)
         self.date_from.clear()
@@ -251,9 +320,13 @@ class OperationsView(QWidget):
         return None
 
     def _update_action_buttons(self) -> None:
+        if self.edit_btn is None and self.delete_btn is None:
+            return
         has_selection = self._find_operation(self.selected_operation_id()) is not None
-        self.edit_btn.setEnabled(has_selection)
-        self.delete_btn.setEnabled(has_selection)
+        if self.edit_btn is not None:
+            self.edit_btn.setEnabled(has_selection)
+        if self.delete_btn is not None:
+            self.delete_btn.setEnabled(has_selection)
 
     def _select_operation_row(self, operation_id: str | None) -> None:
         if not operation_id:
@@ -273,7 +346,11 @@ class OperationsView(QWidget):
             self.on_data_changed()
 
     def _add_operation(self) -> None:
-        initial_id = self.supplier_filter.currentData() or None
+        initial_id = (
+            self.supplier_filter.currentData()
+            if self.supplier_filter is not None
+            else self.counterparty_id
+        ) or None
         dialog = OperationDialog(
             self.store,
             initial_counterparty_id=str(initial_id or ""),
@@ -332,11 +409,27 @@ class OperationsView(QWidget):
 
     # ----------------------------------------------------------------- вид
     def _filtered_operations(self):
-        supplier_id = self.supplier_filter.currentData() or ""
-        kind = self.kind_filter.currentText()
-        query = self.search.text().strip().lower()
-        date_from = _parse_filter_date(self.date_from.text())
-        date_to = _parse_filter_date(self.date_to.text())
+        supplier_id = (
+            self.supplier_filter.currentData()
+            if self.supplier_filter is not None
+            else self.counterparty_id
+        ) or ""
+        kind = (
+            self.kind_filter.currentText()
+            if self.kind_filter is not None
+            else ALL_OPERATIONS
+        )
+        query = self.search.text().strip().lower() if self.search is not None else ""
+        date_from = (
+            _parse_filter_date(self.date_from.text())
+            if self.date_from is not None
+            else None
+        )
+        date_to = (
+            _parse_filter_date(self.date_to.text())
+            if self.date_to is not None
+            else None
+        )
         supplier_names = {
             **{s.id: s.name for s in self.store.data.suppliers},
             **{c.id: c.name for c in self.store.data.customers},
@@ -346,6 +439,11 @@ class OperationsView(QWidget):
             if supplier_id and op.counterparty_id != supplier_id:
                 continue
             if kind != ALL_OPERATIONS and op.kind != kind:
+                continue
+            # Журнал поставщика — это журнал его поставок: в нём есть
+            # колонки «дата поставки / отсрочка / дата оплаты», которые
+            # к операции «Оплата» неприменимы (v0.23.1).
+            if self.supplier_journal and op.kind != KIND_INCOME:
                 continue
             operation_day = _operation_date(op)
             if date_from is not None and (
@@ -366,7 +464,8 @@ class OperationsView(QWidget):
 
     def refresh(self) -> None:
         operations = self._filtered_operations()
-        self.found_label.setText(f"Найдено: {len(operations)}")
+        if self.found_label is not None:
+            self.found_label.setText(f"Найдено: {len(operations)}")
         supplier_names = {
             **{s.id: s.name for s in self.store.data.suppliers},
             **{c.id: c.name for c in self.store.data.customers},
@@ -378,26 +477,36 @@ class OperationsView(QWidget):
             item = QTableWidgetItem("Ничего не найдено.")
             item.setFlags(Qt.ItemFlag.ItemIsEnabled)
             self.table.setItem(0, 0, item)
-            self.table.setSpan(0, 0, 1, 6)
+            self.table.setSpan(0, 0, 1, self.table.columnCount())
             self._update_action_buttons()
             return
 
         self.table.clearSpans()
         self.table.setRowCount(len(operations))
         for row, op in enumerate(operations):
-            values = [
-                op.kind,
-                supplier_names.get(op.counterparty_id, ""),
-                _display_date(op.date),
-                _display_amount(op.amount),
-                op.document,
-                op.comment,
-            ]
+            if self.supplier_journal:
+                values = [
+                    _display_date(op.date),  # дата поставки
+                    _display_amount(op.amount),
+                    _deferment_days(op),  # дней отсрочки
+                    _display_date(op.due_date),  # дата (срок) оплаты
+                ]
+                money_column = 1
+            else:
+                values = [
+                    op.kind,
+                    supplier_names.get(op.counterparty_id, ""),
+                    _display_date(op.date),
+                    _display_amount(op.amount),
+                    op.document,
+                    op.comment,
+                ]
+                money_column = 3
             for col, text in enumerate(values):
                 item = QTableWidgetItem(text)
                 if col == 0:
                     item.setData(Qt.ItemDataRole.UserRole, op.id)
-                if col == 3:
+                if col == money_column:
                     item.setTextAlignment(
                         Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter
                     )

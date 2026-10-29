@@ -126,7 +126,7 @@ def test_main_window_all_pages(qt_app, store):
         assert window.stack.currentIndex() == index
     # Сводка — построчная плашка из трёх блоков (v0.14.0)
     summary = window.summary_view
-    assert summary.caption_text("funds") == "Остаток на счету"
+    assert summary.caption_text("funds") == "Остаток на счёте"
     assert summary.caption_text("debt_total") == "Всего задолженность"
     assert summary.caption_text("month_income") == "Приход с начала месяца"
     assert summary.caption_text("plan_1").startswith("Оплата ")
@@ -334,19 +334,40 @@ def test_operation_dialog_and_journal_crud(qt_app, store):
     payment_dialog.close()
 
     window = MainWindow(store)
+
+    # v0.23.1: журнал из карточки — только список операций контрагента:
+    # ни фильтров, ни кнопок «Добавить/Изменить/Удалить».
     dialog = OperationsJournalDialog(store, "supplier", counterparty_id=supplier.id)
     journal = dialog.view
-    assert journal.found_label.text() == "Найдено: 2"  # поставка + оплата
-    journal.kind_filter.setCurrentIndex(0)  # все типы, без фиксированного
-    journal.supplier_filter.setCurrentIndex(0)
-    journal._select_operation_row(payment_op.id)
-    assert journal.selected_operation_id() == payment_op.id
-    assert journal.edit_btn.isEnabled() and journal.delete_btn.isEnabled()
+    assert journal.supplier_filter is None
+    assert journal.kind_filter is None
+    assert journal.add_btn is None
+    assert journal.edit_btn is None
+    assert journal.delete_btn is None
+    # Журнал поставщика показывает только поставки (v0.23.1).
+    assert journal.table.rowCount() == 1
+    assert [
+        journal.table.horizontalHeaderItem(col).text() for col in range(4)
+    ] == ["Дата поставки", "Сумма", "Отсрочка, дней", "Дата оплаты"]
 
-    journal.date_from.setText("28.10.2026")  # операции октября — вне диапазона
-    assert journal.found_label.text() == "Найдено: 0"
-    journal.reset_filters()
-    assert journal.found_label.text() == "Найдено: 2"
+    # Полный журнал (с фильтрами и правкой) живёт отдельным виджетом —
+    # его и проверяем на фильтры и удаление.
+    from oplata.views.operations_view import OperationsView
+
+    full = OperationsView(store)
+    full.set_counterparty_filter(supplier.id)
+    assert full.found_label.text() == "Найдено: 2"  # поставка + оплата
+    full.kind_filter.setCurrentIndex(0)  # все типы, без фиксированного
+    full.supplier_filter.setCurrentIndex(0)
+    full._select_operation_row(payment_op.id)
+    assert full.selected_operation_id() == payment_op.id
+    assert full.edit_btn.isEnabled() and full.delete_btn.isEnabled()
+
+    full.date_from.setText("28.10.2026")  # операции октября — вне диапазона
+    assert full.found_label.text() == "Найдено: 0"
+    full.reset_filters()
+    assert full.found_label.text() == "Найдено: 2"
+    journal = full
 
     # Блок «Оплата» показывает ту же оплату поставщику за 27.10.
     window.receipts_view.outgoing.set_date(date(2026, 10, 27))
@@ -667,15 +688,17 @@ def test_receipts_table_direct_input_and_totals(qt_app, store):
 
 
 def test_counterparty_popup_scrolls_long_list(qt_app, store):
-    """v0.22.1: в окне контрагентов есть прокрутка (их может быть много).
+    """v0.23.1: окно контрагентов — во весь экран и с прокруткой.
 
     Проверяем окно покупателей (блок «Поступление») и окно
-    поставщиков (блок «Оплата»).
+    поставщиков (блок «Оплата»): список прокручивается, а высота
+    окна ограничена только высотой экрана.
     """
+
+    from PySide6.QtCore import Qt
 
     from oplata.app import MainWindow
     from oplata.models import Counterparty
-    from oplata.views.receipts_view import POPUP_LIST_HEIGHT
 
     store.data.customers.extend(
         Counterparty(name=f"Покупатель {i}") for i in range(12)
@@ -694,16 +717,22 @@ def test_counterparty_popup_scrolls_long_list(qt_app, store):
     qt_app.processEvents()
     assert popup is not None
     assert len(popup.edits) == 12
-    # Список лежит в прокручиваемой области и не выше 320 px.
-    assert popup.scroll_area.maximumHeight() == POPUP_LIST_HEIGHT
-    assert popup.scroll_area.height() <= POPUP_LIST_HEIGHT
+    # Список лежит в прокручиваемой области, скроллбар закреплён.
+    assert popup.scroll_area.verticalScrollBarPolicy() == (
+        Qt.ScrollBarPolicy.ScrollBarAlwaysOn
+    )
+    # Высота окна упирается в экран, а не в старые 320 px: при длинном
+    # списке окно занимает всю доступную высоту.
+    screen = popup.screen().availableGeometry().height()
+    assert popup.height() <= screen - 16
 
     suppliers = view.open_popup("suppliers", row=0)
     qt_app.processEvents()
     assert suppliers is not None
     assert len(suppliers.edits) == expected_suppliers
-    assert suppliers.scroll_area.maximumHeight() == POPUP_LIST_HEIGHT
-    assert suppliers.scroll_area.height() <= POPUP_LIST_HEIGHT
+    assert suppliers.scroll_area.verticalScrollBarPolicy() == (
+        Qt.ScrollBarPolicy.ScrollBarAlwaysOn
+    )
     window.close()
 
 
@@ -1451,7 +1480,7 @@ def test_summary_panel_shows_three_blocks_line_by_line(qt_app, store):
     qt_app.processEvents()
 
     # Блок «Средства».
-    assert view.caption_text("funds") == "Остаток на счету"
+    assert view.caption_text("funds") == "Остаток на счёте"
     # Остаток на начало 27.10: 50 000 − аренда 250 (15.10).
     assert view.value_text("funds") == "49 750,00"
     assert view.value_text("income") == "3 000,00"
@@ -1581,15 +1610,15 @@ def test_summary_customer_debt_block_counts_sales_minus_payments(qt_app, store):
     window.close()
 
 
-def test_funds_movement_journal_shows_last_30_days(qt_app, store):
-    """v0.22.1: журнал движения средств за последние 30 дней.
+def test_funds_movement_journal_shows_one_day(qt_app, store):
+    """v0.23.1: журнал движения средств — за один день.
 
-    В журнале: остаток на начало периода, все поступления и оплаты
-    за 30 дней и итого остаток. Записи старше 30 дней в журнал не
-    попадают, но уже учтены в остатке на начало.
+    Порядок строк: «Остаток на счёте» (на начало дня), все поступления
+    дня, все оплаты дня и «Итого остаток». Над таблицей — дата со
+    стрелками, как в блоках «Поступление»/«Оплата».
     """
 
-    from datetime import date, timedelta
+    from datetime import date
     from decimal import Decimal
 
     from oplata import calc
@@ -1603,38 +1632,44 @@ def test_funds_movement_journal_shows_last_30_days(qt_app, store):
 
     supplier = store.data.suppliers[0]
     set_year_start_funds(store.data, Decimal("100"))
-    add_cash_receipt(store.data, CASH_SOURCE, "2026-09-01", Decimal("999"))
     add_cash_receipt(store.data, CASH_SOURCE, "2026-10-27", Decimal("500"))
+    add_cash_receipt(store.data, CASH_SOURCE, "2026-10-28", Decimal("700"))
     add_supplier_payment(store.data, supplier.id, "2026-10-28", Decimal("200"))
 
     on_date = date(2026, 10, 28)
     movement = calc.funds_movement(store.data, on_date)
-    assert movement.start == on_date - timedelta(days=MOVEMENT_DAYS - 1)
-    assert movement.end == on_date
-    # Остаток на начало 29.09: 100 (перенос) + 999 (поступление 01.09).
-    assert movement.start_funds == Decimal("1099")
-    assert [(r.day.isoformat(), r.income, r.payment) for r in movement.rows] == [
-        ("2026-10-27", Decimal("500"), Decimal("0")),
-        ("2026-10-28", Decimal("0"), Decimal("200")),
-    ]
-    assert [r.balance for r in movement.rows] == [
-        Decimal("1599"),
-        Decimal("1399"),
-    ]
-    assert movement.income == Decimal("500")
+    assert MOVEMENT_DAYS == 1
+    assert movement.start == on_date == movement.end
+    # Остаток на начало 28.10: 100 (перенос) + 500 (поступление 27.10).
+    assert movement.start_funds == Decimal("600")
+    assert movement.income == Decimal("700")
     assert movement.payments == Decimal("200")
-    assert movement.balance == Decimal("1399")
+    assert movement.balance == Decimal("1100")
 
-    # Окно журнала показывает те же цифры.
     dialog = FundsMovementDialog(store, on_date)
-    assert dialog.table.rowCount() == 2
-    assert dialog.table.item(0, 0).text() == "27.10.2026"
-    assert dialog.table.item(0, 2).text() == "500,00"
-    assert dialog.table.item(1, 3).text() == "200,00"
-    assert dialog.table.item(1, 4).text() == "1 399,00"
-    assert "29.09.2026" in dialog.start_label.text()
-    assert "1 099,00" in dialog.start_label.text()
-    assert "Итого остаток: 1 399,00" in dialog.totals_label.text()
+    table = dialog.table
+    # Остаток на счёте, поступление, оплата, итог остаток.
+    assert table.rowCount() == 4
+    assert table.item(0, 1).text() == "Остаток на счёте"
+    assert table.item(0, 4).text() == "600,00"
+    assert table.item(1, 1).text() == "Поступление наличными"
+    assert table.item(1, 2).text() == "700,00"
+    assert table.item(2, 3).text() == "200,00"
+    assert table.item(3, 1).text() == "Итого остаток"
+    assert table.item(3, 2).text() == "700,00"
+    assert table.item(3, 3).text() == "200,00"
+    assert table.item(3, 4).text() == "1 100,00"
+
+    # Стрелки и «Сегодня» переставляют дату журнала.
+    assert dialog.current_date() == on_date
+    dialog.shift_date(1)
+    assert dialog.current_date() == date(2026, 10, 29)
+    # 29.10: поступлений и оплат нет — только перенесённый остаток.
+    assert table.rowCount() == 2
+    assert table.item(0, 1).text() == "Остаток на счёте"
+    assert table.item(0, 4).text() == "1 100,00"
+    assert table.item(1, 1).text() == "Итого остаток"
+    assert table.item(1, 4).text() == "1 100,00"
     dialog.close()
 
 
@@ -1758,6 +1793,119 @@ def _DAY_COL(block, day):
 def _DAY(view, day_index, subcolumn):
     """Номер колонки дня: считается от числа итоговых столбцов таблицы."""
     return view._day_column(day_index, subcolumn)
+
+
+def test_supplier_click_opens_operations_journal(qt_app, store, monkeypatch):
+    """v0.23.1: клик по поставщику открывает журнал операций.
+
+    Раньше клик открывал окно «Поставка» — по просьбе пользователя
+    поставщик теперь ведёт себя так же, как покупатель: клик — журнал
+    операций, двойной клик — окно «Поставка».
+    """
+
+    from datetime import date
+
+    from oplata.app import MainWindow
+
+    # Подменяем методы до создания окна: WeekView получает ссылки на них
+    # в конструкторе, поэтому подмена атрибута готового окна не поможет.
+    opened: list[tuple[str, str]] = []
+    monkeypatch.setattr(
+        MainWindow,
+        "open_operations_journal",
+        lambda self, kind, cid: opened.append((kind, cid)),
+    )
+    deliveries: list[str] = []
+    monkeypatch.setattr(
+        MainWindow,
+        "open_delivery_dialog",
+        lambda self, cid, _op=None: deliveries.append(cid),
+    )
+
+    window = MainWindow(store)
+    view = window.suppliers_view
+    view.goto_date(date(2026, 10, 26))
+    table = view.table
+    row = 4  # первая строка контрагента
+
+    supplier_id = store.data.suppliers[0].id
+    view._on_item_clicked(table.item(row, 0))
+    assert opened == [("supplier", supplier_id)]
+    assert deliveries == []
+
+    # Двойной клик по-прежнему открывает окно «Поставка».
+    view._on_item_double_clicked(table.item(row, 0))
+    assert deliveries == [supplier_id]
+    window.close()
+
+
+def test_tab_switch_resets_date_to_today(qt_app, store):
+    """v0.23.1: переход на вкладку возвращает дату на сегодняшний день."""
+
+    from datetime import date
+
+    from oplata.app import IDX_CUSTOMERS, IDX_RECEIPTS, IDX_SUPPLIERS, MainWindow
+    from oplata.dates import week_monday
+
+    window = MainWindow(store)
+    today = date.today()
+
+    # Ушли на другую неделю у поставщиков и в блоках ввода.
+    window.suppliers_view.goto_date(date(2026, 10, 26))
+    window.receipts_view.set_date(date(2026, 10, 26))
+    assert window.suppliers_view.week_start == week_monday(date(2026, 10, 26))
+
+    window.show_page(IDX_CUSTOMERS)
+    assert window.customers_view.week_start == week_monday(today)
+
+    window.show_page(IDX_SUPPLIERS)
+    assert window.suppliers_view.week_start == week_monday(today)
+
+    window.show_page(IDX_RECEIPTS)
+    assert window.receipts_view.incoming.current_date() == today
+    assert window.receipts_view.outgoing.current_date() == today
+    window.close()
+
+
+def test_supplier_journal_shows_delivery_columns(qt_app, store):
+    """v0.23.1: журнал поставщика — дата поставки, сумма, отсрочка, оплата."""
+
+    from datetime import date
+
+    from PySide6.QtCore import QDate
+
+    from oplata.dialogs.operation_dialog import OperationDialog
+    from oplata.dialogs.operations_journal_dialog import OperationsJournalDialog
+
+    supplier = next(s for s in store.data.suppliers if s.name == "ггг")
+    dialog = OperationDialog(store, initial_counterparty_id=supplier.id)
+    dialog.date_edit.setDate(QDate(2026, 10, 26))
+    dialog.amount_edit.setText("1 000,50")
+    dialog._save()
+    dialog.close()
+
+    # Оплата в журнал поставщика не попадает: это журнал поставок.
+    payment = OperationDialog(
+        store, initial_counterparty_id=supplier.id, initial_kind="Оплата"
+    )
+    payment.date_edit.setDate(QDate(2026, 10, 28))
+    payment.amount_edit.setText("200")
+    payment._save()
+    payment.close()
+
+    window = OperationsJournalDialog(store, "supplier", counterparty_id=supplier.id)
+    table = window.view.table
+    assert table.rowCount() == 1
+    assert [
+        table.item(0, col).text() for col in range(table.columnCount())
+    ] == ["26.10.2026", "1 000,50", "10", "05.11.2026"]
+
+    # У покупателя журнал остался прежним, с шестью колонками.
+    from oplata.views.operations_view import OperationsView
+
+    cust_view = OperationsView(store, counterparty_kind="customer")
+    assert cust_view.table.columnCount() == 6
+    window.close()
 
 
 def test_supplier_total_column_shows_whole_debt(qt_app, store, monkeypatch):

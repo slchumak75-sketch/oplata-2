@@ -380,8 +380,12 @@ def funds_totals(data: AppData, on_date: date) -> FundsTotals:
     )
 
 
-def funds_movement(data: AppData, on_date: date, days: int = 30) -> FundsMovement:
+def funds_movement(data: AppData, on_date: date, days: int = 1) -> FundsMovement:
     """Журнал движения средств за последние ``days`` дней (v0.22.1).
+
+    С v0.23.1 журнал показывается **за один день** (``days=1``): первая
+    строка — остаток на начало дня, затем все поступления, затем все
+    оплаты, последняя — итого остаток.
 
     Первый день периода — ``on_date - (days - 1)``, последний — сама
     выбранная дата. Остаток на начало периода берётся по тем же

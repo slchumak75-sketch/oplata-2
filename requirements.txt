@@ -1,5 +1,8 @@
 # Runtime-зависимости. Essentials (а не полный PySide6) — без QtWebEngine
 # и прочего лишнего: собранный exe заметно меньше.
-PySide6-Essentials>=6.7,<7
+# Верхняя граница <6.12 не случайна: в 6.12.0 повторное обновление
+# недельной таблицы роняет процесс («Fatal Python error: none_dealloc:
+# deallocating None»), проверено на 6.8.0 — там всё работает.
+PySide6-Essentials>=6.7,<6.12
 # Выгрузка и загрузка баз в Excel (v0.20.0).
 openpyxl>=3.1,<4

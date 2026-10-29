@@ -10,12 +10,11 @@ from __future__ import annotations
 
 from collections.abc import Callable
 
-from PySide6.QtWidgets import QDialog, QHBoxLayout, QLabel, QPushButton, QVBoxLayout
+from PySide6.QtWidgets import QDialog, QHBoxLayout, QPushButton, QVBoxLayout
 
 from ..models import Counterparty
 from ..storage import DataStore
 from ..views.operations_view import OperationsView
-from .. import styles
 
 
 class OperationsJournalDialog(QDialog):
@@ -54,13 +53,16 @@ class OperationsJournalDialog(QDialog):
         root.setContentsMargins(14, 12, 14, 12)
         root.setSpacing(10)
 
-        title = QLabel(f"Операции {noun}: {person.name if person else '—'}")
-        title.setStyleSheet(f"font-size:{styles.fs(17)}px;font-weight:800")
-        root.addWidget(title)
-
-        # Правки в журнале должны пересчитывать таблицы главного окна.
+        # v0.23.1: над журналом ничего нет — ни заголовка с именем, ни
+        # фильтров, ни кнопок «Добавить/Изменить/Удалить» (просьба
+        # пользователя). Имя контрагента — в заголовке окна.
         self.view = OperationsView(
-            store, on_data_changed=on_data_changed, parent=self
+            store,
+            on_data_changed=on_data_changed,
+            parent=self,
+            show_filters=False,
+            show_actions=False,
+            counterparty_kind=kind,
         )
         root.addWidget(self.view, stretch=1)
 

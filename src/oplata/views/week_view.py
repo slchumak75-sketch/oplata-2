@@ -24,7 +24,7 @@ from datetime import date, timedelta
 from decimal import Decimal
 from itertools import groupby
 
-from PySide6.QtCore import QModelIndex, QTimer, Qt
+from PySide6.QtCore import QModelIndex, QPoint, QTimer, Qt
 from PySide6.QtGui import (
     QColor,
     QFont,
@@ -243,7 +243,15 @@ class WeekView(QWidget):
         # названия и ячейки одного размера (был разнобой 13/14/16 px).
         # Суммы в днях всё равно подгоняет _fit_amount_font по ширине
         # колонки, чтобы «88 888,88» влезало целиком.
-        self.table.setStyleSheet(f"font-size:{styles.fs(12)}px")
+        # v0.23.1: широкий всегда видимый скроллбар — такой же, как на
+        # плашке «Оплата» (просьба пользователя).
+        self.table.setStyleSheet(
+            f"QTableWidget{{font-size:{styles.fs(12)}px}}"
+            f"{styles.WIDE_SCROLLBAR}"
+        )
+        self.table.setVerticalScrollBarPolicy(
+            Qt.ScrollBarPolicy.ScrollBarAlwaysOn
+        )
         self.table.horizontalHeader().setVisible(False)
         self.table.verticalHeader().setVisible(False)
         week_delegate = DaySeparatorDelegate(
@@ -262,6 +270,41 @@ class WeekView(QWidget):
         # как одинарный клик стал открывать журнал операций (v0.13.0).
         self.table.itemDoubleClicked.connect(self._on_item_double_clicked)
         self.table.itemChanged.connect(self._on_item_changed)
+        # v0.23.1: закреплённая шапка — три строки шапки и строка
+        # «ВСЕГО» лежат в отдельной таблице поверх основной: при
+        # вертикальной прокрутке они остаются на месте.
+        self.frozen_table = QTableWidget(self)
+        self.frozen_table.setObjectName("FrozenWeekHeader")
+        self.frozen_table.setStyleSheet(
+            f"font-size:{styles.fs(12)}px;border:0px"
+        )
+        self.frozen_table.horizontalHeader().setVisible(False)
+        self.frozen_table.verticalHeader().setVisible(False)
+        # Полос прокрутки у закреплённой шапки нет: её горизонтальный
+        # сдвиг повторяет прокрутку основной таблицы.
+        self.frozen_table.setHorizontalScrollBarPolicy(
+            Qt.ScrollBarPolicy.ScrollBarAlwaysOff
+        )
+        self.frozen_table.setVerticalScrollBarPolicy(
+            Qt.ScrollBarPolicy.ScrollBarAlwaysOff
+        )
+        self.frozen_table.setEditTriggers(
+            QAbstractItemView.EditTrigger.NoEditTriggers
+        )
+        self.frozen_table.setSelectionMode(
+            QAbstractItemView.SelectionMode.NoSelection
+        )
+        self.frozen_table.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+        # Клик по закреплённой шапке идёт в таблицу под ней.
+        self.frozen_table.setAttribute(
+            Qt.WidgetAttribute.WA_TransparentForMouseEvents
+        )
+        self.frozen_table.setItemDelegate(
+            DaySeparatorDelegate(self.separator_after_cols, self.frozen_table)
+        )
+        self.table.horizontalScrollBar().valueChanged.connect(
+            self._sync_frozen_offset
+        )
         root.addWidget(self.table, stretch=1)
         self.refresh()
 
@@ -402,16 +445,16 @@ class WeekView(QWidget):
         counterparty_id = item.data(Qt.ItemDataRole.UserRole)
         if not counterparty_id:
             return
-        if self.kind == "supplier" and self.on_open_delivery is not None:
-            # По макету 07: клик по поставщику открывает «Поставку».
-            self.on_open_delivery(str(counterparty_id), None)
-        elif self.kind == "customer" and self.on_open_operations is not None:
-            # v0.13.0: по клику на покупателя показываем **журнал
-            # операций** этого покупателя — так видны все его записи.
+        # v0.23.1: и у поставщика, и у покупателя клик по имени
+        # открывает **журнал операций** контрагента (просьба
+        # пользователя). Раньше у поставщика клик открывал «Поставку» —
+        # она осталась на двойном клике.
+        if self.on_open_operations is not None:
             self.on_open_operations(str(counterparty_id))
+        elif self.kind == "supplier" and self.on_open_delivery is not None:
+            # Запасной вариант, если журнал не задан.
+            self.on_open_delivery(str(counterparty_id), None)
         elif self.kind == "customer" and self.on_open_realization is not None:
-            # Раньше клик открывал «Реализацию»; оставили как запасной
-            # вариант, если журнал не задан.
             self.on_open_realization(str(counterparty_id), None)
         else:
             self.on_open_card(str(counterparty_id))
@@ -661,6 +704,72 @@ class WeekView(QWidget):
             self._rebuilding = False
         if self.kind == "supplier":
             self.right_value_label.setText(fmt_money(total_week))
+        # v0.23.1: строка «ВСЕГО» закреплена — обновляем и её копию.
+        self._sync_frozen()
+
+    # ----------------------------------------------- закреплённая шапка
+    def _sync_frozen(self) -> None:
+        """Перерисовать закреплённые строки по содержимому таблицы."""
+
+        source = self.table
+        frozen = self.frozen_table
+        rows = TOTAL_ROW + 1
+        frozen.setColumnCount(self.column_count)
+        frozen.setRowCount(rows)
+        frozen.clearSpans()
+        covered: set[tuple[int, int]] = set()
+        for row in range(rows):
+            frozen.setRowHeight(row, source.rowHeight(row))
+            for column in range(self.column_count):
+                frozen.setColumnWidth(column, source.columnWidth(column))
+                item = source.item(row, column)
+                cell = QTableWidgetItem(
+                    item.text() if item is not None else ""
+                )
+                cell.setFlags(Qt.ItemFlag.NoItemFlags)
+                if item is not None:
+                    cell.setFont(item.font())
+                    cell.setBackground(item.background())
+                    cell.setForeground(item.foreground())
+                    cell.setTextAlignment(Qt.Alignment(item.textAlignment()))
+                frozen.setItem(row, column, cell)
+                if (row, column) in covered:
+                    continue
+                row_span = source.rowSpan(row, column)
+                column_span = source.columnSpan(row, column)
+                if row_span > 1 or column_span > 1:
+                    frozen.setSpan(row, column, row_span, column_span)
+                    for spanned_row in range(row, row + row_span):
+                        for spanned_column in range(
+                            column, column + column_span
+                        ):
+                            covered.add((spanned_row, spanned_column))
+        self._update_frozen_geometry()
+
+    def _update_frozen_geometry(self) -> None:
+        """Посадить закреплённую шапку на верхнюю кромку таблицы."""
+
+        frame = self.table.frameWidth()
+        height = sum(
+            self.table.rowHeight(row) for row in range(TOTAL_ROW + 1)
+        )
+        origin = self.table.mapTo(self, QPoint(frame, frame))
+        self.frozen_table.setGeometry(
+            origin.x(), origin.y(), self.table.viewport().width(), height
+        )
+        self._sync_frozen_offset()
+
+    def _sync_frozen_offset(self) -> None:
+        """Повторить горизонтальную прокрутку основной таблицы."""
+
+        self.frozen_table.horizontalScrollBar().setValue(
+            self.table.horizontalScrollBar().value()
+        )
+
+    def resizeEvent(self, event) -> None:  # type: ignore[override]
+        super().resizeEvent(event)
+        # Ширина закреплённой шапки зависит от размера таблицы.
+        self._update_frozen_geometry()
 
     # --------------------------------------------------------------- данные
     def counterparties(self) -> list[Counterparty]:
@@ -698,6 +807,8 @@ class WeekView(QWidget):
         finally:
             self._rebuilding = False
         self._fit_columns_to_width()
+        # v0.23.1: закреплённая шапка повторяет перестроенную таблицу.
+        self._sync_frozen()
 
     def _rebuild_table_inner(self, partners, days, today) -> None:
         table = self.table
@@ -882,8 +993,8 @@ class WeekView(QWidget):
             name_item.setData(Qt.ItemDataRole.UserRole, partner.id)
             if self.kind == "supplier":
                 name_item.setToolTip(
-                    "Клик — окно «Поставка» для этого поставщика; двойной "
-                    "клик — то же окно"
+                    "Клик — журнал операций этого поставщика; двойной "
+                    "клик — окно «Поставка»"
                 )
             elif self.kind == "customer":
                 name_item.setToolTip(

@@ -69,10 +69,15 @@ class SummaryView(QWidget):
         # --- шапка в две строки (v0.22.1): панель узкая, поэтому
         # дата стоит отдельной строкой, а переключатели — под ней ---
         top = QHBoxLayout()
+        # v0.23.1: шрифт шапки «Сводка на дату» — в полтора раза крупнее
+        # основного (запрос пользователя).
         date_label = QLabel("Сводка на дату")
-        date_label.setStyleSheet("font-weight:700")
+        date_label.setStyleSheet(
+            f"font-weight:700;font-size:{styles.fs(20)}px"
+        )
         top.addWidget(date_label)
         self.date_edit = make_date_edit(date.today())
+        self.date_edit.setStyleSheet(f"font-size:{styles.fs(20)}px")
         self.date_edit.dateChanged.connect(self._on_date_changed)
         top.addWidget(self.date_edit)
         top.addStretch(1)
@@ -81,6 +86,9 @@ class SummaryView(QWidget):
         # Вторая строка шапки: архивные и журнал движения средств.
         tools = QHBoxLayout()
         self.show_archived = QCheckBox("показывать архивных")
+        # По умолчанию галочка стоит (v0.23.1): архивные контрагенты
+        # сразу видны в «Сводке».
+        self.show_archived.setChecked(True)
         self.show_archived.toggled.connect(lambda *_: self.refresh())
         tools.addWidget(self.show_archived)
         tools.addStretch(1)
@@ -112,7 +120,7 @@ class SummaryView(QWidget):
             content,
             "СРЕДСТВА",
             [
-                ("funds", "Остаток на счету"),
+                ("funds", "Остаток на счёте"),
                 ("income", "Поступление за день"),
                 ("payments", "Оплаты за день"),
                 ("balance", "Итого остаток"),

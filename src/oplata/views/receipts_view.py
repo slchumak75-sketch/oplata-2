@@ -180,17 +180,6 @@ WEEKDAY_SHORT = ("Пн", "Вт", "Ср", "Чт", "Пт", "Сб", "Вс")
 # Ширины числовых колонок подобраны под шрифт +30% (v0.12.0): в них
 # влезает «88 888,88», а колонке названия остаётся место на
 # «Поступление наличными».
-# Широкий, всегда видимый вертикальный скроллбар блока «Оплата»
-# (v0.13.0): «закрепить и сделать широкий».
-WIDE_SCROLLBAR = (
-    "QScrollBar:vertical{background:#f2f5fa;width:22px;margin:0}"
-    "QScrollBar::handle:vertical{background:#b9c4d6;border-radius:6px;"
-    "min-height:40px;margin:2px 3px}"
-    "QScrollBar::handle:vertical:hover{background:#93a3bd}"
-    "QScrollBar::add-line:vertical,QScrollBar::sub-line:vertical{height:0}"
-    "QScrollBar::add-page:vertical,QScrollBar::sub-page:vertical{"
-    "background:#f2f5fa}"
-)
 COLUMN_WIDTHS = {COL_AMOUNT: 104}
 # Колонки дней уже итогов «Неделя/Месяц/Квартал/Год»: в них день и сумма
 # за день («88 888,88» влезает и в 92 px).
@@ -242,11 +231,6 @@ class AmountItemDelegate(RowHoverMixin, QStyledItemDelegate):
             else None
         )
         return editor
-
-
-# Максимальная высота прокручиваемого списка контрагентов в окне
-# справа (v0.22.1): длинные списки прокручиваются, короткие сжимаются.
-POPUP_LIST_HEIGHT = 320
 
 
 class AmountPopup(QFrame):
@@ -309,17 +293,19 @@ class AmountPopup(QFrame):
                 self._make_row(name, key, (values or {}).get(key))
             )
 
-        # v0.22.1: список контрагентов прокручивается всегда — их
-        # может быть сколько угодно (запрос пользователя). Пока строк
-        # немного, окно само сжимается по высоте содержимого; когда
-        # строк больше, чем влезает в 320 px, появляется прокрутка.
+        # v0.23.1: список контрагентов прокручивается всегда, а окно
+        # растёт до высоты экрана (запрос пользователя). Скроллбар —
+        # широкий и закреплённый, такой же, как на плашке «Оплата».
         scroll = QScrollArea()
         scroll.setWidgetResizable(True)
         scroll.setWidget(fields)
-        scroll.setMaximumHeight(POPUP_LIST_HEIGHT)
         scroll.setFrameShape(QFrame.Shape.NoFrame)
+        scroll.setVerticalScrollBarPolicy(
+            Qt.ScrollBarPolicy.ScrollBarAlwaysOn
+        )
+        scroll.setStyleSheet(styles.WIDE_SCROLLBAR)
         self.scroll_area = scroll
-        root.addWidget(scroll)
+        root.addWidget(scroll, stretch=1)
 
         total_row = QHBoxLayout()
         total_row.addStretch(1)
@@ -385,16 +371,25 @@ class AmountPopup(QFrame):
 
         anchor = widget.mapToGlobal(QPoint(widget.width(), row_top))
         self.adjustSize()
-        self.move(QPoint(anchor.x() + 8, anchor.y()))
-        self._watch_clicks()
-        self.show()
         screen = self.screen()
-        if screen is not None:  # не даём окну уехать за край экрана
+        if screen is not None:
+            # v0.23.1: окно занимает всю доступную высоту экрана, чтобы
+            # список контрагентов был виден целиком, насколько возможно.
             free = screen.availableGeometry()
+            height = min(self.height(), free.height() - 16)
+            self.resize(self.width(), height)
+            self.move(QPoint(anchor.x() + 8, anchor.y()))
+            self._watch_clicks()
+            self.show()
+            # не даём окну уехать за край экрана
             frame = self.frameGeometry()
             x = min(frame.x(), free.right() - frame.width() - 8)
             y = min(frame.y(), free.bottom() - frame.height() - 8)
             self.move(max(free.left() + 8, x), max(free.top() + 8, y))
+        else:
+            self.move(QPoint(anchor.x() + 8, anchor.y()))
+            self._watch_clicks()
+            self.show()
         # Фокус и выделение текста в первое поле НЕ ставим (v0.12.0):
         # подсветка мешала — сохранённая сумма выглядела «выбранной»,
         # и любая цифра затирала её вместо дописывания.
@@ -896,7 +891,7 @@ class MoneyBlock(QFrame):
             self.table.setVerticalScrollBarPolicy(
                 Qt.ScrollBarPolicy.ScrollBarAlwaysOn
             )
-            self.table.setStyleSheet(WIDE_SCROLLBAR)
+            self.table.setStyleSheet(styles.WIDE_SCROLLBAR)
         else:
             # Блок «Поступление» закреплён (v0.15.0): высота таблицы
             # фиксированная по числу строк, чтобы при обновлении и

@@ -25,6 +25,20 @@ WEEK_TABLE_TODAY_GREEN = "#ccf5a3"   # салатовая верхняя яче�
 FONT_SCALE = 1.3
 
 
+# Широкий, всегда видимый вертикальный скроллбар (v0.13.0: «закрепить
+# и сделать широкий»). С v0.23.1 он один на всю программу: так же
+# выглядит прокрутка в таблицах «Поставщики» и «Покупатели».
+WIDE_SCROLLBAR = (
+    "QScrollBar:vertical{background:#f2f5fa;width:22px;margin:0}"
+    "QScrollBar::handle:vertical{background:#b9c4d6;border-radius:6px;"
+    "min-height:40px;margin:2px 3px}"
+    "QScrollBar::handle:vertical:hover{background:#93a3bd}"
+    "QScrollBar::add-line:vertical,QScrollBar::sub-line:vertical{height:0}"
+    "QScrollBar::add-page:vertical,QScrollBar::sub-page:vertical{"
+    "background:#f2f5fa}"
+)
+
+
 def fs(base_px: int) -> int:
     """Размер шрифта, увеличенный на 30% (v0.12.0)."""
 
