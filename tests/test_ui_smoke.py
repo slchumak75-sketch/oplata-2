@@ -2015,7 +2015,7 @@ def test_amount_font_is_chosen_to_fit_day_column(qt_app, store):
 
 
 def test_base_exchange_buttons_are_admin_only(qt_app, store):
-    """«Выгрузить базу»/«Загрузить базу» видит только администратор."""
+    """«Выгрузить базы»/«Загрузить базы» видит только администратор."""
     from oplata.access import ALL_PAGES, Access, User, save_users
     from oplata.app import MainWindow
 
@@ -2034,6 +2034,9 @@ def test_base_exchange_buttons_are_admin_only(qt_app, store):
     qt_app.processEvents()
     assert window.export_button.isVisible()
     assert window.import_button.isVisible()
+    # Кнопки работают с обеими базами сразу — подписи во множественном числе.
+    assert window.export_button.text() == "Выгрузить базы"
+    assert window.import_button.text() == "Загрузить базы"
 
     # Сменили текущего пользователя в «Конфигурации» — кнопки скрылись.
     window.apply_current_user(viewer)

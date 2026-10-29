@@ -198,7 +198,7 @@ class MainWindow(QMainWindow):
         # v0.20.0: выгрузка и загрузка **обеих** баз (МИР и КОРЕЛИЧИ)
         # одним файлом Excel. Кнопки видит только администратор — у
         # остальных пользователей их нет в шапке.
-        self.export_button = QPushButton("Выгрузить базу")
+        self.export_button = QPushButton("Выгрузить базы")
         self.export_button.setCursor(Qt.CursorShape.PointingHandCursor)
         self.export_button.setToolTip(
             "Сохранить обе базы (МИР и КОРЕЛИЧИ) в файл Excel"
@@ -206,7 +206,7 @@ class MainWindow(QMainWindow):
         self.export_button.clicked.connect(self.export_bases_to_excel)
         layout.addWidget(self.export_button)
 
-        self.import_button = QPushButton("Загрузить базу")
+        self.import_button = QPushButton("Загрузить базы")
         self.import_button.setCursor(Qt.CursorShape.PointingHandCursor)
         self.import_button.setToolTip(
             "Заменить данные баз (МИР и КОРЕЛИЧИ) данными из файла Excel"
@@ -289,7 +289,7 @@ class MainWindow(QMainWindow):
         holder.save()
 
     def export_bases_to_excel(self) -> None:
-        """Кнопка «Выгрузить базу»: обе базы в один файл Excel (v0.20.0)."""
+        """Кнопка «Выгрузить базы»: обе базы в один файл Excel (v0.20.0)."""
 
         bases = {self.store.base_key: self.store.data}
         other = OTHER_BASE[self.store.base_key]
@@ -309,16 +309,16 @@ class MainWindow(QMainWindow):
         try:
             export_bases(bases, Path(path))
         except ExcelError as exc:
-            QMessageBox.warning(self, "Выгрузка базы", str(exc))
+            QMessageBox.warning(self, "Выгрузка баз", str(exc))
             return
         QMessageBox.information(
             self,
-            "Выгрузка базы",
+            "Выгрузка баз",
             "Базы МИР и КОРЕЛИЧИ выгружены в файл:\n" + path,
         )
 
     def import_bases_from_excel(self) -> None:
-        """Кнопка «Загрузить базу»: обе базы из файла Excel (v0.20.0).
+        """Кнопка «Загрузить базы»: обе базы из файла Excel (v0.20.0).
 
         Файл заменяет данные целиком, поэтому перед заменой спрашиваем
         подтверждение: отменить загрузку будет нечем.
@@ -335,13 +335,13 @@ class MainWindow(QMainWindow):
         try:
             bases = import_bases(Path(path))
         except ExcelError as exc:
-            QMessageBox.warning(self, "Загрузка базы", str(exc))
+            QMessageBox.warning(self, "Загрузка баз", str(exc))
             return
 
         names = describe_bases(bases)
         answer = QMessageBox.question(
             self,
-            "Загрузка базы",
+            "Загрузка баз",
             f"Из файла будут загружены базы: {names}.\n"
             "Нынешние данные этих баз будут заменены. Продолжить?",
             QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
@@ -361,7 +361,7 @@ class MainWindow(QMainWindow):
                 self._write_base(base_key, data)
         except OSError as exc:
             QMessageBox.warning(
-                self, "Загрузка базы", f"Не удалось сохранить данные: {exc}"
+                self, "Загрузка баз", f"Не удалось сохранить данные: {exc}"
             )
             return
 
@@ -379,7 +379,7 @@ class MainWindow(QMainWindow):
             current.year_start = loaded.year_start
         self.refresh_all_views()
         QMessageBox.information(
-            self, "Загрузка базы", f"Базы {names} загружены из файла:\n" + path
+            self, "Загрузка баз", f"Базы {names} загружены из файла:\n" + path
         )
 
     def apply_current_user(self, user) -> None:
