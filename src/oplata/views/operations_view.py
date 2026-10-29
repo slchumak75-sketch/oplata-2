@@ -10,6 +10,7 @@
 
 from __future__ import annotations
 
+import calendar as calendar_module
 from collections.abc import Callable
 from datetime import date, datetime
 from decimal import Decimal, InvalidOperation
@@ -33,6 +34,7 @@ from PySide6.QtWidgets import (
 from ..dates import fmt_date, fmt_money_plain
 from ..dialogs.operation_dialog import OperationDialog
 from ..models import KIND_INCOME, KIND_PAYMENT, KIND_SALE, Operation
+from .. import styles
 from ..storage import DataStore
 from ..widgets import danger_button, green_button, make_panel
 
@@ -52,6 +54,20 @@ def _display_amount(amount: str) -> str:
         return fmt_money_plain(Decimal(amount or "0"))
     except InvalidOperation:
         return amount
+
+
+def _months_back(months: int, today: date | None = None) -> date:
+    """Дата ``months`` месяцев назад (день месяца «прижимается» к концу).
+
+    Без dateutil: 31 марта минус 1 месяц — 28/29 февраля, а не 3 марта.
+    """
+
+    day = today or date.today()
+    total = day.month - 1 - months
+    year = day.year + total // 12
+    month = total % 12 + 1
+    last_day = calendar_module.monthrange(year, month)[1]
+    return date(year, month, min(day.day, last_day))
 
 
 def _deferment_days(operation: Operation) -> str:
@@ -98,6 +114,7 @@ class OperationsView(QWidget):
         show_filters: bool = True,
         show_actions: bool = True,
         counterparty_kind: str | None = None,
+        period_months: int | None = None,
     ) -> None:
         super().__init__(parent)
         self.store = store
@@ -114,6 +131,9 @@ class OperationsView(QWidget):
         # отсрочки, дата (срок) оплаты.
         self.counterparty_kind = counterparty_kind or ""
         self.supplier_journal = self.counterparty_kind == "supplier"
+        # v0.23.2: журнал ведётся за последние ``period_months`` месяцев
+        # (поставщик — 3, покупатель — 12; просьба пользователя).
+        self.period_months = period_months
         # После добавления/правки/удаления главное окно обновляет таблицы
         # поставщиков/покупателей и «Сводку»; сам журнал обновляется здесь.
         self.on_data_changed = on_data_changed
@@ -214,16 +234,17 @@ class OperationsView(QWidget):
             title_row.addWidget(self.delete_btn)
         panel_layout.addLayout(title_row)
 
+        headers = ["Тип", "Контрагент", "Дата", "Сумма", "Документ", "Комментарий"]
+        self.money_column = 3
         if self.supplier_journal:
-            self.table = QTableWidget(0, 4)
-            self.table.setHorizontalHeaderLabels(
-                ["Дата поставки", "Сумма", "Отсрочка, дней", "Дата оплаты"]
-            )
-        else:
-            self.table = QTableWidget(0, 6)
-            self.table.setHorizontalHeaderLabels(
-                ["Тип", "Контрагент", "Дата", "Сумма", "Документ", "Комментарий"]
-            )
+            headers = ["Дата поставки", "Сумма", "Отсрочка, дней", "Дата оплаты"]
+            self.money_column = 1
+        elif self.counterparty_kind == "customer":
+            # v0.23.2: в журнале покупателя колонок «Документ» и
+            # «Комментарий» нет (просьба пользователя).
+            headers = ["Тип", "Контрагент", "Дата", "Сумма"]
+        self.table = QTableWidget(0, len(headers))
+        self.table.setHorizontalHeaderLabels(headers)
         self.table.verticalHeader().setVisible(False)
         self.table.setSelectionBehavior(
             QAbstractItemView.SelectionBehavior.SelectRows
@@ -232,6 +253,12 @@ class OperationsView(QWidget):
             QAbstractItemView.SelectionMode.SingleSelection
         )
         self.table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
+        # v0.23.2: вертикальный скроллинг — широкий и всегда видимый,
+        # такой же, как в таблицах «Поставщики»/«Покупатели».
+        self.table.setVerticalScrollBarPolicy(
+            Qt.ScrollBarPolicy.ScrollBarAlwaysOn
+        )
+        self.table.setStyleSheet(styles.WIDE_SCROLLBAR_ON_TABLE)
         self.table.itemSelectionChanged.connect(self._update_action_buttons)
         self.table.itemDoubleClicked.connect(
             lambda item: self._edit_selected_operation()
@@ -242,6 +269,10 @@ class OperationsView(QWidget):
             # достаётся сумме.
             for column in (0, 2, 3):
                 self.table.setColumnWidth(column, 150)
+            header.setSectionResizeMode(1, QHeaderView.ResizeMode.Stretch)
+        elif self.counterparty_kind == "customer":
+            for column, width in ((0, 120), (2, 130), (3, 150)):
+                self.table.setColumnWidth(column, width)
             header.setSectionResizeMode(1, QHeaderView.ResizeMode.Stretch)
         else:
             # Фиксированные колонки не должны ужиматься до «Накладная …»,
@@ -434,6 +465,10 @@ class OperationsView(QWidget):
             **{s.id: s.name for s in self.store.data.suppliers},
             **{c.id: c.name for c in self.store.data.customers},
         }  # имена и поставщиков, и покупателей (ввод есть в обеих таблицах)
+        # v0.23.2: журнал контрагента ведётся за последние N месяцев.
+        oldest = (
+            _months_back(self.period_months) if self.period_months else None
+        )
         result = []
         for op in self.store.data.operations:
             if supplier_id and op.counterparty_id != supplier_id:
@@ -446,6 +481,10 @@ class OperationsView(QWidget):
             if self.supplier_journal and op.kind != KIND_INCOME:
                 continue
             operation_day = _operation_date(op)
+            if oldest is not None and (
+                operation_day is None or operation_day < oldest
+            ):
+                continue
             if date_from is not None and (
                 operation_day is None or operation_day < date_from
             ):
@@ -491,7 +530,14 @@ class OperationsView(QWidget):
                     _deferment_days(op),  # дней отсрочки
                     _display_date(op.due_date),  # дата (срок) оплаты
                 ]
-                money_column = 1
+            elif self.counterparty_kind == "customer":
+                # v0.23.2: без «Документа» и «Комментария».
+                values = [
+                    op.kind,
+                    supplier_names.get(op.counterparty_id, ""),
+                    _display_date(op.date),
+                    _display_amount(op.amount),
+                ]
             else:
                 values = [
                     op.kind,
@@ -501,12 +547,11 @@ class OperationsView(QWidget):
                     op.document,
                     op.comment,
                 ]
-                money_column = 3
             for col, text in enumerate(values):
                 item = QTableWidgetItem(text)
                 if col == 0:
                     item.setData(Qt.ItemDataRole.UserRole, op.id)
-                if col == money_column:
+                if col == self.money_column:
                     item.setTextAlignment(
                         Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter
                     )

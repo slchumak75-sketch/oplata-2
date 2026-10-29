@@ -34,6 +34,13 @@ class OperationsJournalDialog(QDialog):
         self.kind = kind
         self.on_data_changed = on_data_changed
         noun = "поставщика" if kind == "supplier" else "покупателя"
+        # v0.23.2: журнал поставщика вдвое у́же и ведётся за 3 месяца,
+        # журнал покупателя — широкий, за 12 месяцев (просьба
+        # пользователя).
+        if kind == "supplier":
+            width, months = 590, 3
+        else:
+            width, months = 1180, 12
         person: Counterparty | None = next(
             (
                 item
@@ -47,7 +54,7 @@ class OperationsJournalDialog(QDialog):
 
         self.setWindowTitle(f"Операции {noun}")
         self.setModal(False)
-        self.resize(1180, 640)
+        self.resize(width, 640)
 
         root = QVBoxLayout(self)
         root.setContentsMargins(14, 12, 14, 12)
@@ -63,6 +70,7 @@ class OperationsJournalDialog(QDialog):
             show_filters=False,
             show_actions=False,
             counterparty_kind=kind,
+            period_months=months,
         )
         root.addWidget(self.view, stretch=1)
 

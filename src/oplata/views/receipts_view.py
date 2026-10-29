@@ -46,6 +46,7 @@ from datetime import date, timedelta
 from decimal import Decimal
 
 from PySide6.QtCore import QDate, QEvent, QPoint, Qt, QTimer
+from PySide6.QtGui import QBrush, QColor
 from PySide6.QtWidgets import (
     QAbstractItemView,
     QApplication,
@@ -824,9 +825,15 @@ class MoneyBlock(QFrame):
                 )
 
     def mark_current_day(self) -> None:
-        """Выделить в шапке день, выбранный в блоке (v0.22.0)."""
+        """Шапка: выбранный день — жирный, сегодняшний — салатовый.
+
+        v0.23.2: сегодняшняя дата подсвечивается салатовым, как в
+        таблицах «Поставщики»/«Покупатели», — но только одна ячейка
+        шапки с датой, а не весь столбец (просьба пользователя).
+        """
 
         current = self.current_date()
+        today = date.today()
         for index, day in enumerate(self.days):
             header_item = self.table.horizontalHeaderItem(FIRST_DAY_COL + index)
             if header_item is None:
@@ -837,6 +844,13 @@ class MoneyBlock(QFrame):
             header_item.setToolTip(
                 "День, выбранный в блоке" if day == current else ""
             )
+            if day == today:
+                header_item.setBackground(
+                    QColor(styles.WEEK_TABLE_TODAY_GREEN)
+                )
+            else:
+                header_item.setBackground(QBrush())  # снять прежнюю подсветку
+        self.table.horizontalHeader().viewport().update()
 
     def set_rows(self, row_keys: list[str]) -> None:
         """Перестроить строки таблицы (состав строк меняется кнопкой «+»)."""

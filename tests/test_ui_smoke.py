@@ -1907,6 +1907,96 @@ def test_wide_scrollbar_keeps_white_background(qt_app, store):
     window.close()
 
 
+def test_journal_period_three_and_twelve_months(qt_app, store, monkeypatch):
+    """v0.23.2: журнал поставщика — 3 месяца, покупателя — 12 месяцев."""
+
+    from datetime import date
+
+    from oplata.dialogs.operations_journal_dialog import OperationsJournalDialog
+    from oplata.models import Counterparty, Operation
+    from oplata.views import operations_view as operations_view_module
+
+    class _FixedDate(date):
+        @classmethod
+        def today(cls):
+            return date(2026, 10, 29)
+
+    monkeypatch.setattr(operations_view_module, "date", _FixedDate)
+
+    supplier = next(s for s in store.data.suppliers if s.name == "ггг")
+    # В демо-данных покупателей нет — заводим своего.
+    customer = Counterparty(name="Покупатель Тест")
+    store.data.customers.append(customer)
+    # 2 месяца назад — попадает и в 3, и в 12; 5 месяцев — только в 12;
+    # 13 месяцев — никуда.
+    for months_ago in (2, 5, 13):
+        day = operations_view_module._months_back(months_ago, _FixedDate.today())
+        store.data.operations.append(
+            Operation(
+                kind="Приход",
+                counterparty_id=supplier.id,
+                date=day.isoformat(),
+                due_date=day.isoformat(),
+                amount="100.00",
+            )
+        )
+        store.data.operations.append(
+            Operation(
+                kind="Реализация",
+                counterparty_id=customer.id,
+                date=day.isoformat(),
+                amount="100.00",
+            )
+        )
+
+    supplier_journal = OperationsJournalDialog(
+        store, "supplier", counterparty_id=supplier.id
+    )
+    assert supplier_journal.view.period_months == 3
+    assert supplier_journal.view.table.rowCount() == 1  # только 2 месяца назад
+    supplier_journal.close()
+
+    customer_journal = OperationsJournalDialog(
+        store, "customer", counterparty_id=customer.id
+    )
+    assert customer_journal.view.period_months == 12
+    assert customer_journal.view.table.rowCount() == 2  # 2 и 5 месяцев назад
+    customer_journal.close()
+
+
+def test_money_block_marks_today_header_green(qt_app, store, monkeypatch):
+    """v0.23.2: в шапке блока салатовой — ячейка сегодняшней даты."""
+
+    from datetime import date
+
+    from PySide6.QtGui import QColor
+
+    from oplata import styles
+    from oplata.app import MainWindow
+    from oplata.views import receipts_view as receipts_view_module
+
+    class _FixedDate(date):
+        @classmethod
+        def today(cls):
+            return date(2026, 10, 29)
+
+    monkeypatch.setattr(receipts_view_module, "date", _FixedDate)
+
+    window = MainWindow(store)
+    block = window.receipts_view.incoming
+    block.set_date(date(2026, 10, 26))  # неделя 26.10 — 31.10
+    green = QColor(styles.WEEK_TABLE_TODAY_GREEN)
+    assert _FixedDate.today() in block.days
+    for index, day in enumerate(block.days):
+        header_item = block.table.horizontalHeaderItem(
+            receipts_view_module.FIRST_DAY_COL + index
+        )
+        assert header_item is not None
+        is_green = header_item.background().color() == green
+        assert is_green == (day == _FixedDate.today()), day
+    window.close()
+
+
 def test_supplier_journal_shows_delivery_columns(qt_app, store):
     """v0.23.1: журнал поставщика — дата поставки, сумма, отсрочка, оплата."""
 
@@ -1940,11 +2030,21 @@ def test_supplier_journal_shows_delivery_columns(qt_app, store):
         table.item(0, col).text() for col in range(table.columnCount())
     ] == ["26.10.2026", "1 000,50", "10", "05.11.2026"]
 
-    # У покупателя журнал остался прежним, с шестью колонками.
+    # Журнал поставщика вдвое у́же и с широким скроллбаром (v0.23.2).
+    assert window.width() == 590
+    assert (
+        table.verticalScrollBarPolicy()
+        == Qt.ScrollBarPolicy.ScrollBarAlwaysOn
+    )
+
+    # У покупателя журнал без «Документа» и «Комментария»: 4 колонки.
     from oplata.views.operations_view import OperationsView
 
     cust_view = OperationsView(store, counterparty_kind="customer")
-    assert cust_view.table.columnCount() == 6
+    assert cust_view.table.columnCount() == 4
+    assert [
+        cust_view.table.horizontalHeaderItem(col).text() for col in range(4)
+    ] == ["Тип", "Контрагент", "Дата", "Сумма"]
     window.close()
 
 
