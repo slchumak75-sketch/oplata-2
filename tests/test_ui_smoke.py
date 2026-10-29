@@ -1243,10 +1243,13 @@ def test_arrows_are_bold_and_row_hover_installed(qt_app, store):
     qt_app.processEvents()
     view = window.receipts_view
 
+    # v0.25.1: жирными остались только стрелки блоков «Поступление» и
+    # «Оплата»; кнопки «← Неделя»/«Неделя →» набраны как «Сегодня».
     for button in (
         view.incoming.prev_btn,
         view.incoming.next_btn,
-        window.suppliers_view.findChildren(type(view.incoming.prev_btn))[0],
+        view.outgoing.prev_btn,
+        view.outgoing.next_btn,
     ):
         font: QFont = button.font()
         assert font.bold() or font.weight() >= QFont.Weight.Bold
@@ -2230,6 +2233,143 @@ def test_money_block_paints_weekends_and_today(qt_app, store, monkeypatch):
         assert table.showGrid() is True
         assert f"gridline-color:{styles.TABLE_GRID}" in table.styleSheet()
         assert f"border:1px solid {styles.BORDER}" in table.styleSheet()
+
+
+def test_week_buttons_use_same_font_as_today(qt_app, store):
+    """v0.25.1: подпись «Неделя» набрана тем же шрифтом, что кнопка
+    «Сегодня» — без своего кегля и жирности."""
+
+    from oplata.app import MainWindow
+
+    window = MainWindow(store)
+    window.show()
+    qt_app.processEvents()
+    for view in (window.suppliers_view, window.customers_view):
+        for button in (view.prev_week_btn, view.next_week_btn):
+            assert button.styleSheet() == "", button.text()
+            assert button.font().toString() == view.today_btn.font().toString()
+    window.close()
+
+
+def test_payment_card_opens_for_editing_by_double_click(qt_app, store):
+    """v0.25.1: двойной клик по своему виду оплаты открывает карточку;
+    по служебной строке («Поставщики») — нет."""
+
+    from oplata.app import MainWindow
+    from oplata.models import OUTGOING, add_other_payment
+
+    window = MainWindow(store)
+    window.show()
+    qt_app.processEvents()
+    view = window.receipts_view
+    add_other_payment(
+        store.data, "Аренда", view.outgoing.current_date().isoformat(), OUTGOING
+    )
+    view.refresh_rows()
+    view.refresh()
+    qt_app.processEvents()
+
+    opened: list[str] = []
+    view.outgoing.on_edit_card = opened.append
+    block = view.outgoing
+    block.table.cellDoubleClicked.emit(
+        block.row_keys.index("other:Аренда"), 1
+    )
+    assert opened == ["other:Аренда"]
+    opened.clear()
+    block.table.cellDoubleClicked.emit(0, 1)  # строка «Поставщики»
+    assert opened == []
+    window.close()
+
+
+def test_duplicate_payment_creates_copy_with_dates(qt_app, store):
+    """v0.25.1: правая кнопка → «Дублировать»: копия вида с новым именем
+    и теми же отмеченными датами."""
+
+    from oplata.app import MainWindow
+    from oplata.models import OUTGOING, add_other_payment
+
+    window = MainWindow(store)
+    window.show()
+    qt_app.processEvents()
+    view = window.receipts_view
+    add_other_payment(
+        store.data,
+        "Аренда",
+        view.outgoing.current_date().isoformat(),
+        OUTGOING,
+        dates=["2026-10-27", "2026-10-30"],
+    )
+    view.refresh_rows()
+    view.refresh()
+    qt_app.processEvents()
+
+    view.duplicate_payment("other:Аренда", OUTGOING)
+    qt_app.processEvents()
+    names = [item.name for item in store.data.other_payments]
+    assert names == ["Аренда", "Аренда (копия)"]
+    copy = store.data.other_payments[-1]
+    assert copy.dates == ["2026-10-27", "2026-10-30"]
+    assert "other:Аренда (копия)" in view.outgoing.row_keys
+
+    # Вторая копия получает уникальное имя.
+    view.duplicate_payment("other:Аренда", OUTGOING)
+    qt_app.processEvents()
+    assert [i.name for i in store.data.other_payments] == [
+        "Аренда",
+        "Аренда (копия)",
+        "Аренда (копия) 2",
+    ]
+    window.close()
+
+
+def test_edit_payment_card_renames_and_updates_dates(qt_app, store, monkeypatch):
+    """v0.25.1: карточка вида оплаты правит название и отмеченные даты."""
+
+    from PySide6.QtWidgets import QDialog
+
+    from oplata.app import MainWindow
+    from oplata.models import OUTGOING, add_other_payment
+    from oplata.views import receipts_view as receipts_view_module
+
+    window = MainWindow(store)
+    window.show()
+    qt_app.processEvents()
+    view = window.receipts_view
+    add_other_payment(
+        store.data,
+        "Аренда",
+        view.outgoing.current_date().isoformat(),
+        OUTGOING,
+        dates=["2026-10-27"],
+    )
+    view.refresh_rows()
+    view.refresh()
+    qt_app.processEvents()
+
+    class _FakeEdit:
+        def __init__(self, direction, used, day, parent=None, name="", dates=()):
+            self.direction = direction
+            self.name_value = "Аренда офиса"
+            self._dates = ["2026-10-28"]
+
+        def exec(self):
+            return QDialog.DialogCode.Accepted
+
+        @property
+        def marked_dates(self):
+            return self._dates
+
+    monkeypatch.setattr(
+        receipts_view_module, "OtherPaymentCardDialog", _FakeEdit
+    )
+    view.edit_payment_card("other:Аренда", OUTGOING)
+    qt_app.processEvents()
+    payment = store.data.other_payments[0]
+    assert payment.name == "Аренда офиса"
+    assert payment.dates == ["2026-10-28"]
+    assert "other:Аренда офиса" in view.outgoing.row_keys
+    window.close()
 
 
 def test_payment_card_calendar_marks_dates(qt_app, store):

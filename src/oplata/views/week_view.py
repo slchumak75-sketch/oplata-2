@@ -317,7 +317,11 @@ class WeekView(QWidget):
         bar = QHBoxLayout()
         bar.setSpacing(8)
 
-        self.prev_week_btn = arrow_button("← Неделя", "Неделя назад")
+        # v0.25.2: подпись «Неделя» — тем же шрифтом, что кнопка
+        # «Сегодня» (просьба пользователя), поэтому без своего кегля.
+        self.prev_week_btn = arrow_button(
+            "← Неделя", "Неделя назад", plain=True
+        )
         self.prev_week_btn.clicked.connect(lambda: self._shift_week(-7))
         bar.addWidget(self.prev_week_btn)
 
@@ -328,7 +332,9 @@ class WeekView(QWidget):
         self.week_label.setStyleSheet(f"font-weight:600;font-size:{styles.fs(13)}px")
         bar.addWidget(self.week_label)
 
-        self.next_week_btn = arrow_button("Неделя →", "Неделя вперёд")
+        self.next_week_btn = arrow_button(
+            "Неделя →", "Неделя вперёд", plain=True
+        )
         self.next_week_btn.clicked.connect(lambda: self._shift_week(7))
         bar.addWidget(self.next_week_btn)
 

@@ -62,6 +62,7 @@ from PySide6.QtWidgets import (
     QHeaderView,
     QLabel,
     QLineEdit,
+    QMenu,
     QMessageBox,
     QPushButton,
     QScrollArea,
@@ -721,14 +722,16 @@ class OtherPaymentCardDialog(QDialog):
         used_names: set[str],
         day: date,
         parent: QWidget | None = None,
+        name: str = "",
+        dates: Iterable[str] = (),
     ) -> None:
         super().__init__(parent)
         self.direction = direction
-        self._used = {name.strip().lower() for name in used_names}
+        self._used = {item.strip().lower() for item in used_names}
         self.setWindowTitle(
-            "Новый вид оплаты"
+            ("Вид оплаты" if name else "Новый вид оплаты")
             if direction == OUTGOING
-            else "Новый вид поступления"
+            else ("Вид поступления" if name else "Новый вид поступления")
         )
         self.setModal(True)
 
@@ -737,11 +740,13 @@ class OtherPaymentCardDialog(QDialog):
 
         self.name_edit = QLineEdit()
         self.name_edit.setPlaceholderText("Например: Возврат поставщику")
+        # v0.25.1: в режиме правки название уже заполнено.
+        self.name_edit.setText(name)
         form.addRow("Название:", self.name_edit)
 
         # v0.24.0: календарь — отмеченные даты красят ячейки таблицы
         # «Оплата» красным (просьба пользователя).
-        self.calendar = PaymentDatesCalendar(day)
+        self.calendar = PaymentDatesCalendar(day, marked=dates)
         form.addRow("Даты:", self.calendar)
 
         buttons = QDialogButtonBox(
@@ -892,6 +897,8 @@ class MoneyBlock(QFrame):
         on_name_edited: Callable[[str, str], None] | None = None,
         on_add_row: Callable[[], None] | None = None,
         on_remove_row: Callable[[str], None] | None = None,
+        on_edit_card: Callable[[str], None] | None = None,
+        on_duplicate_card: Callable[[str], None] | None = None,
         parent: QWidget | None = None,
         direction: str = OUTGOING,
         stretch_table: bool = False,
@@ -917,6 +924,10 @@ class MoneyBlock(QFrame):
         self.on_date_changed = on_date_changed
         self.on_name_edited = on_name_edited
         self.on_add_row = on_add_row
+        # v0.25.1: двойной клик — карточка вида, правая кнопка — меню
+        # с «Дублировать» (просьба пользователя).
+        self.on_edit_card = on_edit_card
+        self.on_duplicate_card = on_duplicate_card
         self.on_remove_row = on_remove_row
         self._updating = False  # заполнение таблицы не считается вводом
 
@@ -987,6 +998,13 @@ class MoneyBlock(QFrame):
         # v0.18.0: без права ввода кнопок «+»/«−» у блока не показываем.
         self.read_only = False
         self.table.cellClicked.connect(self._on_cell_clicked)
+        # v0.25.1: двойной клик по своему виду — карточка, правая кнопка —
+        # меню («Дублировать»).
+        self.table.cellDoubleClicked.connect(self._on_cell_double_clicked)
+        self.table.setContextMenuPolicy(
+            Qt.ContextMenuPolicy.CustomContextMenu
+        )
+        self.table.customContextMenuRequested.connect(self._show_row_menu)
         self.table.setAlternatingRowColors(False)
         # v0.23.7: своя шапка — чтобы подсветка дня была видна и в
         # Windows (фон секции рисует сам класс).
@@ -1300,6 +1318,43 @@ class MoneyBlock(QFrame):
             return
         self.on_amount_entered(key, item.text())
 
+    @staticmethod
+    def _is_own_payment_row(key: str) -> bool:
+        """Свой вид (добавлен кнопкой «+»): его можно править карточкой."""
+
+        return key.startswith(OTHER_PREFIX) and key != FIXED_OTHER_ROW
+
+    def _on_cell_double_clicked(self, row: int, column: int) -> None:
+        """Двойной клик: открыть карточку своего вида (v0.25.1)."""
+
+        if row < 0 or row >= len(self.row_keys) or self.on_edit_card is None:
+            return
+        key = self.row_keys[row]
+        if not self._is_own_payment_row(key):
+            return
+        # Таблица сама открыла редактор ячейки — закрываем его, чтобы он
+        # не мешал карточке.
+        editor = self.table.item(row, column)
+        if editor is not None:
+            self.table.closePersistentEditor(editor)
+        self.on_edit_card(key)
+
+    def _show_row_menu(self, position) -> None:
+        """Правая кнопка по своему виду: «Дублировать» (v0.25.1)."""
+
+        if self.on_duplicate_card is None:
+            return
+        row = self.table.indexAt(position).row()
+        if row < 0 or row >= len(self.row_keys):
+            return
+        key = self.row_keys[row]
+        if not self._is_own_payment_row(key):
+            return
+        menu = QMenu(self.table)
+        duplicate = menu.addAction("Дублировать")
+        if menu.exec(self.table.viewport().mapToGlobal(position)) == duplicate:
+            self.on_duplicate_card(key)
+
     def _on_cell_clicked(self, row: int, column: int) -> None:
         """Клик по строке: окно контрагентов или журнал строки."""
 
@@ -1383,6 +1438,9 @@ class ReceiptsView(QWidget):
             on_open_popup=self.open_popup,
             on_amount_entered=self.save_direct_amount,
             on_date_changed=self.refresh,
+            # v0.25.1: те же карточка и «Дублировать» для «Поступления».
+            on_edit_card=lambda key: self.edit_payment_card(key, INCOMING),
+            on_duplicate_card=lambda key: self.duplicate_payment(key, INCOMING),
             direction=INCOMING,
         )
         self.outgoing = MoneyBlock(
@@ -1396,6 +1454,10 @@ class ReceiptsView(QWidget):
             ),
             on_add_row=lambda: self.add_other_row(OUTGOING),
             on_remove_row=lambda key: self.remove_other_row(key, OUTGOING),
+            # v0.25.1: двойной клик открывает карточку вида, правая
+            # кнопка — «Дублировать» (просьба пользователя).
+            on_edit_card=lambda key: self.edit_payment_card(key, OUTGOING),
+            on_duplicate_card=lambda key: self.duplicate_payment(key, OUTGOING),
             direction=OUTGOING,
             stretch_table=True,
         )
@@ -1493,6 +1555,76 @@ class ReceiptsView(QWidget):
 
     def refresh_outgoing_rows(self) -> None:
         self.outgoing.set_rows(self._outgoing_rows())
+
+    def _find_payment(self, name: str, direction: str):
+        """Запись вида оплаты по названию и блоку (v0.25.1)."""
+
+        return next(
+            (
+                item
+                for item in self.store.data.other_payments
+                if item.name == name
+                and getattr(item, "direction", OUTGOING) == direction
+            ),
+            None,
+        )
+
+    def edit_payment_card(self, key: str, direction: str) -> None:
+        """Двойной клик: карточка вида оплаты с правкой (v0.25.1).
+
+        Меняем название и даты, отмеченные в календаре карточки.
+        """
+
+        name = other_row_name(key)
+        payment = self._find_payment(name, direction)
+        if payment is None:
+            return
+        block = self._block(direction)
+        used = set(other_payment_names(self.store.data, direction)) - {name}
+        dialog = OtherPaymentCardDialog(
+            direction,
+            used,
+            block.current_date(),
+            self,
+            name=name,
+            dates=payment.dates,
+        )
+        if dialog.exec() != QDialog.DialogCode.Accepted:
+            return
+        payment.dates = list(dialog.marked_dates)
+        new_name = dialog.name_value
+        if new_name != name:
+            rename_other_payment(self.store.data, name, new_name, direction)
+        self.store.save()
+        self.refresh_rows()
+        self.refresh()
+
+    def duplicate_payment(self, key: str, direction: str) -> None:
+        """Правая кнопка → «Дублировать»: копия вида с новым именем
+        и теми же отмеченными датами (v0.25.1)."""
+
+        name = other_row_name(key)
+        payment = self._find_payment(name, direction)
+        if payment is None:
+            return
+        used = set(other_payment_names(self.store.data, direction))
+        base = f"{name} (копия)"
+        new_name = base
+        index = 2
+        while new_name in used:
+            new_name = f"{base} {index}"
+            index += 1
+        block = self._block(direction)
+        add_other_payment(
+            self.store.data,
+            new_name,
+            block.current_date().isoformat(),
+            direction,
+            dates=list(payment.dates),
+        )
+        self.store.save()
+        self.refresh_rows()
+        self.refresh()
 
     def add_other_row(self, direction: str = OUTGOING) -> None:
         """Кнопка «+»: новый вид оплаты — карточкой (v0.20.0)."""
