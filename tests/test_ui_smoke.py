@@ -2139,7 +2139,11 @@ def test_week_table_fonts_are_uniform(qt_app, store):
                     sizes.add(item.font().pixelSize())
         assert sizes == {expected}, f"разнобой шрифтов: {sorted(sizes)}"
         # Заголовок недели и итог справа — одного размера.
-        assert view.week_label.font().pixelSize() == styles.fs(14)
+        # v0.23.1: шрифт заголовка «Неделя: …» — как у кнопки «Сегодня»
+        # (просьба пользователя): базовый кегль и начертание кнопки из
+        # APP_STYLESHEET, без отдельного увеличения.
+        assert view.week_label.font().pixelSize() == styles.fs(13)
+        assert view.week_label.font().weight() == 600
         assert view.right_value_label.font().pixelSize() == styles.fs(14)
     window.close()
 
@@ -2351,22 +2355,38 @@ def test_amount_font_is_chosen_to_fit_day_column(qt_app, store):
     window.close()
 
 
-def test_clear_database_confirms_and_exports(qt_app, store, monkeypatch):
-    """v0.23.1: «Очистить базу» — подтверждение и выгрузка в Excel."""
+def test_clear_database_confirms_and_exports(qt_app, store, monkeypatch, tmp_path):
+    """v0.23.1: «Очистить базу» — подтверждение, копии в «Загрузки»."""
 
+    from pathlib import Path
+
+    from PySide6.QtCore import QStandardPaths
     from PySide6.QtWidgets import QMessageBox
 
     from oplata.models import Operation
     from oplata.views.data_view import DataView
 
     view = DataView(store, on_calendar_saved=lambda: None)
+    # Настоящий путь — внутри папки «Загрузки» системной учётной записи.
+    assert DataView.BACKUP_DIR_NAME == "База поставщики оплата"
+    real_dir = view._backup_dir()
+    downloads = QStandardPaths.writableLocation(
+        QStandardPaths.StandardLocation.DownloadLocation
+    )
+    assert real_dir.name == "База поставщики оплата"
+    assert not downloads or real_dir.parent == Path(downloads)
+    # Дальше копии ищем в подменённой папке: путь к «Загрузкам» на
+    # машине сборки другой, а проверять надо сам факт копий.
+    backup_dir = tmp_path / "Загрузки" / "База поставщики оплата"
+    monkeypatch.setattr(DataView, "_backup_dir", lambda self: backup_dir)
+
     supplier = next(s for s in store.data.suppliers if s.name == "ггг")
     store.data.operations.append(
         Operation(kind="Приход", counterparty_id=supplier.id)
     )
     store.save()
 
-    # «Нет» — база цела, выгрузки нет.
+    # «Нет» — база цела, копий нет.
     monkeypatch.setattr(
         QMessageBox,
         "warning",
@@ -2374,17 +2394,18 @@ def test_clear_database_confirms_and_exports(qt_app, store, monkeypatch):
     )
     view._clear_database()
     assert store.data.suppliers and store.data.operations
-    assert not list(store.path.parent.glob("oplata-базы-*.xlsx"))
+    assert not backup_dir.exists()
 
-    # «Да» — выгрузка в Excel появляется, база пуста.
+    # «Да» — выгрузка в Excel и копия data.json лежат в папке Загрузок,
+    # база пуста.
     monkeypatch.setattr(
         QMessageBox,
         "warning",
         staticmethod(lambda *args, **kwargs: QMessageBox.StandardButton.Yes),
     )
     view._clear_database()
-    exports = list(store.path.parent.glob("oplata-базы-*.xlsx"))
-    assert exports, "перед очисткой база должна выгрузиться в Excel"
+    assert list(backup_dir.glob("oplata-базы-*.xlsx"))
+    assert list(backup_dir.glob("data-backup-*.json"))
     assert store.data.suppliers == []
     assert store.data.customers == []
     assert store.data.operations == []
@@ -2392,8 +2413,6 @@ def test_clear_database_confirms_and_exports(qt_app, store, monkeypatch):
     assert store.data.other_payments == []
     assert store.data.day_overrides == {}
     assert "База очищена" in view.admin_status_label.text()
-    # Копия data.json тоже остаётся рядом.
-    assert list(store.path.parent.glob("data-backup-*.json"))
 
     # Кнопка видна любому пользователю: вкладка «Конфигурация» за паролем.
     # (isHidden, а не isVisible: само окно в тесте не показано.)

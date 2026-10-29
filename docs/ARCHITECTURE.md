@@ -41,7 +41,7 @@ oplata-2/
     models.py      [без Qt]     # Counterparty, Operation, CashReceipt, AppData, YearStart, seed_data()
     storage.py     [без Qt]     # DataStore: JSON, две базы (МИР/КОРЕЛИЧИ)
     excelio.py     [без Qt]     # выгрузка/загрузка обеих баз в один xlsx (v0.20.0, ADR-030)
-    styles.py      [без Qt]     # цвета и QSS; FONT_SCALE — шрифты интерфейса +30% (v0.12.0)
+    styles.py      [без Qt]     # цвета и QSS; FONT_SCALE — шрифты интерфейса +50% (v0.23.2; до этого +30% с v0.12.0)
     widgets.py                 # AmountLineEdit, CollapsiblePanel, RowHoverMixin (подсветка строки v0.13.0), arrow_button
     calc.py        [без Qt]     # срок/долг поставщиков; блоки «Сводки» (средства, долги, месяц)
     reports.py     [без Qt]     # HTML печатной формы «Сводки» из экранного снимка

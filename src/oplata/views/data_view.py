@@ -32,6 +32,7 @@ from __future__ import annotations
 
 import calendar as calendar_module
 import json
+from pathlib import Path
 from collections.abc import Callable
 from datetime import date, datetime
 from decimal import Decimal
@@ -505,19 +506,27 @@ class DataView(QWidget):
 
         QDesktopServices.openUrl(QUrl.fromLocalFile(str(self.store.path.parent)))
 
-    def _make_backup(self) -> None:
-        """Скопировать data.json рядом, с датой и временем в имени."""
+    def _make_backup(self, target_dir: Path | None = None) -> Path | None:
+        """Скопировать data.json с датой и временем в имени.
+
+        ``target_dir`` — куда положить копию (v0.23.1: при очистке базы
+        копия идёт в «Загрузки\База поставщики оплата»). По умолчанию —
+        рядом с самой базой, как и было.
+        """
 
         from datetime import datetime
 
         stamp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
-        target = self.store.path.with_name(f"data-backup-{stamp}.json")
+        folder = target_dir if target_dir is not None else self.store.path.parent
+        target = folder / f"data-backup-{stamp}.json"
         try:
+            folder.mkdir(parents=True, exist_ok=True)
             target.write_bytes(self.store.path.read_bytes())
         except OSError as error:
             self.admin_status_label.setText(f"Не удалось скопировать: {error}")
-            return
+            return None
         self.admin_status_label.setText(f"Копия создана: {target.name}")
+        return target
 
     def _reload_file(self) -> None:
         """Перечитать файл данных (для ручной правки/восстановления копии)."""
@@ -529,18 +538,33 @@ class DataView(QWidget):
         if self.on_calendar_saved is not None:
             self.on_calendar_saved()
 
-    def _export_before_clear(self) -> Path | None:
+    # v0.23.1: копии при очистке базы лежат в Загрузках, в отдельной
+    # папке — чтобы их не уносило в облако вместе с самой базой.
+    BACKUP_DIR_NAME = "База поставщики оплата"
+
+    def _backup_dir(self) -> Path:
+        """Папка для копий: «Загрузки\База поставщики оплата»."""
+
+        from PySide6.QtCore import QStandardPaths
+
+        downloads = QStandardPaths.writableLocation(
+            QStandardPaths.StandardLocation.DownloadLocation
+        )
+        base = Path(downloads) if downloads else Path.home() / "Downloads"
+        return base / self.BACKUP_DIR_NAME
+
+    def _export_before_clear(self, target_dir: Path) -> Path | None:
         """Автоматическая выгрузка обеих баз в Excel перед очисткой.
 
-        Файл кладётся рядом с ``data.json`` (в облачной папке), чтобы
-        копия не потерялась: ``oplata-базы-ДАТА_ВРЕМЯ.xlsx``. Возвращает
-        путь к файлу или None, если выгрузить не удалось.
+        Файл ``oplata-базы-ДАТА_ВРЕМЯ.xlsx`` кладётся в ``target_dir``
+        (v0.23.1 — «Загрузки\База поставщики оплата»). Возвращает путь к
+        файлу или None, если выгрузить не удалось.
         """
 
         from ..excelio import ExcelError, export_bases
 
         stamp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
-        target = self.store.path.parent / f"oplata-базы-{stamp}.xlsx"
+        target = target_dir / f"oplata-базы-{stamp}.xlsx"
         bases = {self.store.base_key: self.store.data}
         other = OTHER_BASE[self.store.base_key]
         bases[other] = self._read_other_base(other)
@@ -580,6 +604,7 @@ class DataView(QWidget):
         """
 
         data = self.store.data
+        folder_text = str(self._backup_dir())
         answer = QMessageBox.warning(
             self,
             "Очистить базу",
@@ -590,7 +615,8 @@ class DataView(QWidget):
             f"поступлений: {len(data.cash_receipts)} · "
             f"прочих оплат: {len(data.other_payments)} · "
             f"отметок календаря: {len(data.day_overrides)}.\n\n"
-            "Перед очисткой базы будут выгружены в Excel. "
+            "Перед очисткой базы будут выгружены в Excel и сохранена "
+            f"копия data.json в папку:\n{folder_text}\n\n"
             "Действие необратимо.",
             QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
             QMessageBox.StandardButton.No,
@@ -599,11 +625,27 @@ class DataView(QWidget):
             self._update_admin_stats("Очистка отменена")
             return
 
-        exported = self._export_before_clear()
+        folder = self._backup_dir()
+        try:
+            folder.mkdir(parents=True, exist_ok=True)
+        except OSError as error:
+            QMessageBox.warning(
+                self,
+                "Очистить базу",
+                f"Не удалось создать папку для копий:\n{folder}\n{error}\n\n"
+                "Очистка отменена.",
+            )
+            self._update_admin_stats("Очистка отменена: нет папки для копий")
+            return
+
+        exported = self._export_before_clear(folder)
         if exported is None:  # выгрузить не удалось — базу не трогаем
             self._update_admin_stats("Очистка отменена: нет выгрузки в Excel")
             return
-        self._make_backup()  # копия data.json рядом, до стирания
+        backup = self._make_backup(folder)  # копия data.json, до стирания
+        if backup is None:
+            self._update_admin_stats("Очистка отменена: нет копии data.json")
+            return
 
         data.suppliers = []
         data.customers = []
@@ -616,8 +658,8 @@ class DataView(QWidget):
         self.store.save()
         self.refresh()
         self._update_admin_stats(
-            "База очищена. Выгрузка в Excel и копия data.json — "
-            f"рядом с файлом базы ({exported.name})."
+            "База очищена. Выгрузка в Excel и копия data.json — в папке "
+            f"«{self.BACKUP_DIR_NAME}» в Загрузках ({exported.name})."
         )
         if self.on_calendar_saved is not None:
             self.on_calendar_saved()

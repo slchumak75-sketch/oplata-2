@@ -56,7 +56,8 @@ class CollapsiblePanel(QFrame):
         self.toggle = QPushButton()
         self.toggle.setStyleSheet(
             "QPushButton{background:transparent;border:none;text-align:left;"
-            f"padding:2px 0;font-weight:800;font-size:14px;color:{styles.TEXT}}}"
+            f"padding:2px 0;font-weight:800;font-size:{styles.fs(11)}px;"
+            f"color:{styles.TEXT}}}"
             "QPushButton:hover{background:transparent}"
         )
         self.toggle.clicked.connect(self.toggle_expanded)

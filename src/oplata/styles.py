@@ -22,9 +22,10 @@ WEEK_TABLE_TODAY_GREEN = "#ccf5a3"   # салатовая верхняя яче�
 TABLE_GRID = "#e3e8f0"      # линии сетки таблиц
 SELECTION_BG = "#dbeafe"    # фон выделенной строки
 
-# Запрос пользователя v0.12.0: шрифты интерфейса на 30% больше.
-# Базовый размер 13px -> 17px, остальные пересчитаны тем же множителем.
-FONT_SCALE = 1.3
+# Запрос пользователя v0.12.0: шрифты интерфейса больше базового,
+# v0.23.2 — на 50% (было +30%): базовый 13px -> 20px, остальные
+# пересчитаны тем же множителем функцией ``fs``.
+FONT_SCALE = 1.5
 
 
 # Широкий, всегда видимый вертикальный скроллбар (v0.13.0: «закрепить
@@ -53,9 +54,8 @@ WIDE_SCROLLBAR_ON_AREA = (
     "QScrollArea > QWidget > QWidget{background:#ffffff}" + WIDE_SCROLLBAR
 )
 WIDE_SCROLLBAR_ON_TABLE = (
-    "QTableWidget{background:#ffffff;"
-    f"border:1px solid {BORDER};border-radius:8px;"
-    f"gridline-color:{TABLE_GRID};"
+    "QTableWidget{background:#ffffff;border:0px;"
+    "gridline-color:transparent;"
     f"selection-background-color:{SELECTION_BG};"
     f"selection-color:{TEXT}}}"
     + WIDE_SCROLLBAR

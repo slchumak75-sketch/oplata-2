@@ -480,9 +480,9 @@ class MainWindow(QMainWindow):
         if index == IDX_RECEIPTS:
             self.receipts_view.set_date(today)
         elif index == IDX_SUPPLIERS:
-            self.suppliers_view.goto_date(today)
+            self.suppliers_view.reset_to_today()
         elif index == IDX_CUSTOMERS:
-            self.customers_view.goto_date(today)
+            self.customers_view.reset_to_today()
 
     def _ask_config_password(self) -> bool:
         """Пароль на вкладку «Конфигурация» (v0.18.0).

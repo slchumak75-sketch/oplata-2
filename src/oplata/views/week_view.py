@@ -276,7 +276,7 @@ class WeekView(QWidget):
         self.frozen_table.setObjectName("FrozenWeekHeader")
         self.frozen_table.setStyleSheet(
             f"QTableWidget{{font-size:{styles.fs(12)}px;"
-            f"background:#ffffff;border:0px}}"
+            f"background:#ffffff;border:0px;gridline-color:transparent}}"
         )
         self.frozen_table.horizontalHeader().setVisible(False)
         self.frozen_table.verticalHeader().setVisible(False)
@@ -322,16 +322,19 @@ class WeekView(QWidget):
         bar.addWidget(self.prev_week_btn)
 
         self.week_label = QLabel()
-        self.week_label.setStyleSheet(f"font-weight:700;font-size:{styles.fs(14)}px")
+        # v0.23.1: шрифт «Недели» — такой же, как у кнопки «Сегодня»
+        # (просьба пользователя): базовый кегль и начертание кнопки,
+        # без отдельного увеличения.
+        self.week_label.setStyleSheet(f"font-weight:600;font-size:{styles.fs(13)}px")
         bar.addWidget(self.week_label)
 
         self.next_week_btn = arrow_button("Неделя →", "Неделя вперёд")
         self.next_week_btn.clicked.connect(lambda: self._shift_week(7))
         bar.addWidget(self.next_week_btn)
 
-        today_btn = QPushButton("Сегодня")
-        today_btn.clicked.connect(self._go_today)
-        bar.addWidget(today_btn)
+        self.today_btn = QPushButton("Сегодня")
+        self.today_btn.clicked.connect(self._go_today)
+        bar.addWidget(self.today_btn)
 
         bar.addWidget(QLabel("Дата"))
         self.date_edit = make_date_edit(self.week_start)
@@ -402,6 +405,18 @@ class WeekView(QWidget):
         """Перейти на неделю, содержащую ``day`` (также после «Поставки»)."""
         self.week_start = week_monday(day)
         self.refresh()
+
+    def reset_to_today(self) -> None:
+        """Показать сегодняшний день (v0.23.1).
+
+        ``refresh`` ставит в поле даты начало недели, поэтому после
+        перехода на вкладку поле показываем отдельно: неделя — та, в
+        которой сегодня, а в окошке даты — само сегодняшнее число.
+        """
+
+        today = date.today()
+        self.goto_date(today)
+        set_date_edit(self.date_edit, today)
 
     def _on_item_clicked(self, item: QTableWidgetItem) -> None:
         if self.read_only:  # v0.18.0: без права ввода окна ввода не открываем
