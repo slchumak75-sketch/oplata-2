@@ -1327,6 +1327,97 @@ def test_year_start_panel_saves_opening_balances(qt_app, store):
     window.close()
 
 
+def test_year_start_customer_debt_goes_to_total_column_once(qt_app, store):
+    """v0.25.0: задолженность из «Данных» попадает в колонку «Всего»
+    таблицы «Покупатели» один раз — на неделю даты остатков."""
+
+    from datetime import date
+
+    from oplata.app import MainWindow
+    from oplata.models import Counterparty, YearStartCustomerDebt
+
+    customer = store.data.customers[0] if store.data.customers else None
+    if customer is None:
+        customer = Counterparty(name="Покупатель Тест")
+        store.data.customers.append(customer)
+    store.data.year_start.date = "2026-01-01"
+    store.data.year_start.customer_debts = [
+        YearStartCustomerDebt(counterparty_id=customer.id, amount="5000")
+    ]
+
+    window = MainWindow(store)
+    window.resize(1400, 900)
+    window.show()
+    qt_app.processEvents()
+    view = window.customers_view
+
+    # Неделя с датой остатков: долг виден и у покупателя, и в «ВСЕГО».
+    view.goto_date(date(2026, 1, 1))
+    qt_app.processEvents()
+    table = view.table
+    rows = {
+        table.item(row, 0).text(): (table.item(row, 1).text() if table.item(row, 1) else "")
+        for row in range(table.rowCount())
+        if table.item(row, 0)
+    }
+    assert rows.get(customer.name) == "5 000,00"
+    assert rows.get("ВСЕГО") == "5 000,00"
+
+    # Следующая неделя: переноса нет — он добавляется один раз.
+    view.goto_date(date(2026, 1, 8))
+    qt_app.processEvents()
+    rows = {
+        table.item(row, 0).text(): (table.item(row, 1).text() if table.item(row, 1) else "")
+        for row in range(table.rowCount())
+        if table.item(row, 0)
+    }
+    assert rows.get(customer.name) == ""
+    assert rows.get("ВСЕГО") == ""
+    window.close()
+
+
+def test_year_start_funds_go_to_summary_balance(qt_app, store):
+    """v0.25.0: «Текущие средства на счету» (вкладка «Данные») — это
+    «Остаток на счете» в «Сводке» на дату остатков."""
+
+    from oplata.app import MainWindow
+
+    store.data.year_start.date = "2026-01-01"
+    store.data.year_start.funds = "10000"
+
+    window = MainWindow(store)
+    window.show()
+    qt_app.processEvents()
+    summary = window.summary_view
+    assert summary._values["funds"].text() == "10 000,00"
+    window.close()
+
+
+def test_data_tab_switches_base(qt_app, store):
+    """v0.25.0: на вкладке «Данные» видно, для какой базы остатки, и её
+    можно переключить (МИР <-> КОРЕЛИЧИ)."""
+
+    from oplata.app import MainWindow
+
+    window = MainWindow(store)
+    window.show()
+    qt_app.processEvents()
+    view = window.data_view
+    assert "МИР" in view.base_label.text()
+    assert "КОРЕЛИЧИ" in view.base_switch_btn.text()
+
+    view.base_switch_btn.click()
+    qt_app.processEvents()
+    assert store.base_key == "korelichi"
+    assert "КОРЕЛИЧИ" in view.base_label.text()
+    assert "МИР" in view.base_switch_btn.text()
+
+    view.base_switch_btn.click()
+    qt_app.processEvents()
+    assert store.base_key == "mir"
+    window.close()
+
+
 def test_year_start_tables_are_side_by_side_and_full_height(qt_app, store):
     """v0.24.0: таблицы остатков — две вертикальные, слева и справа, и
     занимают всю высоту экрана."""

@@ -929,10 +929,16 @@ class WeekView(QWidget):
         # заранее, а не по ходу вывода строк контрагентов.
         customer_debts: list[Decimal] = []
         if self.kind != "supplier":
+            # v0.25.0: задолженность, перенесённая из «Данных»,
+            # прибавляется один раз — на неделю даты остатков.
+            start_debts = calc.year_start_customer_debts(
+                self.store.data, days[0], self._week_end
+            )
             customer_debts = [
                 calc.customer_debt_amount(
                     self.store.data, partner, days[0], self._week_end
                 )
+                + start_debts.get(partner.id, ZERO)
                 for partner in partners
             ]
             total_customer_debt = sum(customer_debts, ZERO)

@@ -83,7 +83,7 @@ from ..models import (
     set_year_start_funds,
     set_year_start_supplier_debt,
 )
-from ..storage import OTHER_BASE, DataStore, data_path_for
+from ..storage import BASE_TITLES, OTHER_BASE, DataStore, data_path_for
 from ..widgets import (
     AmountLineEdit,
     CollapsiblePanel,
@@ -136,10 +136,14 @@ class DataView(QWidget):
         on_calendar_saved: Callable[[], None] | None = None,
         parent: QWidget | None = None,
         on_users_saved: Callable[[User], None] | None = None,
+        on_toggle_base: Callable[[], None] | None = None,
     ) -> None:
         super().__init__(parent)
         self.store = store
         self.on_calendar_saved = on_calendar_saved
+        # v0.25.0: остатки ведутся отдельно для баз МИР и КОРЕЛИЧИ —
+        # со вкладки можно переключить базу, не уходя с неё.
+        self.on_toggle_base = on_toggle_base
         # v0.20.0: выбор текущего пользователя применяется сразу.
         self.on_users_saved = on_users_saved
         self.year = date.today().year
@@ -307,6 +311,20 @@ class DataView(QWidget):
         title.setObjectName("PanelTitle")
         layout.addWidget(title)
 
+        # v0.25.0: остатки у каждой базы (МИР/КОРЕЛИЧИ) свои — показываем,
+        # для какой базы вводим, и даём переключить её тут же.
+        base_row = QHBoxLayout()
+        base_row.setSpacing(8)
+        self.base_label = QLabel()
+        self.base_label.setObjectName("Muted")
+        base_row.addWidget(self.base_label)
+        base_row.addStretch(1)
+        self.base_switch_btn = QPushButton()
+        self.base_switch_btn.clicked.connect(self._toggle_base)
+        base_row.addWidget(self.base_switch_btn)
+        layout.addLayout(base_row)
+        self._update_base_row()
+
         hint = QLabel(
             "Разовые данные, с которых начинается год: по поставщикам — "
             "дата оплаты и сумма долга, по покупателям — сумма "
@@ -405,6 +423,25 @@ class DataView(QWidget):
         layout.addWidget(self.year_start_status_label)
 
         self._fill_year_start_tables()
+
+    def _update_base_row(self) -> None:
+        """Подпись и кнопка переключения базы (v0.25.0)."""
+
+        key = self.store.base_key
+        title = BASE_TITLES.get(key, str(key))
+        other = BASE_TITLES.get(OTHER_BASE.get(key, ""), "")
+        self.base_label.setText(f"Остатки вводятся для базы: {title}")
+        self.base_switch_btn.setText(
+            f"Переключить на {other}" if other else "Переключить базу"
+        )
+        self.base_switch_btn.setVisible(self.on_toggle_base is not None)
+        self.base_switch_btn.setEnabled(self.on_toggle_base is not None)
+
+    def _toggle_base(self) -> None:
+        """Переключить базу (МИР <-> КОРЕЛИЧИ) — вызов в MainWindow."""
+
+        if self.on_toggle_base is not None:
+            self.on_toggle_base()
 
     @staticmethod
     def _stretch_debts_table(table: QTableWidget) -> None:
@@ -1025,6 +1062,7 @@ class DataView(QWidget):
     # ------------------------------------------------------------- календарь
     def refresh(self) -> None:
         self.year_label.setText(str(self.year))
+        self._update_base_row()  # v0.25.0: база могла переключиться
         self._day_buttons = {}
 
         container = QWidget()

@@ -590,6 +590,29 @@ def customer_debt_amount(
     return total
 
 
+def year_start_customer_debts(
+    data: AppData, start: date, end: date
+) -> dict[str, Decimal]:
+    """Перенос задолженности из плашки «Данные» на период (v0.25.0).
+
+    Возвращает ``{id покупателя: сумма}``, если дата остатков
+    (``year_start.date``) попадает в период ``start…end``, иначе — пустой
+    словарь. Так введённая в «Данных» задолженность появляется в
+    таблице «Покупатели» (колонка «Всего») **один раз** — на той неделе,
+    куда приходится дата остатков (просьба пользователя).
+    """
+
+    day = _iso_day(getattr(data.year_start, "date", "") or "")
+    if day is None or day < start or day > end:
+        return {}
+    result: dict[str, Decimal] = {}
+    for entry in data.year_start.customer_debts:
+        amount = year_start_amount(entry)
+        if amount:
+            result[entry.counterparty_id] = amount
+    return result
+
+
 def customer_debt_totals(
     data: AppData, on_date: date, include_archived: bool = False
 ) -> CustomerDebtTotals:
