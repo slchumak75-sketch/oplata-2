@@ -31,6 +31,7 @@
 from __future__ import annotations
 
 import calendar as calendar_module
+import json
 from collections.abc import Callable
 from datetime import date, datetime
 from decimal import Decimal
@@ -73,13 +74,14 @@ from ..access import (
 )
 from ..dates import MONTHS_RU, WEEKDAYS_RU_TITLE, fmt_money_plain, parse_money
 from ..models import (
+    AppData,
     YearStart,
     set_year_start_customer_debt,
     set_year_start_date,
     set_year_start_funds,
     set_year_start_supplier_debt,
 )
-from ..storage import DataStore
+from ..storage import OTHER_BASE, DataStore, data_path_for
 from ..widgets import (
     AmountLineEdit,
     CollapsiblePanel,
@@ -527,19 +529,55 @@ class DataView(QWidget):
         if self.on_calendar_saved is not None:
             self.on_calendar_saved()
 
-    # Слово, которое нужно набрать вторым подтверждением (v0.23.1).
-    CLEAR_CONFIRM_WORD = "ОЧИСТИТЬ"
+    def _export_before_clear(self) -> Path | None:
+        """Автоматическая выгрузка обеих баз в Excel перед очисткой.
+
+        Файл кладётся рядом с ``data.json`` (в облачной папке), чтобы
+        копия не потерялась: ``oplata-базы-ДАТА_ВРЕМЯ.xlsx``. Возвращает
+        путь к файлу или None, если выгрузить не удалось.
+        """
+
+        from ..excelio import ExcelError, export_bases
+
+        stamp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
+        target = self.store.path.parent / f"oplata-базы-{stamp}.xlsx"
+        bases = {self.store.base_key: self.store.data}
+        other = OTHER_BASE[self.store.base_key]
+        bases[other] = self._read_other_base(other)
+        try:
+            export_bases(bases, target)
+        except ExcelError as error:
+            QMessageBox.warning(
+                self,
+                "Очистить базу",
+                f"Не удалось выгрузить базы в Excel:\n{error}\n\n"
+                "Очистка отменена.",
+            )
+            return None
+        return target
+
+    def _read_other_base(self, base_key: str) -> AppData:
+        """Прочитать вторую базу с диска (в выгрузку идут обе)."""
+
+        path = data_path_for(base_key)
+        if not path.exists():
+            return AppData()
+        try:
+            raw = json.loads(path.read_text(encoding="utf-8"))
+            return AppData.from_dict(raw)
+        except (OSError, ValueError, TypeError):
+            return AppData()
 
     def _clear_database(self) -> None:
-        """Полностью очистить базу: резервная копия + два подтверждения.
+        """Полностью очистить базу: выгрузка в Excel + подтверждение.
 
         Стираются поставщики, покупатели, операции, поступления
         наличными/по картам, прочие виды оплат, отметки календаря и
         перенос остатков на 1 января. Пользователи и права лежат в
-        отдельном файле (users.json) и не трогаются.
+        отдельном файле (users.json) и не трогаются. Перед стиранием
+        обе базы сами выгружаются в Excel и делается копия data.json
+        (v0.23.1).
         """
-
-        from PySide6.QtWidgets import QInputDialog
 
         data = self.store.data
         answer = QMessageBox.warning(
@@ -552,27 +590,21 @@ class DataView(QWidget):
             f"поступлений: {len(data.cash_receipts)} · "
             f"прочих оплат: {len(data.other_payments)} · "
             f"отметок календаря: {len(data.day_overrides)}.\n\n"
-            "Перед очисткой будет создана резервная копия. "
+            "Перед очисткой базы будут выгружены в Excel. "
             "Действие необратимо.",
             QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
             QMessageBox.StandardButton.No,
         )
         if answer != QMessageBox.StandardButton.Yes:
-            return
-
-        # Второе подтверждение: надо набрать слово вручную.
-        word, ok = QInputDialog.getText(
-            self,
-            "Подтверждение",
-            "Наберите слово «"
-            + self.CLEAR_CONFIRM_WORD
-            + "» заглавными буквами, чтобы очистить базу:",
-        )
-        if not ok or word.strip().upper() != self.CLEAR_CONFIRM_WORD:
             self._update_admin_stats("Очистка отменена")
             return
 
-        self._make_backup()  # копия рядом с data.json, до стирания
+        exported = self._export_before_clear()
+        if exported is None:  # выгрузить не удалось — базу не трогаем
+            self._update_admin_stats("Очистка отменена: нет выгрузки в Excel")
+            return
+        self._make_backup()  # копия data.json рядом, до стирания
+
         data.suppliers = []
         data.customers = []
         data.operations = []
@@ -584,7 +616,8 @@ class DataView(QWidget):
         self.store.save()
         self.refresh()
         self._update_admin_stats(
-            "База очищена. Резервная копия лежит рядом с data.json."
+            "База очищена. Выгрузка в Excel и копия data.json — "
+            f"рядом с файлом базы ({exported.name})."
         )
         if self.on_calendar_saved is not None:
             self.on_calendar_saved()
@@ -867,11 +900,15 @@ class DataView(QWidget):
     def set_read_only(self, read_only: bool, can_admin: bool = False) -> None:
         """Права пользователя: «только просмотр» или полный доступ (v0.18.0).
 
-        ``can_admin`` — доступ к разделу «Администрирование» (бэкап,
-        восстановление, сброс данных).
+        ``can_admin`` — доступ к разделу «Администрирование». С v0.23.1
+        плашку видят все, кто открыл вкладку «Конфигурация»: сама
+        вкладка закрыта паролем, а кнопка «Очистить базу» должна быть
+        доступна любому, кто этот пароль знает (просьба пользователя).
+        Параметр оставлен для совместимости вызова.
         """
 
         self.read_only = read_only
+        self._can_admin = can_admin  # право на раздел «Данные» (v0.18.0)
         # Отметки в календаре меняют данные — без права ввода нельзя.
         self.save_button.setVisible(not read_only)
         self.cancel_button.setVisible(not read_only)
@@ -886,7 +923,9 @@ class DataView(QWidget):
             if read_only
             else QAbstractItemView.EditTrigger.AllEditTriggers
         )
-        self.admin_panel.setVisible(can_admin)
+        # v0.23.1: «Администрирование» видно всем, кто зашёл на вкладку
+        # «Конфигурация» (она за паролем).
+        self.admin_panel.setVisible(True)
         # Пользователей правит только тот, у кого есть право ввода данных.
         for btn in (
             self.users_add_btn,

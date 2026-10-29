@@ -2221,7 +2221,10 @@ def test_user_rights_limit_pages_base_and_input(qt_app, store, monkeypatch, tmp_
     assert all(not b.isHidden() for b in window.nav_buttons)
     assert window.suppliers_view.read_only is True
     assert window.receipts_view.incoming.read_only is True
-    assert window.data_view.admin_panel.isHidden()
+    # v0.23.1: «Администрирование» видно всем, кто открыл вкладку
+    # «Конфигурация» — сама вкладка закрыта паролем (просьба
+    # пользователя: кнопка «Очистить базу» должна быть доступна).
+    assert not window.data_view.admin_panel.isHidden()
     window.close()
 
     window = MainWindow(store, access_module.Access(user_mir))
@@ -2348,23 +2351,22 @@ def test_amount_font_is_chosen_to_fit_day_column(qt_app, store):
     window.close()
 
 
-def test_clear_database_needs_two_confirmations(qt_app, store, monkeypatch):
-    """v0.23.1: «Очистить базу» — резервная копия и два подтверждения."""
+def test_clear_database_confirms_and_exports(qt_app, store, monkeypatch):
+    """v0.23.1: «Очистить базу» — подтверждение и выгрузка в Excel."""
 
-    from PySide6.QtWidgets import QInputDialog, QMessageBox
+    from PySide6.QtWidgets import QMessageBox
 
+    from oplata.models import Operation
     from oplata.views.data_view import DataView
 
     view = DataView(store, on_calendar_saved=lambda: None)
     supplier = next(s for s in store.data.suppliers if s.name == "ггг")
-    from oplata.models import Operation
-
     store.data.operations.append(
         Operation(kind="Приход", counterparty_id=supplier.id)
     )
     store.save()
 
-    # Первое «нет» — ничего не трогаем.
+    # «Нет» — база цела, выгрузки нет.
     monkeypatch.setattr(
         QMessageBox,
         "warning",
@@ -2372,29 +2374,17 @@ def test_clear_database_needs_two_confirmations(qt_app, store, monkeypatch):
     )
     view._clear_database()
     assert store.data.suppliers and store.data.operations
+    assert not list(store.path.parent.glob("oplata-базы-*.xlsx"))
 
-    # Первое «да», но слово набрано неверно — отмена.
+    # «Да» — выгрузка в Excel появляется, база пуста.
     monkeypatch.setattr(
         QMessageBox,
         "warning",
         staticmethod(lambda *args, **kwargs: QMessageBox.StandardButton.Yes),
     )
-    monkeypatch.setattr(
-        QInputDialog,
-        "getText",
-        staticmethod(lambda *args, **kwargs: ("нет", True)),
-    )
     view._clear_database()
-    assert store.data.suppliers and store.data.operations
-    assert "отменена" in view.admin_status_label.text().lower()
-
-    # Полное подтверждение — база пуста, копия создана.
-    monkeypatch.setattr(
-        QInputDialog,
-        "getText",
-        staticmethod(lambda *args, **kwargs: ("ОЧИСТИТЬ", True)),
-    )
-    view._clear_database()
+    exports = list(store.path.parent.glob("oplata-базы-*.xlsx"))
+    assert exports, "перед очисткой база должна выгрузиться в Excel"
     assert store.data.suppliers == []
     assert store.data.customers == []
     assert store.data.operations == []
@@ -2402,8 +2392,14 @@ def test_clear_database_needs_two_confirmations(qt_app, store, monkeypatch):
     assert store.data.other_payments == []
     assert store.data.day_overrides == {}
     assert "База очищена" in view.admin_status_label.text()
-    backups = list(store.path.parent.glob("data-backup-*.json"))
-    assert backups, "резервная копия должна остаться рядом с data.json"
+    # Копия data.json тоже остаётся рядом.
+    assert list(store.path.parent.glob("data-backup-*.json"))
+
+    # Кнопка видна любому пользователю: вкладка «Конфигурация» за паролем.
+    # (isHidden, а не isVisible: само окно в тесте не показано.)
+    view.set_read_only(True, can_admin=False)
+    assert not view.admin_panel.isHidden()
+    assert not view.clear_button.isHidden()
     view.close()
 
 
