@@ -18,6 +18,7 @@ from datetime import date, timedelta
 from PySide6.QtCore import Qt
 from PySide6.QtWidgets import (
     QAbstractItemView,
+    QApplication,
     QDialog,
     QHBoxLayout,
     QHeaderView,
@@ -53,7 +54,14 @@ class FundsMovementDialog(QDialog):
         self.store = store
         self.days = days
         self.setWindowTitle("Журнал движения средств")
-        self.resize(920, 620)
+        # v0.23.4: окно раскрывается на всю высоту экрана (просьба
+        # пользователя) — журнал за день бывает длинным.
+        screen = QApplication.primaryScreen()
+        height = 620
+        if screen is not None:
+            available = screen.availableGeometry().height()
+            height = max(320, available - 24)
+        self.resize(920, height)
 
         root = QVBoxLayout(self)
         root.setContentsMargins(14, 12, 14, 12)
@@ -95,6 +103,18 @@ class FundsMovementDialog(QDialog):
         )
         self.table.setSelectionMode(
             QAbstractItemView.SelectionMode.NoSelection
+        )
+        # v0.23.4: вертикальный скроллинг — широкий и всегда видимый,
+        # такой же, как в таблицах «Поставщики»/«Покупатели».
+        self.table.setVerticalScrollBarPolicy(
+            Qt.ScrollBarPolicy.ScrollBarAlwaysOn
+        )
+        self.table.setStyleSheet(
+            "QTableWidget{"
+            f"background:#ffffff;border:1px solid {styles.BORDER};"
+            "border-radius:8px;"
+            f"gridline-color:{styles.TABLE_GRID}}}"
+            + styles.WIDE_SCROLLBAR
         )
         header = self.table.horizontalHeader()
         header.setSectionResizeMode(QHeaderView.ResizeMode.ResizeToContents)

@@ -1610,6 +1610,27 @@ def test_summary_customer_debt_block_counts_sales_minus_payments(qt_app, store):
     window.close()
 
 
+def test_funds_movement_dialog_fills_screen_height(qt_app, store):
+    """v0.23.4: журнал движения средств — на всю высоту экрана, со скроллом."""
+
+    from datetime import date
+
+    from PySide6.QtWidgets import QApplication
+
+    from oplata.views.funds_view import FundsMovementDialog
+
+    dialog = FundsMovementDialog(store, date(2026, 10, 28))
+    # На экране меньше минимальной высоты окно не сжимается ниже 320.
+    available = QApplication.primaryScreen().availableGeometry().height()
+    assert dialog.height() == max(320, available - 24)
+    assert (
+        dialog.table.verticalScrollBarPolicy()
+        == Qt.ScrollBarPolicy.ScrollBarAlwaysOn
+    )
+    assert "QScrollBar:vertical" in dialog.table.styleSheet()
+    dialog.close()
+
+
 def test_funds_movement_journal_shows_one_day(qt_app, store):
     """v0.23.1: журнал движения средств — за один день.
 
