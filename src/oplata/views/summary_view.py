@@ -109,7 +109,8 @@ class SummaryView(QWidget):
         # мельче (см. ``_add_section``).
         self.panel.toggle.setStyleSheet(
             "QPushButton{background:transparent;border:none;text-align:left;"
-            f"padding:2px 0;font-weight:800;font-size:{styles.fs(15)}px;"
+            # v0.23.6: шрифт панели «Сводка» крупнее обычного на 50%.
+            f"padding:2px 0;font-weight:800;font-size:{styles.fs_summary(15)}px;"
             f"color:{styles.TEXT}}}"
             "QPushButton:hover{background:transparent}"
         )
@@ -187,7 +188,8 @@ class SummaryView(QWidget):
 
         caption = QLabel(title)
         caption.setStyleSheet(
-            f"font-weight:800;font-size:{styles.fs(12)}px;color:{styles.TEXT}"
+            f"font-weight:800;font-size:{styles.fs_summary(12)}px;"
+            f"color:{styles.TEXT}"
         )
         layout.addWidget(caption)
 
@@ -199,7 +201,7 @@ class SummaryView(QWidget):
             bold = key in {"balance"}
             label = QLabel(text)
             label.setStyleSheet(
-                f"font-size:{styles.fs(12)}px;"
+                f"font-size:{styles.fs_summary(12)}px;"
                 f"{'font-weight:800;' if bold else ''}"
             )
             label.setSizePolicy(
@@ -214,7 +216,7 @@ class SummaryView(QWidget):
                 Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter
             )
             value.setStyleSheet(
-                f"font-size:{styles.fs(12)}px;"
+                f"font-size:{styles.fs_summary(12)}px;"
                 f"{'font-weight:800;' if bold else ''}"
             )
             self._captions[key] = label

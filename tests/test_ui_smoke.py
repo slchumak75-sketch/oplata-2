@@ -1985,6 +1985,29 @@ def test_journal_period_three_and_twelve_months(qt_app, store, monkeypatch):
     customer_journal.close()
 
 
+def test_summary_panel_font_is_larger_others_unchanged(qt_app, store):
+    """v0.23.6: шрифт увеличен только в панели «Сводка»."""
+
+    from oplata import styles
+    from oplata.app import MainWindow
+
+    window = MainWindow(store)
+    summary = window.summary_view
+    # Кегли блоков «Сводки» — на 50% крупнее обычных.
+    assert summary.panel.toggle.font().pixelSize() == styles.fs_summary(15)
+    caption = next(iter(summary._captions.values()))
+    value = next(iter(summary._values.values()))
+    assert caption.font().pixelSize() == styles.fs_summary(12)
+    assert value.font().pixelSize() == styles.fs_summary(12)
+    assert styles.fs_summary(12) == int(round(12 * styles.FONT_SCALE * 1.5))
+
+    # Остальная программа осталась при обычном шрифте (общее +50% из
+    # v0.23.2 отменено).
+    assert styles.FONT_SCALE == 1.3
+    assert window.suppliers_view.week_label.font().pixelSize() == styles.fs(13)
+    window.close()
+
+
 def test_money_block_paints_weekends_and_today(qt_app, store, monkeypatch):
     """v0.23.3: столбец выходного — розовый, сегодняшняя дата — салатовая."""
 

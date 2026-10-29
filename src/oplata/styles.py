@@ -67,6 +67,18 @@ def fs(base_px: int) -> int:
     return int(round(base_px * FONT_SCALE))
 
 
+# v0.23.6: шрифт **панели «Сводка»** — на 50% крупнее обычного
+# (просьба пользователя: увеличить шрифт именно в этой области, а не во
+# всей программе, как было ошибочно сделано в v0.23.2).
+SUMMARY_FONT_SCALE = 1.5
+
+
+def fs_summary(base_px: int) -> int:
+    """Кегль панели «Сводка»: обычный ``fs`` + 50%."""
+
+    return int(round(base_px * FONT_SCALE * SUMMARY_FONT_SCALE))
+
+
 APP_STYLESHEET = f"""
 * {{
     font-family: "Segoe UI", "Arial", sans-serif;
