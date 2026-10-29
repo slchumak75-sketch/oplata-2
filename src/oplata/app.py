@@ -11,13 +11,18 @@
 
 from __future__ import annotations
 
+import json
+from pathlib import Path
+
 from PySide6.QtCore import Qt
 from PySide6.QtWidgets import (
     QButtonGroup,
+    QFileDialog,
     QFrame,
     QHBoxLayout,
     QLabel,
     QMainWindow,
+    QMessageBox,
     QPushButton,
     QStackedWidget,
     QVBoxLayout,
@@ -30,12 +35,21 @@ from .dialogs.counterparty_card import CounterpartyCardDialog
 from .dialogs.delivery_dialog import DeliveryDialog
 from .dialogs.operations_journal_dialog import OperationsJournalDialog
 from .dialogs.realization_dialog import RealizationDialog
+from .excelio import (
+    ExcelError,
+    default_export_name,
+    describe_bases,
+    export_bases,
+    import_bases,
+)
+from .models import AppData
 from .storage import (
     BASE_KORELICHI,
     BASE_MIR,
     BASE_TITLES,
     OTHER_BASE,
     DataStore,
+    data_path_for,
 )
 from .views.data_view import DataView
 from .views.receipts_view import ReceiptsView
@@ -108,7 +122,11 @@ class MainWindow(QMainWindow):
             summary_widget=self.summary_view,
         )
         self.data_view = DataView(
-            store, on_calendar_saved=self.refresh_after_calendar_change
+            store,
+            on_calendar_saved=self.refresh_after_calendar_change,
+            # v0.20.0: выбор текущего пользователя в «Конфигурации»
+            # применяется сразу, без перезапуска.
+            on_users_saved=self.apply_current_user,
         )
 
         # «Сводка» пересчитывается сразу после ввода: любое сохранение
@@ -175,6 +193,27 @@ class MainWindow(QMainWindow):
         self.base_button.setCursor(Qt.CursorShape.PointingHandCursor)
         self.base_button.clicked.connect(self.toggle_base)
         layout.addWidget(self.base_button)
+
+        layout.addSpacing(10)
+        # v0.20.0: выгрузка и загрузка **обеих** баз (МИР и КОРЕЛИЧИ)
+        # одним файлом Excel. Кнопки видит только администратор — у
+        # остальных пользователей их нет в шапке.
+        self.export_button = QPushButton("Выгрузить базу")
+        self.export_button.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.export_button.setToolTip(
+            "Сохранить обе базы (МИР и КОРЕЛИЧИ) в файл Excel"
+        )
+        self.export_button.clicked.connect(self.export_bases_to_excel)
+        layout.addWidget(self.export_button)
+
+        self.import_button = QPushButton("Загрузить базу")
+        self.import_button.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.import_button.setToolTip(
+            "Заменить данные баз (МИР и КОРЕЛИЧИ) данными из файла Excel"
+        )
+        self.import_button.clicked.connect(self.import_bases_from_excel)
+        layout.addWidget(self.import_button)
+
         self._apply_base_style()
 
         layout.addStretch(1)
@@ -196,6 +235,16 @@ class MainWindow(QMainWindow):
         )
         for btn in self.nav_buttons:
             btn.setStyleSheet(nav_style)
+        # Кнопки базы (v0.20.0): рамка, а не заливка, — чтобы не путать
+        # их с вкладками и с переключателем «МИР/КОРЕЛИЧИ».
+        base_tools_style = (
+            "QPushButton{background:rgba(255,255,255,0.16);color:#ffffff;"
+            "border:1px solid rgba(255,255,255,0.85);border-radius:8px;"
+            f"padding:6px 14px;font-weight:700;font-size:{styles.fs(11)}px}}"
+            "QPushButton:hover{background:rgba(255,255,255,0.32)}"
+        )
+        for btn in (self.export_button, self.import_button):
+            btn.setStyleSheet(base_tools_style)
         self.base_button.setStyleSheet(
             "QPushButton{background:#ffffff;"
             f"color:{header_bg};"
@@ -216,6 +265,137 @@ class MainWindow(QMainWindow):
         self.base_button.setText(BASE_TITLES[self.store.base_key])
         self._apply_base_style()
         self.refresh_all_views()
+
+    def _read_base(self, base_key: str) -> AppData:
+        """Прочитать базу с диска (без переключения активной базы)."""
+
+        path = data_path_for(base_key)
+        if not path.exists():
+            return AppData()
+        try:
+            raw = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            return AppData()
+        try:
+            return AppData.from_dict(raw)
+        except (TypeError, ValueError):
+            return AppData()
+
+    def _write_base(self, base_key: str, data: AppData) -> None:
+        """Записать базу на диск атомарно (как сохраняет DataStore)."""
+
+        holder = DataStore(path=data_path_for(base_key), base_key=base_key)
+        holder.data = data
+        holder.save()
+
+    def export_bases_to_excel(self) -> None:
+        """Кнопка «Выгрузить базу»: обе базы в один файл Excel (v0.20.0)."""
+
+        bases = {self.store.base_key: self.store.data}
+        other = OTHER_BASE[self.store.base_key]
+        bases[other] = self._read_base(other)
+
+        default_path = str(Path.home() / default_export_name())
+        path, _selected = QFileDialog.getSaveFileName(
+            self,
+            "Выгрузить базы в Excel",
+            default_path,
+            "Книга Excel (*.xlsx)",
+        )
+        if not path:
+            return
+        if not path.lower().endswith(".xlsx"):
+            path += ".xlsx"
+        try:
+            export_bases(bases, Path(path))
+        except ExcelError as exc:
+            QMessageBox.warning(self, "Выгрузка базы", str(exc))
+            return
+        QMessageBox.information(
+            self,
+            "Выгрузка базы",
+            "Базы МИР и КОРЕЛИЧИ выгружены в файл:\n" + path,
+        )
+
+    def import_bases_from_excel(self) -> None:
+        """Кнопка «Загрузить базу»: обе базы из файла Excel (v0.20.0).
+
+        Файл заменяет данные целиком, поэтому перед заменой спрашиваем
+        подтверждение: отменить загрузку будет нечем.
+        """
+
+        path, _selected = QFileDialog.getOpenFileName(
+            self,
+            "Загрузить базы из Excel",
+            str(Path.home()),
+            "Книга Excel (*.xlsx)",
+        )
+        if not path:
+            return
+        try:
+            bases = import_bases(Path(path))
+        except ExcelError as exc:
+            QMessageBox.warning(self, "Загрузка базы", str(exc))
+            return
+
+        names = describe_bases(bases)
+        answer = QMessageBox.question(
+            self,
+            "Загрузка базы",
+            f"Из файла будут загружены базы: {names}.\n"
+            "Нынешние данные этих баз будут заменены. Продолжить?",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No,
+        )
+        if answer != QMessageBox.StandardButton.Yes:
+            return
+
+        # Журналы операций показывают данные конкретной базы — закрываем,
+        # чтобы в них не остались строки из прежней загрузки.
+        for dialog in list(self._journal_dialogs):
+            dialog.close()
+        self._journal_dialogs.clear()
+
+        try:
+            for base_key, data in bases.items():
+                self._write_base(base_key, data)
+        except OSError as exc:
+            QMessageBox.warning(
+                self, "Загрузка базы", f"Не удалось сохранить данные: {exc}"
+            )
+            return
+
+        # Активную базу подменяем «на месте»: объект store.data остаётся
+        # тем же, чтобы экраны со старой ссылкой не показывали пустоту.
+        loaded = bases.get(self.store.base_key)
+        if loaded is not None:
+            current = self.store.data
+            current.suppliers = loaded.suppliers
+            current.customers = loaded.customers
+            current.operations = loaded.operations
+            current.cash_receipts = loaded.cash_receipts
+            current.other_payments = loaded.other_payments
+            current.day_overrides = loaded.day_overrides
+            current.year_start = loaded.year_start
+        self.refresh_all_views()
+        QMessageBox.information(
+            self, "Загрузка базы", f"Базы {names} загружены из файла:\n" + path
+        )
+
+    def apply_current_user(self, user) -> None:
+        """Сменить текущего пользователя и сразу применить его права.
+
+        Вызывается из «Конфигурации» после сохранения списка
+        пользователей (v0.20.0): перезапуск не нужен.
+        """
+
+        from .access import Access
+
+        self.access = Access(user)
+        self.setWindowTitle(
+            f"{__app_name__}  v{__version__} · {self.access.title}"
+        )
+        self.apply_access()
 
     def refresh_all_views(self) -> None:
         """Перерисовать все экраны после смены базы (v0.17.0)."""
@@ -296,6 +476,9 @@ class MainWindow(QMainWindow):
             btn.setVisible(index in self.access.pages)
         # Переключатель базы — только тем, кому доступны обе базы.
         self.base_button.setVisible(self.access.can_switch_base)
+        # Выгрузка и загрузка баз — только администратору (v0.20.0).
+        self.export_button.setVisible(self.access.can_admin_data)
+        self.import_button.setVisible(self.access.can_admin_data)
         # Пользователь «посажен» на свою базу: МИР или КОРЕЛИЧИ.
         fixed = self.access.fixed_base
         if fixed and self.store.base_key != fixed:

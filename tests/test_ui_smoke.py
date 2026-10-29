@@ -15,7 +15,11 @@ import pytest
 pytest.importorskip("PySide6")
 
 from PySide6.QtCore import Qt  # noqa: E402
-from PySide6.QtWidgets import QApplication, QMessageBox  # noqa: E402
+from PySide6.QtWidgets import (  # noqa: E402
+    QApplication,
+    QFileDialog,
+    QMessageBox,
+)
 
 
 @pytest.fixture(scope="session")
@@ -29,6 +33,46 @@ def store(tmp_path):
     from oplata.storage import DataStore
 
     return DataStore(tmp_path / "data.json")
+
+
+def patch_other_payment_card(monkeypatch, names=()):
+    """Подменить карточку нового вида оплаты (v0.20.0).
+
+    Сама карточка — модальный диалог: в headless-прогоне ``exec()``
+    задел бы цикл событий и тест повис. Подмена возвращает имя из
+    очереди (а дальше — как прежде: «Новый вид оплаты», «… 2», …),
+    дату блока и нулевую сумму.
+    """
+    from decimal import Decimal
+
+    from PySide6.QtWidgets import QDialog
+
+    from oplata.views import receipts_view as receipts_view_module
+
+    queue = list(names)
+
+    class FakeCard:
+        def __init__(self, direction, used_names, day, parent=None):
+            if queue:
+                self._name = queue.pop(0)
+            else:
+                base = "Новый вид оплаты"
+                name = base
+                index = 2
+                while name in used_names:
+                    name = f"{base} {index}"
+                    index += 1
+                self._name = name
+            self._day = day
+
+        def exec(self):
+            return QDialog.DialogCode.Accepted
+
+        @property
+        def values(self):
+            return self._name, self._day, Decimal("0")
+
+    monkeypatch.setattr(receipts_view_module, "OtherPaymentCardDialog", FakeCard)
 
 
 def test_main_window_all_pages(qt_app, store):
@@ -848,11 +892,14 @@ def test_receipts_popup_keeps_saved_amounts(qt_app, store):
 
 
 def test_other_payment_rows_add_rename_and_remove(qt_app, store, monkeypatch):
-    """Блок «Оплата»: свои виды оплат, кнопки «+» и «−»."""
+    """Блок «Оплата»: свои виды оплат — карточкой, кнопки «+» и «−»."""
     from datetime import date
 
     from oplata.app import MainWindow
 
+    # v0.20.0: вид оплаты вводится карточкой (модальный диалог) — в
+    # прогоне её подменяем на заполненные ответы.
+    patch_other_payment_card(monkeypatch, ["Новый вид оплаты", "Второй вид"])
     window = MainWindow(store)
     view = window.receipts_view
     view.outgoing.set_date(date(2026, 10, 27))
@@ -890,13 +937,13 @@ def test_other_payment_rows_add_rename_and_remove(qt_app, store, monkeypatch):
     view.remove_other_row("other:Аренда")
     assert view.outgoing.row_keys == [
         "suppliers",
-        "other:Новый вид оплаты",
+        "other:Второй вид",
     ]
     assert [
         p.name
         for p in store.data.other_payments
         if getattr(p, "direction", "out") == "out"
-    ] == ["Новый вид оплаты"]
+    ] == ["Второй вид"]
 
     # Постоянную строку «Поставщики» удалить нельзя.
     monkeypatch.setattr(
@@ -955,7 +1002,7 @@ def test_supplier_payments_sync_both_ways(qt_app, store):
     window.close()
 
 
-def test_incoming_block_has_fixed_other_income_row(qt_app, store):
+def test_incoming_block_has_fixed_other_income_row(qt_app, store, monkeypatch):
     """В «Поступлении» одна постоянная строка «Прочие поступления» (v0.13.0)."""
     from datetime import date
 
@@ -990,6 +1037,7 @@ def test_incoming_block_has_fixed_other_income_row(qt_app, store):
     ] == [("Прочие поступления", INCOMING, "2026-10-27", "5000.00")]
 
     # Свои строки блока «Оплата» не пересекаются с постоянной строкой.
+    patch_other_payment_card(monkeypatch)
     view.add_other_row(OUTGOING)
     assert view.outgoing.row_keys == ["suppliers", "other:Новый вид оплаты"]
     assert view.incoming.row_keys[-1] == "other:Прочие поступления"
@@ -1087,7 +1135,7 @@ def test_tables_edit_on_single_click_and_numbers_right_aligned(qt_app, store):
     window.close()
 
 
-def test_money_block_scrolls_long_row_list(qt_app, store):
+def test_money_block_scrolls_long_row_list(qt_app, store, monkeypatch):
     """Длинный список своих строк прокручивается, блок не растёт дальше."""
     from oplata.app import MainWindow
     from oplata.models import OUTGOING
@@ -1096,6 +1144,7 @@ def test_money_block_scrolls_long_row_list(qt_app, store):
     window.show()
     qt_app.processEvents()
     view = window.receipts_view
+    patch_other_payment_card(monkeypatch)
     for _ in range(9):  # всего 10 строк — больше видимых восьми
         view.add_other_row(OUTGOING)
     qt_app.processEvents()
@@ -1630,7 +1679,13 @@ def test_supplier_overdue_carries_over_to_next_week(qt_app, store):
     window.close()
 
 
-def test_supplier_payment_reduces_overdue_first_then_week(qt_app, store):
+def test_supplier_payment_reduces_overdue_first_then_week(qt_app, store, monkeypatch):
+    """Оплата гасит сначала просрочку, потом долг недели.
+
+    Сроки в тесте фиксированные (20.10 и 29.10), поэтому «сегодня»
+    закрепляем на 27.10: иначе расчёт «на сегодня» менялся бы вместе с
+    календарём, и тест ломался бы каждый новый день.
+    """
     """v0.15.0: оплата гасит просроченное («на сегодня»), остаток — «за неделю».
 
     Недоплаченный остаток остаётся на своём сроке, поэтому на следующей
@@ -1639,8 +1694,18 @@ def test_supplier_payment_reduces_overdue_first_then_week(qt_app, store):
     from datetime import date, timedelta
     from decimal import Decimal
 
+    from datetime import date as real_date
+
     from oplata.app import MainWindow
     from oplata.models import add_delivery, set_daily_operation
+    from oplata.views import week_view as week_view_module
+
+    class _FixedDate(real_date):
+        @classmethod
+        def today(cls):
+            return real_date(2026, 10, 27)
+
+    monkeypatch.setattr(week_view_module, "date", _FixedDate)
 
     supplier = store.data.suppliers[0]
     # Просрочка 700 (срок 20.10) + долг недели 500 (срок 29.10).
@@ -1947,3 +2012,222 @@ def test_amount_font_is_chosen_to_fit_day_column(qt_app, store):
             f"колонка {width} px: «{MAX_AMOUNT_TEXT}» занимает {advance} px"
         )
     window.close()
+
+
+def test_base_exchange_buttons_are_admin_only(qt_app, store):
+    """«Выгрузить базу»/«Загрузить базу» видит только администратор."""
+    from oplata.access import ALL_PAGES, Access, User, save_users
+    from oplata.app import MainWindow
+
+    admin = User(
+        id="admin",
+        name="Администратор",
+        pages=list(ALL_PAGES),
+        can_edit=True,
+        can_switch_base=True,
+    )
+    viewer = User(id="viewer", name="Наблюдатель", pages=[0])
+    save_users([admin, viewer])
+
+    window = MainWindow(store, access=Access(admin))
+    window.show()  # без показа isVisible() у кнопок был бы False
+    qt_app.processEvents()
+    assert window.export_button.isVisible()
+    assert window.import_button.isVisible()
+
+    # Сменили текущего пользователя в «Конфигурации» — кнопки скрылись.
+    window.apply_current_user(viewer)
+    assert not window.export_button.isVisible()
+    assert not window.import_button.isVisible()
+
+    window.apply_current_user(admin)
+    assert window.export_button.isVisible()
+    assert window.import_button.isVisible()
+    window.close()
+
+
+def test_base_exchange_export_and_import_both_bases(
+    qt_app, store, tmp_path, monkeypatch
+):
+    """Кнопки шапки: обе базы — в один Excel и обратно (v0.20.0)."""
+    pytest.importorskip("openpyxl")
+    from openpyxl import load_workbook
+
+    from oplata.app import MainWindow
+    from oplata.models import Counterparty
+
+    window = MainWindow(store)
+    window._config_unlocked = True
+    # Данные только этого прогона: пустая база с одной записью.
+    store.data.suppliers = [
+        Counterparty(name="Тестовый поставщик", deferment_days=7)
+    ]
+    store.save()
+
+    xlsx = tmp_path / "bases.xlsx"
+    monkeypatch.setattr(
+        QFileDialog,
+        "getSaveFileName",
+        staticmethod(lambda *args, **kwargs: (str(xlsx), "")),
+    )
+    monkeypatch.setattr(
+        QFileDialog,
+        "getOpenFileName",
+        staticmethod(lambda *args, **kwargs: (str(xlsx), "")),
+    )
+    messages: list[str] = []
+    monkeypatch.setattr(
+        QMessageBox,
+        "information",
+        staticmethod(lambda *args, **kwargs: messages.append(str(args[-1]))),
+    )
+    monkeypatch.setattr(
+        QMessageBox,
+        "warning",
+        staticmethod(lambda *args, **kwargs: messages.append("ОШИБКА: " + str(args[-1]))),
+    )
+    monkeypatch.setattr(
+        QMessageBox,
+        "question",
+        staticmethod(lambda *args, **kwargs: QMessageBox.StandardButton.Yes),
+    )
+
+    window.export_bases_to_excel()
+    assert xlsx.exists()
+    names = load_workbook(xlsx).sheetnames
+    assert any(name.startswith("МИР.") for name in names)
+    assert any(name.startswith("КОРЕЛИЧИ.") for name in names)
+
+    # Стираем данные активной базы и загружаем их обратно из файла.
+    store.data.suppliers = []
+    window.import_bases_from_excel()
+    assert [item.name for item in store.data.suppliers] == ["Тестовый поставщик"]
+    assert store.data.suppliers[0].deferment_days == 7
+    assert not any(message.startswith("ОШИБКА") for message in messages)
+    window.close()
+
+
+def test_receipts_source_row_click_opens_journal(qt_app, store):
+    """Клик по виду поступления открывает журнал операций (v0.20.0)."""
+    from datetime import date
+
+    from oplata.app import MainWindow
+    from oplata.models import CASH_SOURCE, CashReceipt
+    from oplata.views.receipts_view import COL_NAME
+    from oplata.views.receipts_view import JournalPopup
+
+    window = MainWindow(store)
+    view = window.receipts_view
+    view.incoming.set_date(date(2026, 10, 27))
+    store.data.cash_receipts = [
+        CashReceipt(
+            date="2026-10-27",
+            source=CASH_SOURCE,
+            amount="1000.00",
+            comment="прогон",
+        )
+    ]
+    store.save()
+    view.refresh()
+
+    row = view.incoming.row_keys.index("cash")
+    # Клик по названию вида — журнал; клик по «Сумме» остаётся вводом.
+    view.incoming.table.cellClicked.emit(row, COL_NAME)
+    # События не прокручиваем: всплывающее окно закрылось бы «кликом вне»
+    # от хвоста событий предыдущего теста.
+    popup = view._popup
+    assert isinstance(popup, JournalPopup)
+    assert popup.table.item(0, 0).text() == "27.10.2026"
+    assert popup.table.item(0, 1).text() == "1 000,00"
+    assert popup.table.item(0, 2).text() == "прогон"
+    popup.close()
+    window.close()
+
+
+def test_other_payment_card_collects_values(qt_app, monkeypatch):
+    """Карточка нового вида оплаты: название, дата, сумма (v0.20.0)."""
+    from datetime import date
+    from decimal import Decimal
+
+    from PySide6.QtWidgets import QDialog
+
+    from oplata.views.receipts_view import OtherPaymentCardDialog
+
+    card = OtherPaymentCardDialog("out", {"Налоги"}, date(2026, 10, 27))
+    card.name_edit.setText("Аренда")
+    card.amount_edit.setText("1 200,50")
+    card._try_accept()
+    assert card.result() == QDialog.DialogCode.Accepted
+    name, day, amount = card.values
+    assert (name, day, amount) == ("Аренда", date(2026, 10, 27), Decimal("1200.50"))
+    card.close()
+
+    # Пустое имя и занятое имя не сохраняются.
+    monkeypatch.setattr(
+        QMessageBox, "information", staticmethod(lambda *args, **kwargs: None)
+    )
+    empty = OtherPaymentCardDialog("out", set(), date(2026, 10, 27))
+    empty._try_accept()
+    assert not empty.isVisible() or empty.result() != QDialog.DialogCode.Accepted
+    empty.close()
+
+    busy = OtherPaymentCardDialog("out", {"Аренда"}, date(2026, 10, 27))
+    busy.name_edit.setText("аренда")  # занято без учёта регистра
+    busy._try_accept()
+    assert busy.result() != QDialog.DialogCode.Accepted
+    busy.close()
+
+
+def test_users_table_current_column_applies_user(qt_app, store):
+    """Столбец «Текущий»: выбор пользователя применяется сразу (v0.20.0)."""
+    from oplata.access import (
+        ALL_PAGES,
+        IDX_CUSTOMERS,
+        Access,
+        User,
+        load_current_user,
+        save_current_user,
+        save_users,
+    )
+    from oplata.app import MainWindow
+    from oplata.storage import BASE_MIR
+
+    admin = User(
+        id="admin",
+        name="Администратор",
+        pages=list(ALL_PAGES),
+        can_edit=True,
+        can_switch_base=True,
+    )
+    user_mir = User(
+        id="mir", name="Пользователь МИР", pages=[IDX_CUSTOMERS], base=BASE_MIR
+    )
+    save_users([admin, user_mir])
+    save_current_user(admin)
+
+    window = MainWindow(store, access=Access(admin))
+    window._config_unlocked = True
+    table = window.data_view.users_table
+    headers = [
+        table.horizontalHeaderItem(col).text() for col in range(table.columnCount())
+    ]
+    assert headers[-1] == "Текущий"
+    current_col = window.data_view.users_col_current
+    # Галочка стоит у текущего пользователя (администратора).
+    assert (
+        table.item(0, current_col).checkState() == Qt.CheckState.Checked
+    )
+    assert table.item(1, current_col).checkState() == Qt.CheckState.Unchecked
+
+    # Отмечаем второго — галочка переезжает, и права применяются сразу.
+    table.item(1, current_col).setCheckState(Qt.CheckState.Checked)
+    assert table.item(0, current_col).checkState() == Qt.CheckState.Unchecked
+    window.data_view._save_users()
+
+    assert load_current_user().name == "Пользователь МИР"
+    assert window.access.title == "Пользователь МИР"
+    # У пользователя без права ввода кнопок выгрузки быть не должно.
+    assert not window.export_button.isVisible()
+    assert not window.nav_buttons[1].isVisible()  # вкладка «Поставщики»
+    window.close()
+

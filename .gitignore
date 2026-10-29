@@ -10,8 +10,13 @@ build/
 dist/
 *.egg-info/
 
-# Данные программы и локальное
-data.json
+# Данные программы и локальное (реальные данные не покидают компьютер)
+data*.json
+state.json
+users.json
+current-user.json
+# Выгрузки баз, которые делает пользователь
+*.xlsx
 *.log
 
 # IDE / ОС

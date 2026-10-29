@@ -12,14 +12,10 @@ from __future__ import annotations
 
 import sys
 
-# Импорт здесь, а не внутри main(): доступ нужен и функции _ask_user,
-# которая живёт отдельно. Qt этот модуль не тянет — только stdlib.
-from .access import (
-    Access,
-    load_current_user,
-    load_users,
-    save_current_user,
-)
+# Импорт здесь, а не внутри main(): доступ нужен и функции
+# resolve_user, которая живёт отдельно. Qt этот модуль не тянет —
+# только stdlib.
+from .access import Access, load_current_user
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -52,47 +48,16 @@ def main(argv: list[str] | None = None) -> int:
     return app.exec()
 
 
-def resolve_user(argv: list[str]) -> Access:
-    """Определить, кто работает на этом компьютере (v0.18.0).
+def resolve_user(argv: list[str] | None = None) -> Access:
+    """Определить, кто работает на этом компьютере (v0.20.0).
 
-    Выбор один раз сохраняется на компьютере; в режиме самотеста
-    (``--self-test``) диалог не показываем. Отдельная функция — чтобы
-    этот путь можно было проверить тестом без запуска Qt-цикла.
+    Никаких вопросов при запуске: берём сохранённый выбор, а если его
+    нет — режим Администратора (полный доступ). Пользователя для
+    компьютера выбирают в «Конфигурации» → «Пользователи и права»,
+    столбец «Текущий»; после сохранения права применяются сразу.
     """
 
-    user = load_current_user()
-    if user is None:
-        user = load_users()[0] if "--self-test" in argv else _ask_user()
-        save_current_user(user)
-    return Access(user)
-
-
-def _ask_user():
-    """Один раз спросить, кто работает на этом компьютере (v0.18.0).
-
-    Список берётся из «Конфигурации» (файл ``users.json``): сначала
-    там заводят пользователей, потом на каждом компьютере выбирают,
-    кто из них здесь работает.
-    """
-
-    from PySide6.QtWidgets import QInputDialog
-
-    users = load_users()
-    names = [user.name for user in users]
-    name, ok = QInputDialog.getItem(
-        None,
-        "Оплаты — Строймаркет",
-        "Кто работает на этом компьютере?",
-        names,
-        0,
-        False,  # нельзя ввести имя вручную — только из списка
-    )
-    if not ok:
-        return users[0]
-    for user in users:
-        if user.name == name:
-            return user
-    return users[0]
+    return Access(load_current_user())
 
 
 if __name__ == "__main__":

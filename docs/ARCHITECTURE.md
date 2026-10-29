@@ -40,6 +40,7 @@ oplata-2/
     dates.py       [без Qt]     # недели Пн–Вс, русские месяцы, формат сумм
     models.py      [без Qt]     # Counterparty, Operation, CashReceipt, AppData, YearStart, seed_data()
     storage.py     [без Qt]     # DataStore: JSON, две базы (МИР/КОРЕЛИЧИ)
+    excelio.py     [без Qt]     # выгрузка/загрузка обеих баз в один xlsx (v0.20.0, ADR-030)
     styles.py      [без Qt]     # цвета и QSS; FONT_SCALE — шрифты интерфейса +30% (v0.12.0)
     widgets.py                 # AmountLineEdit, CollapsiblePanel, RowHoverMixin (подсветка строки v0.13.0), arrow_button
     calc.py        [без Qt]     # срок/долг поставщиков; блоки «Сводки» (средства, долги, месяц)
@@ -48,6 +49,7 @@ oplata-2/
       week_view.py              # Поставщики и Покупатели (kind="supplier"/"customer")
       receipts_view.py          # Поступление и оплаты: слева блоки-таблицы (ввод в ячейки, окно справа), справа плашка «Сводка»
                                  # свои строки блока «Оплата», «Прочие поступления», колонка «Квартал»
+                                 # v0.20.0: журнал вида по клику (JournalPopup), карточка нового вида оплаты
       operations_view.py        # Журнал операций (окно из карточки контрагента)
       summary_view.py            # Плашка «Сводка»: блоки построчно (средства, долги поставщиков и покупателей, месяц) + печать
       data_view.py              # Конфигурация: «Настройка календаря» + «Данные»

@@ -64,8 +64,10 @@ from ..access import (
     PAGE_TITLES,
     User,
     check_password,
+    load_current_user,
     load_users,
     new_user_id,
+    save_current_user,
     save_users,
     set_password,
 )
@@ -127,10 +129,13 @@ class DataView(QWidget):
         store: DataStore,
         on_calendar_saved: Callable[[], None] | None = None,
         parent: QWidget | None = None,
+        on_users_saved: Callable[[User], None] | None = None,
     ) -> None:
         super().__init__(parent)
         self.store = store
         self.on_calendar_saved = on_calendar_saved
+        # v0.20.0: выбор текущего пользователя применяется сразу.
+        self.on_users_saved = on_users_saved
         self.year = date.today().year
         self._day_buttons: dict[date, QPushButton] = {}
         # Черновик отметок: клики по календарю меняют его, а не файл
@@ -533,16 +538,22 @@ class DataView(QWidget):
 
         hint = QLabel(
             "Кто работает на каждом компьютере и что этому пользователю "
-            "разрешено. Пользователи общие для всех компьютеров; выбор "
-            "конкретного — при первом запуске на компьютере."
+            "разрешено. Отметьте в столбце «Текущий», кто работает на "
+            "этом компьютере, и нажмите «Сохранить пользователей» — "
+            "программа сразу перейдёт в режим этого пользователя."
         )
         hint.setObjectName("Muted")
         hint.setWordWrap(True)
         layout.addWidget(hint)
 
-        self.users_table = QTableWidget(0, len(PAGE_TITLES) + 3)
+        # v0.20.0: столбец «Текущий» — какой пользователь работает на
+        # этом компьютере (раньше программа спрашивала об этом при
+        # первом запуске).
+        self.users_column_count = len(PAGE_TITLES) + 4
+        self.users_col_current = len(PAGE_TITLES) + 3
+        self.users_table = QTableWidget(0, self.users_column_count)
         self.users_table.setHorizontalHeaderLabels(
-            ["Пользователь", *PAGE_TITLES, "База", "Ввод данных"]
+            ["Пользователь", *PAGE_TITLES, "База", "Ввод данных", "Текущий"]
         )
         self.users_table.verticalHeader().setVisible(False)
         self.users_table.setEditTriggers(
@@ -552,6 +563,8 @@ class DataView(QWidget):
             QHeaderView.ResizeMode.ResizeToContents
         )
         layout.addWidget(self.users_table)
+        # Отметка «Текущий» может быть только одна.
+        self.users_table.itemChanged.connect(self._on_users_item_changed)
 
         buttons = QHBoxLayout()
         buttons.setSpacing(8)
@@ -584,6 +597,15 @@ class DataView(QWidget):
         if not hasattr(self, "users_table"):
             return
         users = load_users()
+        current_user = load_current_user()
+        # Заполнение дёргает itemChanged — на время отключаем обработчик.
+        self.users_table.itemChanged.disconnect(self._on_users_item_changed)
+        try:
+            self._fill_users_table_rows(users, current_user)
+        finally:
+            self.users_table.itemChanged.connect(self._on_users_item_changed)
+
+    def _fill_users_table_rows(self, users, current_user) -> None:
         self.users_table.setRowCount(len(users))
         for row, user in enumerate(users):
             name_item = QTableWidgetItem(user.name)
@@ -614,6 +636,32 @@ class DataView(QWidget):
                 Qt.CheckState.Checked if user.can_edit else Qt.CheckState.Unchecked
             )
             self.users_table.setItem(row, 2 + len(PAGE_TITLES), edit_item)
+            # v0.20.0: кто из пользователей работает на этом компьютере.
+            current_item = QTableWidgetItem()
+            current_item.setFlags(
+                Qt.ItemFlag.ItemIsEnabled | Qt.ItemFlag.ItemIsUserCheckable
+            )
+            is_current = current_user is not None and current_user.id == user.id
+            current_item.setCheckState(
+                Qt.CheckState.Checked if is_current else Qt.CheckState.Unchecked
+            )
+            self.users_table.setItem(row, self.users_col_current, current_item)
+
+    def _on_users_item_changed(self, item: QTableWidgetItem) -> None:
+        """Следим, чтобы «Текущий» был отмечен только у одного (v0.20.0)."""
+
+        if item.column() != self.users_col_current:
+            return
+        if item.checkState() != Qt.CheckState.Checked:
+            return
+        self.users_table.itemChanged.disconnect(self._on_users_item_changed)
+        try:
+            for row in range(self.users_table.rowCount()):
+                other = self.users_table.item(row, self.users_col_current)
+                if other is not None and other is not item:
+                    other.setCheckState(Qt.CheckState.Unchecked)
+        finally:
+            self.users_table.itemChanged.connect(self._on_users_item_changed)
 
     def _add_user_row(self) -> None:
         """Новый пользователь: только просмотр таблицы «Покупатели»."""
@@ -641,6 +689,12 @@ class DataView(QWidget):
         edit_item.setFlags(Qt.ItemFlag.ItemIsEnabled | Qt.ItemFlag.ItemIsUserCheckable)
         edit_item.setCheckState(Qt.CheckState.Unchecked)
         self.users_table.setItem(row, 2 + len(PAGE_TITLES), edit_item)
+        current_item = QTableWidgetItem()
+        current_item.setFlags(
+            Qt.ItemFlag.ItemIsEnabled | Qt.ItemFlag.ItemIsUserCheckable
+        )
+        current_item.setCheckState(Qt.CheckState.Unchecked)
+        self.users_table.setItem(row, self.users_col_current, current_item)
         self.users_table.setCurrentCell(row, 0)
         self.users_status_label.setText("Добавлен пользователь — нажмите «Сохранить»")
 
@@ -690,9 +744,33 @@ class DataView(QWidget):
             )
         return users
 
+    def _current_user_row(self) -> int:
+        """Строка, отмеченная в столбце «Текущий» (-1 — не отмечена)."""
+
+        for row in range(self.users_table.rowCount()):
+            item = self.users_table.item(row, self.users_col_current)
+            if item is not None and item.checkState() == Qt.CheckState.Checked:
+                return row
+        return -1
+
     def _save_users(self) -> None:
-        save_users(self._collect_users())
-        self.users_status_label.setText("Пользователи сохранены")
+        users = self._collect_users()
+        save_users(users)
+        # v0.20.0: отмеченный пользователь становится текущим на этом
+        # компьютере — главное окно сразу применяет его права.
+        row = self._current_user_row()
+        if row < 0 or row >= len(users):
+            self.users_status_label.setText(
+                "Пользователи сохранены. Отметьте в столбце «Текущий», "
+                "кто работает на этом компьютере"
+            )
+            return
+        save_current_user(users[row])
+        if self.on_users_saved is not None:
+            self.on_users_saved(users[row])
+        self.users_status_label.setText(
+            f"Пользователи сохранены. Текущий пользователь: {users[row].name}"
+        )
 
     def _change_password(self) -> None:
         """Сменить пароль на раздел «Конфигурация» (v0.18.0)."""

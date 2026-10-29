@@ -43,14 +43,19 @@ from collections.abc import Callable
 from datetime import date, timedelta
 from decimal import Decimal
 
-from PySide6.QtCore import QDate, QEvent, QPoint, Qt, QTimer
+from PySide6.QtCore import QDate, QEvent, QObject, QPoint, Qt, QTimer
 from PySide6.QtWidgets import (
     QAbstractItemView,
     QApplication,
+    QDateEdit,
+    QDialog,
+    QDialogButtonBox,
+    QFormLayout,
     QFrame,
     QHBoxLayout,
     QHeaderView,
     QLabel,
+    QLineEdit,
     QMessageBox,
     QPushButton,
     QScrollArea,
@@ -63,7 +68,7 @@ from PySide6.QtWidgets import (
 )
 
 from .. import styles
-from ..dates import fmt_money_plain, parse_money, week_monday
+from ..dates import MONTHS_RU, fmt_money_plain, parse_money, week_monday
 from ..models import (
     CARD_SOURCE,
     CASH_SOURCE,
@@ -134,7 +139,27 @@ ROW_TITLES = {
 # тоже вводятся в ячейку, но без названия — строка постоянная).
 DIRECT_INPUT_ROWS = (CASH_ROW, CARD_ROW, FIXED_OTHER_ROW)
 # Строки, по клику открывающие окно со списком контрагентов.
+# Строки-контрагенты: по клику открывается окно со списком людей и
+# полями сумм. Остальные строки-источники (касса, карты, прочие виды)
+# открывают **журнал операций** этого вида (v0.20.0).
 POPUP_ROWS = (CUSTOMERS_ROW, SUPPLIERS_ROW)
+JOURNAL_ROWS = (CASH_ROW, CARD_ROW)
+
+
+def is_popup_row(key: str) -> bool:
+    """Открывать ли по клику выпадающее окно (контрагенты или журнал)."""
+
+    return (
+        key in POPUP_ROWS or key in JOURNAL_ROWS or key.startswith(OTHER_PREFIX)
+    )
+
+
+def _fmt_day(iso: str) -> str:
+    """``2026-10-28`` -> ``28.10.2026`` (без падения на битых данных)."""
+
+    if len(iso) == 10 and iso[4] == "-" and iso[7] == "-":
+        return f"{iso[8:10]}.{iso[5:7]}.{iso[0:4]}"
+    return iso
 
 COL_NAME, COL_AMOUNT, COL_WEEK, COL_MONTH, COL_QUARTER, COL_YEAR = range(6)
 HEADERS = ("", "Сумма", "Неделя", "Месяц", "Квартал", "Год")
@@ -459,6 +484,220 @@ class AmountPopup(QFrame):
         super().keyPressEvent(event)
 
 
+class OtherPaymentCardDialog(QDialog):
+    """Карточка нового вида оплаты (v0.20.0).
+
+    Раньше строка появлялась сразу, а название правилось прямо в ячейке
+    таблицы. По запросу пользователя вид оплаты вводится карточкой:
+    название, дата, сумма — и явное сохранение.
+    """
+
+    def __init__(
+        self,
+        direction: str,
+        used_names: set[str],
+        day: date,
+        parent: QWidget | None = None,
+    ) -> None:
+        super().__init__(parent)
+        self.direction = direction
+        self._used = {name.strip().lower() for name in used_names}
+        self.setWindowTitle(
+            "Новый вид оплаты"
+            if direction == OUTGOING
+            else "Новый вид поступления"
+        )
+        self.setModal(True)
+
+        form = QFormLayout(self)
+        form.setSpacing(10)
+
+        self.name_edit = QLineEdit()
+        self.name_edit.setPlaceholderText("Например: Возврат поставщику")
+        form.addRow("Название:", self.name_edit)
+
+        self.date_edit = QDateEdit()
+        self.date_edit.setCalendarPopup(True)
+        self.date_edit.setDisplayFormat("dd.MM.yyyy")
+        self.date_edit.setDate(QDate(day.year, day.month, day.day))
+        form.addRow("Дата:", self.date_edit)
+
+        self.amount_edit = AmountLineEdit()
+        self.amount_edit.setPlaceholderText("0,00")
+        form.addRow("Сумма:", self.amount_edit)
+
+        buttons = QDialogButtonBox(
+            QDialogButtonBox.StandardButton.Save
+            | QDialogButtonBox.StandardButton.Cancel
+        )
+        buttons.button(QDialogButtonBox.StandardButton.Save).setText("Сохранить")
+        buttons.button(QDialogButtonBox.StandardButton.Cancel).setText("Отмена")
+        buttons.accepted.connect(self._try_accept)
+        buttons.rejected.connect(self.reject)
+        form.addRow(buttons)
+
+    def _try_accept(self) -> None:
+        name = self.name_edit.text().strip()
+        if not name:
+            QMessageBox.information(
+                self, "Название", "Введите название вида оплаты."
+            )
+            return
+        if name.lower() in self._used:
+            QMessageBox.information(
+                self, "Название", f"Вид «{name}» уже есть в этом блоке."
+            )
+            return
+        self.accept()
+
+    @property
+    def values(self) -> tuple[str, date, Decimal]:
+        """(название, дата, сумма), введённые в карточке."""
+
+        day = self.date_edit.date().toPython()
+        amount = parse_money(self.amount_edit.text()) or ZERO
+        return self.name_edit.text().strip(), day, amount
+
+
+class JournalPopup(QFrame):
+    """Журнал операций вида: окно **справа** от строки (v0.20.0).
+
+    Клик по виду поступления (кроме «Покупатели») или виду оплаты
+    (кроме «Поставщики») показывает записи этого вида за месяц: дата,
+    сумма, комментарий и итог за месяц. Окно всплывающее (Qt Popup) —
+    закрывается по клику вне него.
+    """
+
+    def __init__(
+        self,
+        title: str,
+        period: str,
+        entries: list[tuple[str, str, str]],
+        total: str,
+        parent: QWidget | None = None,
+    ) -> None:
+        super().__init__(parent, Qt.WindowType.Popup)
+        self.setObjectName("Popup")
+        self.setStyleSheet(
+            "QFrame#Popup{background:#ffffff;border:1px solid #b9c9ef;"
+            "border-radius:10px}"
+            f"QLabel#PopupTitle{{font-weight:800;font-size:{styles.fs(15)}px}}"
+            f"QLabel#PopupTotal{{font-weight:800;font-size:{styles.fs(15)}px;"
+            f"color:{styles.BLUE}}}"
+        )
+
+        root = QVBoxLayout(self)
+        root.setContentsMargins(14, 12, 14, 12)
+        root.setSpacing(10)
+
+        header = QLabel(title)
+        header.setObjectName("PopupTitle")
+        root.addWidget(header)
+
+        period_label = QLabel(period)
+        period_label.setObjectName("Muted")
+        root.addWidget(period_label)
+
+        table = QTableWidget(len(entries), 3)
+        self.table = table
+        table.setHorizontalHeaderLabels(["Дата", "Сумма", "Комментарий"])
+        table.verticalHeader().setVisible(False)
+        table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
+        table.setSelectionMode(QAbstractItemView.SelectionMode.NoSelection)
+        table.horizontalHeader().setSectionResizeMode(
+            QHeaderView.ResizeMode.ResizeToContents
+        )
+        for row, (day, amount, comment) in enumerate(entries):
+            for col, text in enumerate((day, amount, comment)):
+                item = QTableWidgetItem(text)
+                if col == 1:  # сумма — по правому краю
+                    item.setTextAlignment(
+                        Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter
+                    )
+                table.setItem(row, col, item)
+        if not entries:
+            table.setRowCount(1)
+            empty = QTableWidgetItem("Записей за месяц нет")
+            empty.setFlags(Qt.ItemFlag.NoItemFlags)
+            table.setItem(0, 0, empty)
+            table.setSpan(0, 0, 1, 3)
+        table.setMinimumWidth(360)
+        root.addWidget(table)
+
+        total_label = QLabel(f"Итого: {total}")
+        total_label.setObjectName("PopupTotal")
+        root.addWidget(total_label)
+
+        close_btn = QPushButton("Закрыть")
+        close_btn.clicked.connect(self.close)
+        root.addWidget(close_btn, alignment=Qt.AlignmentFlag.AlignRight)
+
+    def open_beside(self, widget: QWidget, row_top: int = 0) -> None:
+        """Показать окно справа от строки (не уезжая за край экрана)."""
+
+        anchor = widget.mapToGlobal(QPoint(widget.width(), row_top))
+        self.adjustSize()
+        self.move(QPoint(anchor.x() + 8, anchor.y()))
+        self.show()
+        screen = self.screen()
+        if screen is not None:
+            free = screen.availableGeometry()
+            frame = self.frameGeometry()
+            x = min(frame.x(), free.right() - frame.width() - 8)
+            y = min(frame.y(), free.bottom() - frame.height() - 8)
+            self.move(max(free.left() + 8, x), max(free.top() + 8, y))
+
+
+class _NameClickFilter(QObject):
+    """Клик по названию своего вида: журнал, а не правка (v0.20.0).
+
+    Ячейка названия у своих видов (``other:…``) редактируемая, а таблица
+    стоит на ``AllEditTriggers`` — без фильтра одиночный клик открывал бы
+    редактор и журнал одновременно. Договариваемся так:
+
+    * одиночный клик — журнал операций вида;
+    * двойной клик — прежний ввод, то есть переименование.
+    """
+
+    def __init__(self, block: "MoneyBlock") -> None:
+        super().__init__(block)
+        self._block = block
+        self._double_click = False
+
+    def _key_at(self, event) -> tuple[str, int, int]:
+        table = self._block.table
+        if hasattr(event, "position"):
+            point = event.position().toPoint()
+        else:  # Qt 5-совместимость
+            point = event.pos()
+        index = table.indexAt(point)
+        row = index.row()
+        keys = self._block.row_keys
+        key = keys[row] if 0 <= row < len(keys) else ""
+        return key, row, index.column()
+
+    def eventFilter(self, obj, event) -> bool:  # noqa: N802 - имя задаёт Qt
+        if event.type() == QEvent.Type.MouseButtonDblClick:
+            self._double_click = True  # двойной клик — обычный ввод
+            return False
+        if event.type() not in (
+            QEvent.Type.MouseButtonPress,
+            QEvent.Type.MouseButtonRelease,
+        ):
+            return False
+
+        key, row, column = self._key_at(event)
+        if column != COL_NAME or not key.startswith(OTHER_PREFIX):
+            return False
+        if event.type() == QEvent.Type.MouseButtonPress:
+            return True  # редактор названия по одиночному клику не открываем
+        if self._double_click:  # хвост двойного клика — не мешаем вводу
+            self._double_click = False
+            return False
+        self._block.on_open_popup(key, self._block.table, row)
+        return True
+
+
 class MoneyBlock(QFrame):
     """Блок «Поступление»/«Оплата»: дата в одну строку с заголовком + таблица."""
 
@@ -561,6 +800,10 @@ class MoneyBlock(QFrame):
         # v0.18.0: без права ввода кнопок «+»/«−» у блока не показываем.
         self.read_only = False
         self.table.cellClicked.connect(self._on_cell_clicked)
+        # v0.20.0: клик по названию своего вида открывает журнал, а не
+        # редактор ячейки (двойной клик по-прежнему переименовывает).
+        self._name_click_filter = _NameClickFilter(self)
+        self.table.viewport().installEventFilter(self._name_click_filter)
         self.table.setAlternatingRowColors(False)
         header_view = self.table.horizontalHeader()
         header_view.setSectionResizeMode(COL_NAME, QHeaderView.ResizeMode.Stretch)
@@ -743,6 +986,12 @@ class MoneyBlock(QFrame):
         if key in POPUP_ROWS:
             self.on_open_popup(key, self.table, row)
             return
+        # v0.20.0: у строк-источников (касса, карты, свои виды) клик по
+        # названию или по итоговой колонке открывает журнал операций
+        # этого вида. Клик по ячейке «Сумма» остаётся вводом за день.
+        if is_popup_row(key) and column != COL_AMOUNT:
+            self.on_open_popup(key, self.table, row)
+            return
         _ = column  # клик по ячейке суммы уходит в режим ввода
 
     def _remove_selected(self) -> None:
@@ -904,7 +1153,28 @@ class ReceiptsView(QWidget):
         self.outgoing.set_rows(self._outgoing_rows())
 
     def add_other_row(self, direction: str = OUTGOING) -> None:
-        """Кнопка «+»: новая строка с вводом названия в этом блоке."""
+        """Кнопка «+»: новый вид оплаты — карточкой (v0.20.0)."""
+
+        block = self._block(direction)
+        if direction == OUTGOING:
+            # Плашка «Оплата»: вид оплаты вводим карточкой с сохранением.
+            used = set(other_payment_names(self.store.data, direction))
+            dialog = OtherPaymentCardDialog(
+                direction, used, block.current_date(), self
+            )
+            if dialog.exec() != QDialog.DialogCode.Accepted:
+                return
+            name, day, amount = dialog.values
+            add_other_payment(
+                self.store.data, name, day.isoformat(), direction
+            )
+            set_daily_other_payment(
+                self.store.data, name, day.isoformat(), amount, direction
+            )
+            self.store.save()
+            self.refresh_rows()
+            self.refresh()
+            return
 
         used = set(other_payment_names(self.store.data, direction))
         base_name = NEW_ROW_NAME[direction]
@@ -913,7 +1183,6 @@ class ReceiptsView(QWidget):
         while name in used:
             name = f"{base_name} {index}"
             index += 1
-        block = self._block(direction)
         add_other_payment(
             self.store.data, name, block.current_date().isoformat(), direction
         )
@@ -1040,13 +1309,17 @@ class ReceiptsView(QWidget):
     ) -> AmountPopup | None:
         """Открыть окно со списком контрагентов справа от строки."""
 
-        block = self.outgoing if row_key == SUPPLIERS_ROW else self.incoming
+        # v0.20.0: блок определяем по строке — «прочие» бывают в обоих.
+        block = self.incoming if row_key in self.incoming.row_keys else self.outgoing
         table = block.table
         if row is None:
             row = block.row_keys.index(row_key) if row_key in block.row_keys else 0
         row_top = table.rowViewportPosition(row)
         if anchor is None:
             anchor = table
+        # Строки-источники (касса, карты, свои виды) открывают журнал.
+        if row_key not in POPUP_ROWS:
+            return self._open_journal_popup(row_key, block, anchor, row_top)
         title = ROW_TITLES[row_key]
         day_iso = block.current_date().isoformat()
 
@@ -1097,65 +1370,57 @@ class ReceiptsView(QWidget):
         popup.open_beside(anchor, row_top)
         return popup
 
-    def _forget_popup(self, *_args) -> None:
-        self._popup = None
+    def _open_journal_popup(
+        self, row_key: str, block: MoneyBlock, anchor: QWidget, row_top: int
+    ) -> JournalPopup:
+        """Журнал операций вида за месяц: окно справа от строки (v0.20.0)."""
 
-    # -------------------------------------------------------------- выпадающее
-    def open_popup(
-        self, row_key: str, anchor: QWidget | None = None, row: int | None = None
-    ) -> AmountPopup | None:
-        """Открыть окно со списком контрагентов справа от строки."""
-
-        block = self.outgoing if row_key == SUPPLIERS_ROW else self.incoming
-        table = block.table
-        if row is None:
-            row = block.row_keys.index(row_key) if row_key in block.row_keys else 0
-        row_top = table.rowViewportPosition(row)
-        if anchor is None:
-            anchor = table
-        title = ROW_TITLES[row_key]
-        day_iso = block.current_date().isoformat()
-
-        if row_key == CUSTOMERS_ROW:
-            people = [c for c in self.store.data.customers if not c.archived]
-            empty_title = "Нет покупателей"
-            empty_text = (
-                "Добавьте покупателя через кнопку «Карточка покупателя»."
-            )
-            hint = "Сумма поступит в колонку «Оплата» покупателя за дату."
-        else:
-            people = [s for s in self.store.data.suppliers if not s.archived]
-            empty_title = "Нет поставщиков"
-            empty_text = (
-                "Добавьте поставщика через кнопку «Карточка поставщика»."
-            )
-            hint = "Сумма появится в колонке «Оплата» поставщика за дату."
-
-        if not people:
-            QMessageBox.information(self, empty_title, empty_text)
-            return None
-
-        # Поля заполняем уже сохранёнными суммами: при повторном
-        # открытии окна введённое не должно «пропадать».
-        values = {
-            person.id: self.daily_payment_amount(person.id, day_iso)
-            for person in people
-        }
-        popup = AmountPopup(
-            title,
-            [(person.id, person.name) for person in people],
-            self._make_saver(block, row_key, [person.id for person in people]),
-            self,
-            hint,
-            values,
+        data = self.store.data
+        day = block.current_date()
+        month_start = day.replace(day=1)
+        month_end = (
+            (month_start + timedelta(days=31)).replace(day=1) - timedelta(days=1)
         )
-        # Прежнее окно больше не нужно: скрываем и удаляем его, чтобы на
+        if row_key == CASH_ROW or row_key == CARD_ROW:
+            source = CASH_SOURCE if row_key == CASH_ROW else CARD_SOURCE
+            title = ROW_TITLES[row_key]
+            raw = [
+                (item.date, cash_receipt_amount(item), getattr(item, "comment", ""))
+                for item in data.cash_receipts
+                if item.source == source
+            ]
+        else:
+            title = other_row_name(row_key)
+            direction = block.direction
+            raw = [
+                (item.date, other_payment_amount(item), "")
+                for item in data.other_payments
+                if item.name == title
+                and getattr(item, "direction", OUTGOING) == direction
+            ]
+
+        in_month = [
+            item
+            for item in raw
+            if month_start.isoformat() <= item[0] <= month_end.isoformat()
+        ]
+        in_month.sort(key=lambda item: item[0], reverse=True)  # свежие сверху
+        entries = [
+            (_fmt_day(day_iso), _money_text(amount), comment)
+            for day_iso, amount, comment in in_month
+        ]
+        total = sum((amount for _day, amount, _comment in in_month), ZERO)
+        period = f"Журнал за {MONTHS_RU[day.month - 1]} {day.year} г."
+
+        popup = JournalPopup(title, period, entries, _money_text(total), self)
+        # Прежнее окно больше не нужно: скрываем и удаляем, чтобы на
         # каждый клик по строке не копились виджеты.
         if self._popup is not None:
             previous = self._popup
             self._popup = None
-            previous._closing = True
-            previous._stop_watching()
+            if hasattr(previous, "_stop_watching"):
+                previous._closing = True  # noqa: SLF001 - окно контрагентов
+                previous._stop_watching()  # noqa: SLF001
             previous.hide()
             previous.deleteLater()
         self._popup = popup

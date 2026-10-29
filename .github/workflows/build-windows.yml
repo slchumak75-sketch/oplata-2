@@ -120,6 +120,13 @@ jobs:
           if ($p.ExitCode -ne 0) { throw "Folder smoke test failed, exit code $($p.ExitCode)" }
           Write-Host "Folder smoke test OK"
 
+          # openpyxl (выгрузка баз в Excel, v0.20.0) импортируется лениво —
+          # проверяем, что пакет действительно попал в сборку.
+          if (-not (Test-Path ".\dist\Oplata\_internal\openpyxl")) {
+            throw "openpyxl is missing in the folder build"
+          }
+          Write-Host "openpyxl present in build"
+
           New-Item -ItemType Directory -Force ".\package-folder" | Out-Null
           Copy-Item ".\dist\Oplata" ".\package-folder\Oplata" -Recurse -Force
           Copy-Item ".\packaging\START_HERE_RU.txt" ".\package-folder\START_HERE_RU.txt"
