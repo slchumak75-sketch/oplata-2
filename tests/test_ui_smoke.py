@@ -2221,28 +2221,31 @@ def test_marked_dates_of_payment_paint_cells_red(qt_app, store):
     window.close()
 
 
-def test_money_block_header_and_values_are_centered(qt_app, store):
-    """v0.23.9: в таблицах «Поступление» и «Оплата» шапка и значения —
-    по центру."""
+def test_money_block_first_column_left_others_centered(qt_app, store):
+    """v0.23.9/v0.24.2: в таблицах «Поступление» и «Оплата» шапка и
+    значения — по центру, кроме первого столбца: названия — слева."""
 
     from PySide6.QtCore import Qt
 
     from oplata.app import MainWindow
+    from oplata.views.receipts_view import COL_NAME
 
     window = MainWindow(store)
     center = Qt.AlignmentFlag.AlignHCenter
+    left = Qt.AlignmentFlag.AlignLeft
     for block in (window.receipts_view.incoming, window.receipts_view.outgoing):
         table = block.table
         header = table.horizontalHeader()
         assert header.defaultAlignment() & center
         for column in range(table.columnCount()):
+            expected = left if column == COL_NAME else center
             header_item = table.horizontalHeaderItem(column)
             assert header_item is not None
-            assert header_item.textAlignment() & center, column
+            assert header_item.textAlignment() & expected, column
             for row in range(table.rowCount()):
                 item = table.item(row, column)
                 if item is not None:
-                    assert item.textAlignment() & center, (row, column)
+                    assert item.textAlignment() & expected, (row, column)
     window.close()
     window.close()
 
@@ -2908,14 +2911,17 @@ def test_receipts_source_row_click_opens_journal(qt_app, store):
 
 
 def test_other_payment_card_asks_name_only(qt_app, monkeypatch):
-    """Карточка нового вида оплаты: только название и «Сохранить» (v0.21.0).
+    """Карточка нового вида оплаты: название, календарь и «Сохранить».
 
     Полей «Дата» и «Сумма» в карточке нет: дата берётся из блока
-    «Оплата», сумма вводится в ячейку таблицы.
+    «Оплата», сумма вводится в ячейку таблицы. С v0.24.1 в карточке
+    есть календарь: отмеченные даты красят ячейки красным, поэтому
+    окно больше не делаем вдвое шире содержимого — иначе на ноутбуке
+    карточка не влезала в экран (v0.24.2).
     """
     from datetime import date
 
-    from PySide6.QtWidgets import QDialog
+    from PySide6.QtWidgets import QApplication, QDialog
 
     from oplata.views.receipts_view import OtherPaymentCardDialog
 
@@ -2923,8 +2929,9 @@ def test_other_payment_card_asks_name_only(qt_app, monkeypatch):
     # В карточке одно поле ввода — название; даты и суммы нет.
     assert not hasattr(card, "date_edit")
     assert not hasattr(card, "amount_edit")
-    narrow = card.sizeHint().width()
-    assert card.minimumWidth() >= narrow * 2  # окно вдвое шире содержимого
+    # Календарь есть и он не шире экрана (v0.24.2).
+    assert card.calendar is not None
+    assert card.width() <= max(QApplication.primaryScreen().availableGeometry().width() - 80, 420)
 
     card.name_edit.setText("Аренда")
     card._try_accept()

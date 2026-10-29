@@ -655,7 +655,12 @@ class PaymentDatesCalendar(QWidget):
                     continue
                 day = date(self._year, self._month, day_number)
                 button = QPushButton(str(day_number))
-                button.setFixedSize(34, 28)
+                # v0.24.2: кнопка шире — иначе двузначные числа
+                # («28», «30») не влезали и даты были не видны.
+                button.setFixedSize(46, 34)
+                day_font = button.font()
+                day_font.setPixelSize(styles.fs(11))
+                button.setFont(day_font)
                 button.clicked.connect(
                     lambda _checked=False, d=day: self._toggle(d)
                 )
@@ -749,8 +754,14 @@ class OtherPaymentCardDialog(QDialog):
         buttons.rejected.connect(self.reject)
         form.addRow(buttons)
 
-        # v0.21.0: окно делаем вдвое шире, чем просит содержимое.
-        self.setMinimumWidth(int(self.sizeHint().width() * 2))
+        # v0.24.2: окно не шире экрана. Раньше ширина удваивалась
+        # (v0.21.0) и на ноутбуке карточка вылезала за край — календарь
+        # с датами был не виден.
+        screen = QApplication.primaryScreen()
+        available = screen.availableGeometry().width() if screen else 1920
+        width = min(self.sizeHint().width(), max(available - 80, 420))
+        self.setMinimumWidth(0)
+        self.resize(max(width, 420), self.sizeHint().height())
 
     def _try_accept(self) -> None:
         name = self.name_edit.text().strip()
@@ -1023,11 +1034,16 @@ class MoneyBlock(QFrame):
                 f"{day.strftime('%d.%m')} {WEEKDAY_SHORT[day.weekday()]}"
             )
         self.table.setHorizontalHeaderLabels(headers)
-        # v0.23.9: шапка таблицы — по центру во всех колонках.
+        # v0.23.9: шапка таблицы — по центру во всех колонках; v0.24.2:
+        # первый столбец (названия) — по левому краю.
         for column in range(COLUMN_COUNT):
             header_item = self.table.horizontalHeaderItem(column)
             if header_item is not None:
-                header_item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
+                header_item.setTextAlignment(
+                    Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter
+                    if column == COL_NAME
+                    else Qt.AlignmentFlag.AlignCenter
+                )
         self._apply_column_widths()
 
     def _apply_column_widths(self) -> None:
@@ -1131,8 +1147,11 @@ class MoneyBlock(QFrame):
                 Qt.ItemFlag.ItemIsEnabled | Qt.ItemFlag.ItemIsSelectable
             )
             name_item.setToolTip(self._row_tooltip(key))
-            # v0.23.9: значения в таблице — по центру.
-            name_item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
+            # v0.24.2: первый столбец (названия) — по левому краю,
+            # остальные колонки — по центру (просьба пользователя).
+            name_item.setTextAlignment(
+                Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter
+            )
             self.table.setItem(row, COL_NAME, name_item)
             for column in range(COL_AMOUNT, COLUMN_COUNT):
                 item = QTableWidgetItem("")
