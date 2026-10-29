@@ -19,6 +19,8 @@ WEEKEND_RED = "#e53935"     # красные ячейки выходных в к
 WORKDAY_GREY = "#eceff3"    # серые ячейки рабочих дней там же
 WEEK_TABLE_WEEKEND_PINK = "#ffe1e8"  # розовые колонки выходных/праздников
 WEEK_TABLE_TODAY_GREEN = "#ccf5a3"   # салатовая верхняя ячейка текущей даты
+TABLE_GRID = "#e3e8f0"      # линии сетки таблиц
+SELECTION_BG = "#dbeafe"    # фон выделенной строки
 
 # Запрос пользователя v0.12.0: шрифты интерфейса на 30% больше.
 # Базовый размер 13px -> 17px, остальные пересчитаны тем же множителем.
@@ -36,6 +38,27 @@ WIDE_SCROLLBAR = (
     "QScrollBar::add-line:vertical,QScrollBar::sub-line:vertical{height:0}"
     "QScrollBar::add-page:vertical,QScrollBar::sub-page:vertical{"
     "background:#f2f5fa}"
+)
+
+
+# ВАЖНО (v0.23.1): виджет, которому задана своя таблица стилей,
+# становится корнем новой области стилей Qt — правила APP_STYLESHEET для
+# него самого и его детей перестают действовать. Поэтому везде, где к
+# виджету применяется WIDE_SCROLLBAR, белый фон (а у таблицы — рамку и
+# сетку) приходится задавать заново: иначе вместо белого проглядывает
+# серый фон по умолчанию. Так и было в окнах «Покупатели»/«Поставщики»
+# после появления в них вертикальной прокрутки.
+WIDE_SCROLLBAR_ON_AREA = (
+    "QScrollArea{background:#ffffff;border:none}"
+    "QScrollArea > QWidget > QWidget{background:#ffffff}" + WIDE_SCROLLBAR
+)
+WIDE_SCROLLBAR_ON_TABLE = (
+    "QTableWidget{background:#ffffff;"
+    f"border:1px solid {BORDER};border-radius:8px;"
+    f"gridline-color:{TABLE_GRID};"
+    f"selection-background-color:{SELECTION_BG};"
+    f"selection-color:{TEXT}}}"
+    + WIDE_SCROLLBAR
 )
 
 
@@ -113,8 +136,8 @@ QTableWidget {{
     background: #ffffff;
     border: 1px solid {BORDER};
     border-radius: 8px;
-    gridline-color: #e3e8f0;
-    selection-background-color: #dbeafe;
+    gridline-color: {TABLE_GRID};
+    selection-background-color: {SELECTION_BG};
     selection-color: {TEXT};
 }}
 QHeaderView::section {{

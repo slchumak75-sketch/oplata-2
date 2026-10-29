@@ -1867,6 +1867,46 @@ def test_tab_switch_resets_date_to_today(qt_app, store):
     window.close()
 
 
+def test_wide_scrollbar_keeps_white_background(qt_app, store):
+    """v0.23.1: широкий скроллбар не делает фон серым.
+
+    Виджет со своей таблицей стилей становится корнем новой области
+    стилей Qt: правила APP_STYLESHEET для него и его детей перестают
+    действовать, и без повторного «background:#ffffff» вместо белого
+    проглядывает серый фон (так было в окнах «Покупатели»/«Поставщики»
+    после появления вертикальной прокрутки).
+    """
+
+    from PySide6.QtGui import QColor, QPalette
+
+    from oplata.app import MainWindow
+    from oplata.views.receipts_view import AmountPopup
+
+    white = QColor("#ffffff")
+
+    entries = [(f"id{index}", f"Контрагент {index}") for index in range(12)]
+    popup = AmountPopup("Покупатели", entries, lambda values: None)
+    popup.show()
+    qt_app.processEvents()
+    scroll = popup.scroll_area
+    assert "background:#ffffff" in scroll.styleSheet()
+    viewport = scroll.viewport()
+    viewport.ensurePolished()
+    assert viewport.palette().color(QPalette.ColorRole.Window) == white
+    popup.close()
+
+    # Недельные таблицы и таблица блока «Оплата» — с тем же скроллбаром.
+    window = MainWindow(store)
+    for table in (
+        window.suppliers_view.table,
+        window.suppliers_view.frozen_table,
+        window.receipts_view.outgoing.table,
+    ):
+        table.ensurePolished()
+        assert table.palette().color(QPalette.ColorRole.Window) == white
+    window.close()
+
+
 def test_supplier_journal_shows_delivery_columns(qt_app, store):
     """v0.23.1: журнал поставщика — дата поставки, сумма, отсрочка, оплата."""
 

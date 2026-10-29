@@ -303,7 +303,11 @@ class AmountPopup(QFrame):
         scroll.setVerticalScrollBarPolicy(
             Qt.ScrollBarPolicy.ScrollBarAlwaysOn
         )
-        scroll.setStyleSheet(styles.WIDE_SCROLLBAR)
+        # v0.23.1: вместе со скроллбаром задаём и белый фон — иначе
+        # своя таблица стилей виджета отключает правила APP_STYLESHEET
+        # и под списком проглядывает серый фон (в окнах «Покупатели»
+        # и «Поставщики»).
+        scroll.setStyleSheet(styles.WIDE_SCROLLBAR_ON_AREA)
         self.scroll_area = scroll
         root.addWidget(scroll, stretch=1)
 
@@ -891,7 +895,7 @@ class MoneyBlock(QFrame):
             self.table.setVerticalScrollBarPolicy(
                 Qt.ScrollBarPolicy.ScrollBarAlwaysOn
             )
-            self.table.setStyleSheet(styles.WIDE_SCROLLBAR)
+            self.table.setStyleSheet(styles.WIDE_SCROLLBAR_ON_TABLE)
         else:
             # Блок «Поступление» закреплён (v0.15.0): высота таблицы
             # фиксированная по числу строк, чтобы при обновлении и

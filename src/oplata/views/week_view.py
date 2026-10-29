@@ -246,7 +246,7 @@ class WeekView(QWidget):
         # плашке «Оплата» (просьба пользователя).
         self.table.setStyleSheet(
             f"QTableWidget{{font-size:{styles.fs(12)}px}}"
-            f"{styles.WIDE_SCROLLBAR}"
+            f"{styles.WIDE_SCROLLBAR_ON_TABLE}"
         )
         self.table.setVerticalScrollBarPolicy(
             Qt.ScrollBarPolicy.ScrollBarAlwaysOn
@@ -275,7 +275,8 @@ class WeekView(QWidget):
         self.frozen_table = QTableWidget(self)
         self.frozen_table.setObjectName("FrozenWeekHeader")
         self.frozen_table.setStyleSheet(
-            f"font-size:{styles.fs(12)}px;border:0px"
+            f"QTableWidget{{font-size:{styles.fs(12)}px;"
+            f"background:#ffffff;border:0px}}"
         )
         self.frozen_table.horizontalHeader().setVisible(False)
         self.frozen_table.verticalHeader().setVisible(False)
