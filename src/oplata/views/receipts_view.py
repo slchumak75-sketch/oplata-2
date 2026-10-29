@@ -994,6 +994,11 @@ class MoneyBlock(QFrame):
         self.table.verticalHeader().setDefaultSectionSize(ROW_HEIGHT)
         row_height = self.table.verticalHeader().defaultSectionSize()
         header_height = self.table.horizontalHeader().height()
+        # v0.23.8: рамка, линии сетки и широкий скроллбар — обеим
+        # таблицам («Поступление» и «Оплата»). Раньше стиль задавался
+        # только растягиваемой таблице, поэтому в «Поступлении» сетка
+        # не рисовалась вовсе (замечание пользователя).
+        self.table.setStyleSheet(styles.WIDE_SCROLLBAR_ON_TABLE)
         if self._stretch_table:
             # Блок «Оплата» тянется до низа: таблица занимает всё
             # доступное место, а скроллбар закреплён и широкий.

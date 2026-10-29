@@ -2049,14 +2049,14 @@ def test_money_block_paints_weekends_and_today(qt_app, store, monkeypatch):
             if item is None:
                 continue
             assert (item.background().color() == pink) == is_weekend, (row, day)
-    # Сетка таблицы (вертикальная и горизонтальная разметка) на месте:
-    # у блока «Поступление» — из общего стиля, у блока «Оплата» (со
-    # своей таблицей стилей) — задана явно (v0.23.7).
-    assert block.table.showGrid() is True
+    # Сетка таблицы (вертикальная и горизонтальная разметка) на месте
+    # в обоих блоках: стиль с gridline-color задаётся каждой таблице
+    # отдельно, иначе в «Поступлении» сетка не рисовалась (v0.23.8).
     outgoing = window.receipts_view.outgoing
-    assert f"gridline-color:{styles.TABLE_GRID}" in outgoing.table.styleSheet()
-    assert f"border:1px solid {styles.BORDER}" in outgoing.table.styleSheet()
-    assert outgoing.table.showGrid() is True
+    for table in (block.table, outgoing.table):
+        assert table.showGrid() is True
+        assert f"gridline-color:{styles.TABLE_GRID}" in table.styleSheet()
+        assert f"border:1px solid {styles.BORDER}" in table.styleSheet()
     window.close()
 
 
