@@ -2348,6 +2348,65 @@ def test_amount_font_is_chosen_to_fit_day_column(qt_app, store):
     window.close()
 
 
+def test_clear_database_needs_two_confirmations(qt_app, store, monkeypatch):
+    """v0.23.1: «Очистить базу» — резервная копия и два подтверждения."""
+
+    from PySide6.QtWidgets import QInputDialog, QMessageBox
+
+    from oplata.views.data_view import DataView
+
+    view = DataView(store, on_calendar_saved=lambda: None)
+    supplier = next(s for s in store.data.suppliers if s.name == "ггг")
+    from oplata.models import Operation
+
+    store.data.operations.append(
+        Operation(kind="Приход", counterparty_id=supplier.id)
+    )
+    store.save()
+
+    # Первое «нет» — ничего не трогаем.
+    monkeypatch.setattr(
+        QMessageBox,
+        "warning",
+        staticmethod(lambda *args, **kwargs: QMessageBox.StandardButton.No),
+    )
+    view._clear_database()
+    assert store.data.suppliers and store.data.operations
+
+    # Первое «да», но слово набрано неверно — отмена.
+    monkeypatch.setattr(
+        QMessageBox,
+        "warning",
+        staticmethod(lambda *args, **kwargs: QMessageBox.StandardButton.Yes),
+    )
+    monkeypatch.setattr(
+        QInputDialog,
+        "getText",
+        staticmethod(lambda *args, **kwargs: ("нет", True)),
+    )
+    view._clear_database()
+    assert store.data.suppliers and store.data.operations
+    assert "отменена" in view.admin_status_label.text().lower()
+
+    # Полное подтверждение — база пуста, копия создана.
+    monkeypatch.setattr(
+        QInputDialog,
+        "getText",
+        staticmethod(lambda *args, **kwargs: ("ОЧИСТИТЬ", True)),
+    )
+    view._clear_database()
+    assert store.data.suppliers == []
+    assert store.data.customers == []
+    assert store.data.operations == []
+    assert store.data.cash_receipts == []
+    assert store.data.other_payments == []
+    assert store.data.day_overrides == {}
+    assert "База очищена" in view.admin_status_label.text()
+    backups = list(store.path.parent.glob("data-backup-*.json"))
+    assert backups, "резервная копия должна остаться рядом с data.json"
+    view.close()
+
+
 def test_base_exchange_buttons_are_admin_only(qt_app, store):
     """«Выгрузить базы»/«Загрузить базы» видит только администратор."""
     from oplata.access import ALL_PAGES, Access, User, save_users

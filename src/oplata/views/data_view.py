@@ -73,6 +73,7 @@ from ..access import (
 )
 from ..dates import MONTHS_RU, WEEKDAYS_RU_TITLE, fmt_money_plain, parse_money
 from ..models import (
+    YearStart,
     set_year_start_customer_debt,
     set_year_start_date,
     set_year_start_funds,
@@ -83,6 +84,7 @@ from ..widgets import (
     AmountLineEdit,
     CollapsiblePanel,
     blue_button,
+    danger_button,
     make_amount_edit,
     make_date_edit,
 )
@@ -248,6 +250,15 @@ class DataView(QWidget):
         )
         self.reload_button.clicked.connect(self._reload_file)
         admin_buttons.addWidget(self.reload_button)
+        # v0.23.1: «Очистить базу» — удалить все данные с резервной
+        # копией и двумя подтверждениями (просьба пользователя).
+        self.clear_button = danger_button("Очистить базу")
+        self.clear_button.setToolTip(
+            "Удалить все данные этой базы. Перед очисткой создаётся "
+            "резервная копия, нужно два подтверждения."
+        )
+        self.clear_button.clicked.connect(self._clear_database)
+        admin_buttons.addWidget(self.clear_button)
         admin_buttons.addStretch(1)
         admin_layout.addLayout(admin_buttons)
 
@@ -513,6 +524,68 @@ class DataView(QWidget):
         self._pending_overrides = dict(self.store.data.day_overrides)
         self.refresh()
         self._update_admin_stats("Файл перечитан")
+        if self.on_calendar_saved is not None:
+            self.on_calendar_saved()
+
+    # Слово, которое нужно набрать вторым подтверждением (v0.23.1).
+    CLEAR_CONFIRM_WORD = "ОЧИСТИТЬ"
+
+    def _clear_database(self) -> None:
+        """Полностью очистить базу: резервная копия + два подтверждения.
+
+        Стираются поставщики, покупатели, операции, поступления
+        наличными/по картам, прочие виды оплат, отметки календаря и
+        перенос остатков на 1 января. Пользователи и права лежат в
+        отдельном файле (users.json) и не трогаются.
+        """
+
+        from PySide6.QtWidgets import QInputDialog
+
+        data = self.store.data
+        answer = QMessageBox.warning(
+            self,
+            "Очистить базу",
+            "Будут удалены ВСЕ данные этой базы:\n"
+            f"поставщиков: {len(data.suppliers)} · "
+            f"покупателей: {len(data.customers)} · "
+            f"операций: {len(data.operations)} · "
+            f"поступлений: {len(data.cash_receipts)} · "
+            f"прочих оплат: {len(data.other_payments)} · "
+            f"отметок календаря: {len(data.day_overrides)}.\n\n"
+            "Перед очисткой будет создана резервная копия. "
+            "Действие необратимо.",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No,
+        )
+        if answer != QMessageBox.StandardButton.Yes:
+            return
+
+        # Второе подтверждение: надо набрать слово вручную.
+        word, ok = QInputDialog.getText(
+            self,
+            "Подтверждение",
+            "Наберите слово «"
+            + self.CLEAR_CONFIRM_WORD
+            + "» заглавными буквами, чтобы очистить базу:",
+        )
+        if not ok or word.strip().upper() != self.CLEAR_CONFIRM_WORD:
+            self._update_admin_stats("Очистка отменена")
+            return
+
+        self._make_backup()  # копия рядом с data.json, до стирания
+        data.suppliers = []
+        data.customers = []
+        data.operations = []
+        data.cash_receipts = []
+        data.other_payments = []
+        data.day_overrides = {}
+        data.year_start = YearStart()
+        self._pending_overrides = {}
+        self.store.save()
+        self.refresh()
+        self._update_admin_stats(
+            "База очищена. Резервная копия лежит рядом с data.json."
+        )
         if self.on_calendar_saved is not None:
             self.on_calendar_saved()
 
