@@ -52,6 +52,8 @@ def patch_other_payment_card(monkeypatch, names=()):
     queue = list(names)
 
     class FakeCard:
+        """Карточка без показа: имя из очереди, дата и сумма не нужны."""
+
         def __init__(self, direction, used_names, day, parent=None):
             if queue:
                 self._name = queue.pop(0)
@@ -63,14 +65,13 @@ def patch_other_payment_card(monkeypatch, names=()):
                     name = f"{base} {index}"
                     index += 1
                 self._name = name
-            self._day = day
 
         def exec(self):
             return QDialog.DialogCode.Accepted
 
         @property
-        def values(self):
-            return self._name, self._day, Decimal("0")
+        def name_value(self):
+            return self._name
 
     monkeypatch.setattr(receipts_view_module, "OtherPaymentCardDialog", FakeCard)
 
@@ -891,11 +892,12 @@ def test_receipts_popup_keeps_saved_amounts(qt_app, store):
     window.close()
 
 
-def test_other_payment_rows_add_rename_and_remove(qt_app, store, monkeypatch):
-    """Блок «Оплата»: свои виды оплат — карточкой, кнопки «+» и «−»."""
+def test_other_payment_rows_add_sum_and_remove(qt_app, store, monkeypatch):
+    """Блок «Оплата»: вид — карточкой, сумма — в ячейку, «−» удаляет."""
     from datetime import date
 
     from oplata.app import MainWindow
+    from oplata.views.receipts_view import COL_NAME, JournalPopup
 
     # v0.20.0: вид оплаты вводится карточкой (модальный диалог) — в
     # прогоне её подменяем на заполненные ответы.
@@ -908,22 +910,23 @@ def test_other_payment_rows_add_rename_and_remove(qt_app, store, monkeypatch):
     view.add_other_row()
     assert view.outgoing.row_keys == ["suppliers", "other:Новый вид оплаты"]
 
-    # Название вида оплаты вводится текстом прямо в ячейку.
+    # Название в ячейке не правится (v0.21.0): клик по названию открывает
+    # журнал операций, а не поле ввода.
     name_item = view.outgoing.table.item(1, 0)
-    assert name_item.flags() & Qt.ItemFlag.ItemIsEditable
-    name_item.setText("Аренда")
-    assert view.outgoing.row_keys == ["suppliers", "other:Аренда"]
+    assert not (name_item.flags() & Qt.ItemFlag.ItemIsEditable)
+    view.outgoing.table.cellClicked.emit(1, COL_NAME)
+    assert isinstance(view._popup, JournalPopup)
 
     # Сумма — прямо в ячейку, итоги считаются по названию.
     view.outgoing.table.item(1, COL_AMOUNT).setText("12 000")
-    assert view.outgoing.amount_text("other:Аренда") == "12 000,00"
-    assert view.outgoing.amount_text("other:Аренда", COL_WEEK) == "12 000,00"
-    assert view.outgoing.amount_text("other:Аренда", COL_YEAR) == "12 000,00"
+    assert view.outgoing.amount_text("other:Новый вид оплаты") == "12 000,00"
+    assert view.outgoing.amount_text("other:Новый вид оплаты", COL_WEEK) == "12 000,00"
+    assert view.outgoing.amount_text("other:Новый вид оплаты", COL_YEAR) == "12 000,00"
     assert [
         (p.name, p.date, p.amount, p.direction)
         for p in store.data.other_payments
-        if p.name == "Аренда"
-    ] == [("Аренда", "2026-10-27", "12000.00", "out")]
+        if p.name == "Новый вид оплаты"
+    ] == [("Новый вид оплаты", "2026-10-27", "12000.00", "out")]
 
     # Вторая строка и удаление первой (кнопка «−»).
     view.add_other_row()
@@ -934,7 +937,7 @@ def test_other_payment_rows_add_rename_and_remove(qt_app, store, monkeypatch):
         "question",
         staticmethod(lambda *args, **kwargs: QMessageBox.StandardButton.Yes),
     )
-    view.remove_other_row("other:Аренда")
+    view.remove_other_row("other:Новый вид оплаты")
     assert view.outgoing.row_keys == [
         "suppliers",
         "other:Второй вид",
@@ -1639,18 +1642,33 @@ def _DAY(view, day_index, subcolumn):
     return view._day_column(day_index, subcolumn)
 
 
-def test_supplier_overdue_carries_over_to_next_week(qt_app, store):
-    """«На сегодня» — просроченное; при переходе недели долги переносятся."""
+def test_supplier_today_column_shows_only_today_due(qt_app, store, monkeypatch):
+    """Столбец «на сегодня» информационный: только срок сегодня (v0.21.0).
+
+    Просроченное лежит в столбце «просрочено» и в «на сегодня» не
+    копится: если сегодня оплат со сроком сегодня нет — ячейка пустая.
+    Дата в тесте зафиксирована, иначе расчёт менялся бы вместе с
+    календарём.
+    """
     from datetime import date, timedelta
     from decimal import Decimal
 
     from oplata.app import MainWindow
     from oplata.models import add_delivery
+    from oplata.views import week_view as week_view_module
+
+    class _FixedDate(date):
+        @classmethod
+        def today(cls):
+            return date(2026, 10, 27)
+
+    monkeypatch.setattr(week_view_module, "date", _FixedDate)
 
     supplier = store.data.suppliers[0]
-    # Срок 27.10 — внутри недели 26.10–01.11; срок 05.11 — в следующей.
+    # Срок 27.10 — сегодня; 05.11 — следующая неделя; 20.10 — просрочка.
     add_delivery(store.data, supplier.id, "2026-10-20", "2026-10-27", Decimal("700"))
     add_delivery(store.data, supplier.id, "2026-10-20", "2026-11-05", Decimal("900"))
+    add_delivery(store.data, supplier.id, "2026-10-10", "2026-10-20", Decimal("150"))
 
     window = MainWindow(store)
     window.show()
@@ -1664,18 +1682,30 @@ def test_supplier_overdue_carries_over_to_next_week(qt_app, store):
     assert table.item(2, 1).text() == "просрочено"
     assert table.item(2, 2).text() == "на сегодня"
     assert table.item(2, 3).text() == "за неделю"
-    # На текущей неделе: просрочено 700 (срок 27.10 < сегодня 28.10),
-    # «на сегодня» — 700, итог за неделю — 700.
-    assert table.item(row, 1).text() == "700,00"
+    # Просрочка — 150 (срок 20.10); «на сегодня» — только срок 27.10;
+    # «за неделю» — сроки внутри 26.10–01.11, то есть 700.
+    assert table.item(row, 1).text() == "150,00"
     assert table.item(row, 2).text() == "700,00"
     assert table.item(row, 3).text() == "700,00"
 
-    # Следующая неделя: долг 700 перенесён в «на сегодня», в «за неделю»
-    # уже 900 (срок 05.11).
+    # Следующая неделя: «на сегодня» не зависит от того, какую неделю
+    # смотрят, — это всегда срок текущей датой.
     view.goto_date(date(2026, 10, 26) + timedelta(days=7))
-    assert table.item(row, 1).text() == "700,00"
+    assert table.item(row, 1).text() == "150,00"
     assert table.item(row, 2).text() == "700,00"
     assert table.item(row, 3).text() == "900,00"
+
+    # Наступил следующий день: просрочка выросла, а «на сегодня» пусто —
+    # оплат со сроком 28.10 нет.
+    class _NextDay(date):
+        @classmethod
+        def today(cls):
+            return date(2026, 10, 28)
+
+    monkeypatch.setattr(week_view_module, "date", _NextDay)
+    view.refresh()
+    assert table.item(row, 1).text() == "850,00"  # 150 + 700 просрочены
+    assert table.item(row, 2).text() == ""
     window.close()
 
 
@@ -1683,13 +1713,9 @@ def test_supplier_payment_reduces_overdue_first_then_week(qt_app, store, monkeyp
     """Оплата гасит сначала просрочку, потом долг недели.
 
     Сроки в тесте фиксированные (20.10 и 29.10), поэтому «сегодня»
-    закрепляем на 27.10: иначе расчёт «на сегодня» менялся бы вместе с
-    календарём, и тест ломался бы каждый новый день.
-    """
-    """v0.15.0: оплата гасит просроченное («на сегодня»), остаток — «за неделю».
-
-    Недоплаченный остаток остаётся на своём сроке, поэтому на следующей
-    неделе он снова виден в «на сегодня».
+    закрепляем на 27.10: иначе расчёт менялся бы вместе с календарём.
+    Столбец «на сегодня» с v0.21.0 показывает только срок текущей
+    датой — здесь такого срока нет, поэтому он пустой.
     """
     from datetime import date, timedelta
     from decimal import Decimal
@@ -1721,7 +1747,7 @@ def test_supplier_payment_reduces_overdue_first_then_week(qt_app, store, monkeyp
     view.goto_date(date(2026, 10, 26))
 
     assert table.item(row, 1).text() == "700,00"  # просрочено
-    assert table.item(row, 2).text() == "700,00"  # на сегодня
+    assert table.item(row, 2).text() == ""  # «на сегодня» — только срок 27.10
     assert table.item(row, 3).text() == "500,00"  # за неделю
 
     # Оплата 900: сначала гасит просрочку 700, остаток 200 — неделю.
@@ -1730,7 +1756,7 @@ def test_supplier_payment_reduces_overdue_first_then_week(qt_app, store, monkeyp
     )
     view.refresh()
     assert table.item(row, 1).text() == ""  # просрочка погашена
-    assert table.item(row, 2).text() == ""  # «на сегодня» тоже пусто
+    assert table.item(row, 2).text() == ""  # «на сегодня» по-прежнему пусто
     assert table.item(row, 3).text() == "300,00"  # 500 − 200
 
     # Недоплата: оплата 100 вместо 900 — остаток просрочки переносится.
@@ -1742,16 +1768,15 @@ def test_supplier_payment_reduces_overdue_first_then_week(qt_app, store, monkeyp
     )
     view.refresh()
     assert table.item(row, 1).text() == "600,00"  # 700 − 100
-    assert table.item(row, 2).text() == "600,00"  # «на сегодня» = то же
+    assert table.item(row, 2).text() == ""  # срока 27.10 нет — пусто
     assert table.item(row, 3).text() == "500,00"  # оплата ушла в просрочку
-    # Следующая неделя: недоплаченный остаток 600 перенесён в «на
-    # сегодня»; к нему добавился долг со сроком 29.10 — он тоже стал
-    # просроченным (600 + 500 = 1 100).
+    # Следующая неделя (02.11–08.11): просрочка всё та же 600, «на
+    # сегодня» по-прежнему считается на текущую дату 27.10, а долг со
+    # сроком 29.10 в эту неделю не попадает («за неделю» пусто).
     view.goto_date(date(2026, 10, 26) + timedelta(days=7))
-    # «Просрочено» — только истёкшие сроки: 600 со сроком 20.10.
     assert table.item(row, 1).text() == "600,00"
-    # «На сегодня» на следующей неделе: 600 перенесено + 500 (срок 29.10).
-    assert table.item(row, 2).text() == "1 100,00"
+    assert table.item(row, 2).text() == ""
+    assert table.item(row, 3).text() == ""
     window.close()
 
 
@@ -2147,22 +2172,29 @@ def test_receipts_source_row_click_opens_journal(qt_app, store):
     window.close()
 
 
-def test_other_payment_card_collects_values(qt_app, monkeypatch):
-    """Карточка нового вида оплаты: название, дата, сумма (v0.20.0)."""
+def test_other_payment_card_asks_name_only(qt_app, monkeypatch):
+    """Карточка нового вида оплаты: только название и «Сохранить» (v0.21.0).
+
+    Полей «Дата» и «Сумма» в карточке нет: дата берётся из блока
+    «Оплата», сумма вводится в ячейку таблицы.
+    """
     from datetime import date
-    from decimal import Decimal
 
     from PySide6.QtWidgets import QDialog
 
     from oplata.views.receipts_view import OtherPaymentCardDialog
 
     card = OtherPaymentCardDialog("out", {"Налоги"}, date(2026, 10, 27))
+    # В карточке одно поле ввода — название; даты и суммы нет.
+    assert not hasattr(card, "date_edit")
+    assert not hasattr(card, "amount_edit")
+    narrow = card.sizeHint().width()
+    assert card.minimumWidth() >= narrow * 2  # окно вдвое шире содержимого
+
     card.name_edit.setText("Аренда")
-    card.amount_edit.setText("1 200,50")
     card._try_accept()
     assert card.result() == QDialog.DialogCode.Accepted
-    name, day, amount = card.values
-    assert (name, day, amount) == ("Аренда", date(2026, 10, 27), Decimal("1200.50"))
+    assert card.name_value == "Аренда"
     card.close()
 
     # Пустое имя и занятое имя не сохраняются.

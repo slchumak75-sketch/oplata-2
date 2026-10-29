@@ -14,7 +14,9 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-from PySide6.QtCore import Qt
+from datetime import date
+
+from PySide6.QtCore import QTimer, Qt
 from PySide6.QtWidgets import (
     QButtonGroup,
     QFileDialog,
@@ -128,6 +130,15 @@ class MainWindow(QMainWindow):
             # применяется сразу, без перезапуска.
             on_users_saved=self.apply_current_user,
         )
+
+        # v0.21.0: столбец «на сегодня» считается по настоящей дате,
+        # поэтому при наступлении следующего дня экраны пересчитываем
+        # сами — программа может стоять открытой сутками.
+        self._today = date.today()
+        self._day_timer = QTimer(self)
+        self._day_timer.setInterval(60_000)  # проверка раз в минуту
+        self._day_timer.timeout.connect(self._on_day_timer)
+        self._day_timer.start()
 
         # «Сводка» пересчитывается сразу после ввода: любое сохранение
         # данных обновляет её (v0.15.0).
@@ -396,6 +407,20 @@ class MainWindow(QMainWindow):
             f"{__app_name__}  v{__version__} · {self.access.title}"
         )
         self.apply_access()
+
+    def _on_day_timer(self) -> None:
+        """Наступил новый день — пересчитать всё, что считается «на сегодня».
+
+        v0.21.0: столбец «на сегодня» показывает только оплаты со сроком
+        сегодня, поэтому со сменой календарной даты он должен меняться
+        сам, без перезапуска программы (v0.21.0, запрос пользователя).
+        """
+
+        today = date.today()
+        if today == self._today:
+            return
+        self._today = today
+        self.refresh_all_views()
 
     def refresh_all_views(self) -> None:
         """Перерисовать все экраны после смены базы (v0.17.0)."""

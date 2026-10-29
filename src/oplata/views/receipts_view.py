@@ -43,7 +43,7 @@ from collections.abc import Callable
 from datetime import date, timedelta
 from decimal import Decimal
 
-from PySide6.QtCore import QDate, QEvent, QObject, QPoint, Qt, QTimer
+from PySide6.QtCore import QDate, QEvent, QPoint, Qt, QTimer
 from PySide6.QtWidgets import (
     QAbstractItemView,
     QApplication,
@@ -488,8 +488,12 @@ class OtherPaymentCardDialog(QDialog):
     """Карточка нового вида оплаты (v0.20.0).
 
     Раньше строка появлялась сразу, а название правилось прямо в ячейке
-    таблицы. По запросу пользователя вид оплаты вводится карточкой:
-    название, дата, сумма — и явное сохранение.
+    таблицы. По запросу пользователя вид оплаты вводится карточкой и
+    сохраняется кнопкой «Сохранить».
+
+    v0.21.0: в карточке **только название** — поля «Дата» и «Сумма»
+    убраны (сумма вводится в ячейку таблицы, а дата — та, что стоит в
+    блоке «Оплата»). Окно вдвое шире, чем получается по содержимому.
     """
 
     def __init__(
@@ -516,16 +520,6 @@ class OtherPaymentCardDialog(QDialog):
         self.name_edit.setPlaceholderText("Например: Возврат поставщику")
         form.addRow("Название:", self.name_edit)
 
-        self.date_edit = QDateEdit()
-        self.date_edit.setCalendarPopup(True)
-        self.date_edit.setDisplayFormat("dd.MM.yyyy")
-        self.date_edit.setDate(QDate(day.year, day.month, day.day))
-        form.addRow("Дата:", self.date_edit)
-
-        self.amount_edit = AmountLineEdit()
-        self.amount_edit.setPlaceholderText("0,00")
-        form.addRow("Сумма:", self.amount_edit)
-
         buttons = QDialogButtonBox(
             QDialogButtonBox.StandardButton.Save
             | QDialogButtonBox.StandardButton.Cancel
@@ -535,6 +529,9 @@ class OtherPaymentCardDialog(QDialog):
         buttons.accepted.connect(self._try_accept)
         buttons.rejected.connect(self.reject)
         form.addRow(buttons)
+
+        # v0.21.0: окно делаем вдвое шире, чем просит содержимое.
+        self.setMinimumWidth(int(self.sizeHint().width() * 2))
 
     def _try_accept(self) -> None:
         name = self.name_edit.text().strip()
@@ -551,12 +548,10 @@ class OtherPaymentCardDialog(QDialog):
         self.accept()
 
     @property
-    def values(self) -> tuple[str, date, Decimal]:
-        """(название, дата, сумма), введённые в карточке."""
+    def name_value(self) -> str:
+        """Название вида оплаты, введённое в карточке (v0.21.0)."""
 
-        day = self.date_edit.date().toPython()
-        amount = parse_money(self.amount_edit.text()) or ZERO
-        return self.name_edit.text().strip(), day, amount
+        return self.name_edit.text().strip()
 
 
 class JournalPopup(QFrame):
@@ -646,56 +641,6 @@ class JournalPopup(QFrame):
             x = min(frame.x(), free.right() - frame.width() - 8)
             y = min(frame.y(), free.bottom() - frame.height() - 8)
             self.move(max(free.left() + 8, x), max(free.top() + 8, y))
-
-
-class _NameClickFilter(QObject):
-    """Клик по названию своего вида: журнал, а не правка (v0.20.0).
-
-    Ячейка названия у своих видов (``other:…``) редактируемая, а таблица
-    стоит на ``AllEditTriggers`` — без фильтра одиночный клик открывал бы
-    редактор и журнал одновременно. Договариваемся так:
-
-    * одиночный клик — журнал операций вида;
-    * двойной клик — прежний ввод, то есть переименование.
-    """
-
-    def __init__(self, block: "MoneyBlock") -> None:
-        super().__init__(block)
-        self._block = block
-        self._double_click = False
-
-    def _key_at(self, event) -> tuple[str, int, int]:
-        table = self._block.table
-        if hasattr(event, "position"):
-            point = event.position().toPoint()
-        else:  # Qt 5-совместимость
-            point = event.pos()
-        index = table.indexAt(point)
-        row = index.row()
-        keys = self._block.row_keys
-        key = keys[row] if 0 <= row < len(keys) else ""
-        return key, row, index.column()
-
-    def eventFilter(self, obj, event) -> bool:  # noqa: N802 - имя задаёт Qt
-        if event.type() == QEvent.Type.MouseButtonDblClick:
-            self._double_click = True  # двойной клик — обычный ввод
-            return False
-        if event.type() not in (
-            QEvent.Type.MouseButtonPress,
-            QEvent.Type.MouseButtonRelease,
-        ):
-            return False
-
-        key, row, column = self._key_at(event)
-        if column != COL_NAME or not key.startswith(OTHER_PREFIX):
-            return False
-        if event.type() == QEvent.Type.MouseButtonPress:
-            return True  # редактор названия по одиночному клику не открываем
-        if self._double_click:  # хвост двойного клика — не мешаем вводу
-            self._double_click = False
-            return False
-        self._block.on_open_popup(key, self._block.table, row)
-        return True
 
 
 class MoneyBlock(QFrame):
@@ -800,10 +745,6 @@ class MoneyBlock(QFrame):
         # v0.18.0: без права ввода кнопок «+»/«−» у блока не показываем.
         self.read_only = False
         self.table.cellClicked.connect(self._on_cell_clicked)
-        # v0.20.0: клик по названию своего вида открывает журнал, а не
-        # редактор ячейки (двойной клик по-прежнему переименовывает).
-        self._name_click_filter = _NameClickFilter(self)
-        self.table.viewport().installEventFilter(self._name_click_filter)
         self.table.setAlternatingRowColors(False)
         header_view = self.table.horizontalHeader()
         header_view.setSectionResizeMode(COL_NAME, QHeaderView.ResizeMode.Stretch)
@@ -835,10 +776,13 @@ class MoneyBlock(QFrame):
         self.table.setRowCount(len(self.row_keys))
         for row, key in enumerate(self.row_keys):
             name_item = QTableWidgetItem(self._row_title(key))
-            flags = Qt.ItemFlag.ItemIsEnabled | Qt.ItemFlag.ItemIsSelectable
-            if key.startswith(OTHER_PREFIX) and key != FIXED_OTHER_ROW:
-                flags |= Qt.ItemFlag.ItemIsEditable  # название вводится текстом
-            name_item.setFlags(flags)
+            # v0.21.0: название вида оплаты в ячейке не правится — оно
+            # задаётся карточкой при создании, а клик по названию
+            # открывает журнал операций (раньше клик открывал и редактор,
+            # и журнал одновременно).
+            name_item.setFlags(
+                Qt.ItemFlag.ItemIsEnabled | Qt.ItemFlag.ItemIsSelectable
+            )
             name_item.setToolTip(self._row_tooltip(key))
             self.table.setItem(row, COL_NAME, name_item)
             for column in (
@@ -921,10 +865,12 @@ class MoneyBlock(QFrame):
 
     @staticmethod
     def _row_tooltip(key: str) -> str:
+        # v0.21.0: название своего вида задаётся карточкой, в ячейке
+        # правится только сумма, а клик по названию открывает журнал.
         if key.startswith(OTHER_PREFIX) and key != FIXED_OTHER_ROW:
-            return "Название и сумма вводятся прямо в ячейки"
+            return "Сумма вводится прямо в ячейку, клик — журнал операций"
         if key in DIRECT_INPUT_ROWS:
-            return "Сумма вводится прямо в ячейку"
+            return "Сумма вводится прямо в ячейку, клик — журнал операций"
         return "Клик — окно со списком и полями сумм"
 
     def set_amount(self, row_key: str, column: int, text: str) -> None:
@@ -970,6 +916,9 @@ class MoneyBlock(QFrame):
             return
         key = self.row_keys[item.row()]
         if item.column() == COL_NAME:
+            # С v0.21.0 название своего вида в ячейке не правится
+            # (клик открывает журнал), но программное переименование
+            # (rename_other_row) осталось — им пользуются карточки.
             if key.startswith(OTHER_PREFIX) and self.on_name_edited is not None:
                 self.on_name_edited(key, item.text())
             return
@@ -1164,12 +1113,10 @@ class ReceiptsView(QWidget):
             )
             if dialog.exec() != QDialog.DialogCode.Accepted:
                 return
-            name, day, amount = dialog.values
+            # Дата — та, что стоит в блоке; сумма вводится в ячейку.
+            name = dialog.name_value
             add_other_payment(
-                self.store.data, name, day.isoformat(), direction
-            )
-            set_daily_other_payment(
-                self.store.data, name, day.isoformat(), amount, direction
+                self.store.data, name, block.current_date().isoformat(), direction
             )
             self.store.save()
             self.refresh_rows()
