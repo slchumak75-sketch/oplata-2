@@ -17,6 +17,7 @@ GREEN = "#159947"
 BLUE = "#2563eb"
 WEEKEND_RED = "#e53935"     # красные ячейки выходных в календаре «Данные»
 WORKDAY_GREY = "#eceff3"    # серые ячейки рабочих дней там же
+WEEK_TABLE_MARKED_RED = "#ffc7ce"    # даты, отмеченные в карточке вида оплаты (v0.24.0)
 WEEK_TABLE_WEEKEND_PINK = "#ffe1e8"  # розовые колонки выходных/праздников
 WEEK_TABLE_TODAY_GREEN = "#ccf5a3"   # салатовая верхняя ячейка текущей даты
 TABLE_GRID = "#e3e8f0"      # линии сетки таблиц

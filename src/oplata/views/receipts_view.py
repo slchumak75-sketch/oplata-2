@@ -41,7 +41,8 @@
 
 from __future__ import annotations
 
-from collections.abc import Callable
+import calendar as calendar_module
+from collections.abc import Callable, Iterable
 from datetime import date, timedelta
 from decimal import Decimal
 
@@ -50,6 +51,7 @@ from PySide6.QtGui import QBrush, QColor, QFontMetrics
 from PySide6.QtWidgets import QStyle, QStyleOptionHeader
 from PySide6.QtWidgets import (
     QAbstractItemView,
+    QGridLayout,
     QApplication,
     QDateEdit,
     QDialog,
@@ -74,6 +76,7 @@ from PySide6.QtWidgets import (
 from .. import calc, styles
 from ..dates import (
     MONTHS_RU,
+    WEEKDAYS_RU_TITLE,
     fmt_money_plain,
     parse_money,
     week_days,
@@ -571,6 +574,126 @@ class AmountPopup(QFrame):
         super().keyPressEvent(event)
 
 
+class PaymentDatesCalendar(QWidget):
+    """Календарь в карточке вида оплаты (v0.24.0).
+
+    Клик по дню отмечает дату красным или снимает отметку. Отмеченные
+    даты сохраняются в записи вида оплаты, а в таблице блока их ячейки
+    красятся красным (просьба пользователя). Месяц переключается
+    стрелками «‹» и «›».
+    """
+
+    def __init__(
+        self,
+        day: date,
+        marked: Iterable[str] = (),
+        parent: QWidget | None = None,
+    ) -> None:
+        super().__init__(parent)
+        self._marked: set[str] = {str(item) for item in marked}
+        self._year, self._month = day.year, day.month
+
+        root = QVBoxLayout(self)
+        root.setContentsMargins(0, 0, 0, 0)
+        root.setSpacing(6)
+
+        top = QHBoxLayout()
+        prev_btn = arrow_button("\u2039", "Предыдущий месяц")
+        prev_btn.clicked.connect(lambda: self._shift_month(-1))
+        top.addWidget(prev_btn)
+        self.month_label = QLabel()
+        self.month_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.month_label.setStyleSheet(
+            f"font-weight:700;font-size:{styles.fs(13)}px"
+        )
+        top.addWidget(self.month_label, stretch=1)
+        next_btn = arrow_button("\u203a", "Следующий месяц")
+        next_btn.clicked.connect(lambda: self._shift_month(1))
+        top.addWidget(next_btn)
+        root.addLayout(top)
+
+        self._grid = QGridLayout()
+        self._grid.setSpacing(3)
+        root.addLayout(self._grid)
+        self._rebuild()
+
+        hint = QLabel("Клик по дате отмечает её красным в таблице.")
+        hint.setObjectName("Muted")
+        root.addWidget(hint)
+
+    # ------------------------------------------------------------- отрисовка
+    def _shift_month(self, delta: int) -> None:
+        """Перейти на другой месяц, не выходя за пределы дат."""
+
+        month = self._month + delta
+        year = self._year
+        if month < 1:
+            month, year = 12, year - 1
+        elif month > 12:
+            month, year = 1, year + 1
+        self._year, self._month = year, month
+        self._rebuild()
+
+    def _rebuild(self) -> None:
+        """Перерисовать сетку дней текущего месяца."""
+
+        while self._grid.count():
+            item = self._grid.takeAt(0)
+            widget = item.widget()
+            if widget is not None:
+                widget.setParent(None)
+        self.month_label.setText(f"{MONTHS_RU[self._month - 1]} {self._year}")
+        for column, name in enumerate(WEEKDAYS_RU_TITLE):
+            label = QLabel(name)
+            label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+            label.setObjectName("Muted")
+            self._grid.addWidget(label, 0, column)
+        weeks = calendar_module.monthcalendar(self._year, self._month)
+        for row, week in enumerate(weeks, start=1):
+            for column, day_number in enumerate(week):
+                if day_number == 0:
+                    continue
+                day = date(self._year, self._month, day_number)
+                button = QPushButton(str(day_number))
+                button.setFixedSize(34, 28)
+                button.clicked.connect(
+                    lambda _checked=False, d=day: self._toggle(d)
+                )
+                self._paint(button, day)
+                self._grid.addWidget(button, row, column)
+
+    def _paint(self, button: QPushButton, day: date) -> None:
+        """Отмеченный день — красный (v0.24.0)."""
+
+        marked = day.isoformat() in self._marked
+        button.setStyleSheet(
+            f"background:{styles.WEEK_TABLE_MARKED_RED};font-weight:700"
+            if marked
+            else ""
+        )
+        button.setToolTip(
+            "Отмечено: ячейка в таблице красная"
+            if marked
+            else "Клик отметит эту дату красным"
+        )
+
+    def _toggle(self, day: date) -> None:
+        """Отметить дату или снять отметку."""
+
+        key = day.isoformat()
+        if key in self._marked:
+            self._marked.discard(key)
+        else:
+            self._marked.add(key)
+        self._rebuild()
+
+    # ---------------------------------------------------------------- данные
+    def marked_dates(self) -> list[str]:
+        """Отмеченные даты (ISO) по порядку."""
+
+        return sorted(self._marked)
+
+
 class OtherPaymentCardDialog(QDialog):
     """Карточка нового вида оплаты (v0.20.0).
 
@@ -581,6 +704,10 @@ class OtherPaymentCardDialog(QDialog):
     v0.21.0: в карточке **только название** — поля «Дата» и «Сумма»
     убраны (сумма вводится в ячейку таблицы, а дата — та, что стоит в
     блоке «Оплата»). Окно вдвое шире, чем получается по содержимому.
+
+    v0.24.0: в карточке есть **календарь**. Клик по дате отмечает её;
+    отмеченные даты сохраняются в записи вида оплаты, и в таблице блока
+    ячейки этих дней становятся красными.
     """
 
     def __init__(
@@ -606,6 +733,11 @@ class OtherPaymentCardDialog(QDialog):
         self.name_edit = QLineEdit()
         self.name_edit.setPlaceholderText("Например: Возврат поставщику")
         form.addRow("Название:", self.name_edit)
+
+        # v0.24.0: календарь — отмеченные даты красят ячейки таблицы
+        # «Оплата» красным (просьба пользователя).
+        self.calendar = PaymentDatesCalendar(day)
+        form.addRow("Даты:", self.calendar)
 
         buttons = QDialogButtonBox(
             QDialogButtonBox.StandardButton.Save
@@ -639,6 +771,12 @@ class OtherPaymentCardDialog(QDialog):
         """Название вида оплаты, введённое в карточке (v0.21.0)."""
 
         return self.name_edit.text().strip()
+
+    @property
+    def marked_dates(self) -> list[str]:
+        """Даты, отмеченные в календаре карточки (v0.24.0)."""
+
+        return self.calendar.marked_dates()
 
 
 class JournalPopup(QFrame):
