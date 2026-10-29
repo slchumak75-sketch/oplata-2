@@ -44,6 +44,14 @@ def main(argv: list[str] | None = None) -> int:
     window.showMaximized()
 
     if "--self-test" in argv:
+        # Выгрузка в Excel — единственная внешняя зависимость помимо Qt:
+        # в smoke-тесте сразу видно, попала ли она в сборку.
+        from .excelio import OPENPYXL_MISSING_TEXT, Workbook
+
+        if Workbook is None:
+            print("SELF-TEST: " + OPENPYXL_MISSING_TEXT)
+        else:
+            print("SELF-TEST: openpyxl доступен, выгрузка в Excel работает")
         QTimer.singleShot(400, app.quit)
     return app.exec()
 

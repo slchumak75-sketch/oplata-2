@@ -26,6 +26,12 @@ from decimal import Decimal, InvalidOperation
 from pathlib import Path
 from typing import Callable
 
+try:  # openpyxl нужен только для обмена с Excel
+    from openpyxl import Workbook, load_workbook
+except ImportError:  # pragma: no cover - зависит от установки
+    Workbook = None  # type: ignore[assignment]
+    load_workbook = None  # type: ignore[assignment]
+
 from .models import (
     AppData,
     CashReceipt,
@@ -61,16 +67,19 @@ def _sheet_title(base_key: str, suffix: str) -> str:
     return f"{BASE_TITLES[base_key]}. {suffix}"
 
 
-def _load_workbook():
-    """openpyxl импортируем лениво: без пакета программа всё равно идёт."""
+# openpyxl импортируется на уровне модуля (try/except выше): так
+# PyInstaller видит пакет статически и кладёт его в сборку. Без пакета
+# программа работает, но кнопки выгрузки сообщают, что он не найден.
+OPENPYXL_MISSING_TEXT = (
+    "Не найден пакет openpyxl — выгрузка в Excel недоступна."
+)
 
-    try:
-        from openpyxl import Workbook, load_workbook
-    except ImportError as exc:  # pragma: no cover - зависит от установки
-        raise ExcelError(
-            "Не найден пакет openpyxl — выгрузка в Excel недоступна."
-        ) from exc
-    return Workbook, load_workbook
+
+def _require_openpyxl() -> None:
+    """Проверить, что openpyxl установлен (иначе — понятная ошибка)."""
+
+    if Workbook is None or load_workbook is None:
+        raise ExcelError(OPENPYXL_MISSING_TEXT)
 
 
 def _dec(value: object) -> str:
@@ -246,7 +255,7 @@ def export_bases(bases: dict[str, AppData], path: Path | str) -> Path:
     затем КОРЕЛИЧИ: так привычнее читать.
     """
 
-    Workbook, _unused = _load_workbook()
+    _require_openpyxl()
     path = Path(path)
     book = Workbook()
     book.remove(book.active)  # пустой лист от openpyxl не нужен
@@ -354,7 +363,7 @@ def import_bases(path: Path | str) -> dict[str, AppData]:
     пользователю).
     """
 
-    _unused, load_workbook = _load_workbook()
+    _require_openpyxl()
     try:
         book = load_workbook(Path(path), data_only=True, read_only=True)
     except OSError as exc:
