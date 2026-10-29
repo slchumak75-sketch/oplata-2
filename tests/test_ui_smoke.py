@@ -2271,7 +2271,8 @@ def test_week_table_fonts_are_uniform(qt_app, store):
         # Заголовок недели и итог справа — одного размера.
         # v0.23.1: шрифт заголовка «Неделя: …» — как у кнопки «Сегодня»
         # (просьба пользователя): базовый кегль и начертание кнопки из
-        # APP_STYLESHEET, без отдельного увеличения.
+        # APP_STYLESHEET (fs(13) = 17px, weight 600), без отдельного
+        # увеличения до fs(14).
         assert view.week_label.font().pixelSize() == styles.fs(13)
         assert view.week_label.font().weight() == 600
         assert view.right_value_label.font().pixelSize() == styles.fs(14)
