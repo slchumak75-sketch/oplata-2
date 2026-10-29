@@ -483,6 +483,10 @@ class MainWindow(QMainWindow):
             self.suppliers_view.reset_to_today()
         elif index == IDX_CUSTOMERS:
             self.customers_view.reset_to_today()
+        elif index == IDX_DATA:
+            # v0.24.0: на вкладке «Конфигурация» плашка «Данные» сразу
+            # раскрыта — таблицы остатков занимают всю высоту экрана.
+            self.data_view.data_panel.set_expanded(True)
 
     def _ask_config_password(self) -> bool:
         """Пароль на вкладку «Конфигурация» (v0.18.0).

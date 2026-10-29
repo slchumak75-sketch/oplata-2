@@ -52,6 +52,7 @@ from PySide6.QtWidgets import (
     QMessageBox,
     QPushButton,
     QScrollArea,
+    QSizePolicy,
     QStyledItemDelegate,
     QTableWidget,
     QTableWidgetItem,
@@ -221,7 +222,14 @@ class DataView(QWidget):
         # --- раскрывающаяся плашка «Данные»: перенос остатков на 1 января ---
         self.data_panel = CollapsiblePanel("Данные", expanded=False)
         self._build_year_start_panel(self.data_panel.content_layout)
-        root.addWidget(self.data_panel)
+        # v0.24.0: раскрытая плашка занимает всю высоту экрана — иначе
+        # таблицы остатков сжимались и не использовали место. Само
+        # содержимое плашки тоже должно тянуться, иначе место достаётся
+        # плашке, а не таблицам внутри неё.
+        self.data_panel.content.setSizePolicy(
+            QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding
+        )
+        root.addWidget(self.data_panel, stretch=1)
 
         # --- раскрывающаяся плашка «Пользователи и права» (v0.18.0) ---
         self.users_panel = CollapsiblePanel("Пользователи и права", expanded=False)
@@ -282,7 +290,11 @@ class DataView(QWidget):
         admin_hint.setWordWrap(True)
         admin_layout.addWidget(admin_hint)
         root.addWidget(self.admin_panel)
-        root.addStretch(1)  # плашки прижаты к верху, лишнее место — внизу
+        # v0.24.0: пустой отступ внизу больше не забирает свободное
+        # место — иначе раскрытая плашка «Данные» не дорастала до низа
+        # экрана и таблицы остатков оставались низкими (просьба
+        # пользователя: разворачивать на всю высоту экрана).
+        root.addStretch(0)
 
         self.refresh()
         self._update_save_state()
@@ -319,8 +331,16 @@ class DataView(QWidget):
         date_row.addStretch(1)
         layout.addLayout(date_row)
 
-        # --- таблица поставщиков: дата оплаты и сумма ---
-        layout.addWidget(QLabel("Поставщики — дата оплаты и сумма долга"))
+        # --- таблицы: поставщики слева, покупатели справа (v0.24.0) ---
+        # Раньше таблицы стояли друг под другом во всю ширину; по просьбе
+        # пользователя они стали двумя вертикальными списками рядом и
+        # занимают всю высоту экрана.
+        tables_row = QHBoxLayout()
+        tables_row.setSpacing(12)
+
+        left_column = QVBoxLayout()
+        left_column.setSpacing(6)
+        left_column.addWidget(QLabel("Поставщики — дата оплаты и сумма долга"))
         self.supplier_debts_table = QTableWidget(0, 3)
         self.supplier_debts_table.setHorizontalHeaderLabels(
             ["Наименование", "Дата оплаты", "Сумма"]
@@ -332,12 +352,15 @@ class DataView(QWidget):
         self.supplier_debts_table.setItemDelegateForColumn(2, _AmountDelegate())
         supplier_header = self.supplier_debts_table.horizontalHeader()
         supplier_header.setSectionResizeMode(0, supplier_header.ResizeMode.Stretch)
-        self.supplier_debts_table.setColumnWidth(1, 160)
-        self.supplier_debts_table.setColumnWidth(2, 160)
-        layout.addWidget(self.supplier_debts_table)
+        self.supplier_debts_table.setColumnWidth(1, 140)
+        self.supplier_debts_table.setColumnWidth(2, 140)
+        self._stretch_debts_table(self.supplier_debts_table)
+        left_column.addWidget(self.supplier_debts_table, stretch=1)
+        tables_row.addLayout(left_column, stretch=1)
 
-        # --- таблица покупателей: задолженность ---
-        layout.addWidget(QLabel("Покупатели — задолженность"))
+        right_column = QVBoxLayout()
+        right_column.setSpacing(6)
+        right_column.addWidget(QLabel("Покупатели — задолженность"))
         self.customer_debts_table = QTableWidget(0, 2)
         self.customer_debts_table.setHorizontalHeaderLabels(
             ["Наименование", "Задолженность"]
@@ -350,7 +373,11 @@ class DataView(QWidget):
         customer_header = self.customer_debts_table.horizontalHeader()
         customer_header.setSectionResizeMode(0, customer_header.ResizeMode.Stretch)
         self.customer_debts_table.setColumnWidth(1, 160)
-        layout.addWidget(self.customer_debts_table)
+        self._stretch_debts_table(self.customer_debts_table)
+        right_column.addWidget(self.customer_debts_table, stretch=1)
+        tables_row.addLayout(right_column, stretch=1)
+
+        layout.addLayout(tables_row, stretch=1)
 
         # --- текущие средства на счету ---
         funds_row = QHBoxLayout()
@@ -378,6 +405,19 @@ class DataView(QWidget):
         layout.addWidget(self.year_start_status_label)
 
         self._fill_year_start_tables()
+
+    @staticmethod
+    def _stretch_debts_table(table: QTableWidget) -> None:
+        """Таблица тянется по высоте и всегда с широким скроллбаром.
+
+        v0.24.0: таблицы остатков стоят рядом (слева и справа) и
+        занимают всю высоту экрана, поэтому им нужна растягиваемая
+        политика и всегда видимая полоса прокрутки.
+        """
+
+        table.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
+        table.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOn)
+        table.setStyleSheet(styles.WIDE_SCROLLBAR_ON_TABLE)
 
     def _fill_year_start_tables(self) -> None:
         data = self.store.data

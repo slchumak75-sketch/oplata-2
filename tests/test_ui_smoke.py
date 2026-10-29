@@ -1322,6 +1322,34 @@ def test_year_start_panel_saves_opening_balances(qt_app, store):
     window.close()
 
 
+def test_year_start_tables_are_side_by_side_and_full_height(qt_app, store):
+    """v0.24.0: таблицы остатков — две вертикальные, слева и справа, и
+    занимают всю высоту экрана."""
+
+    from oplata.app import IDX_DATA, MainWindow
+
+    window = MainWindow(store)
+    window.resize(1400, 900)
+    window.show()
+    # Переход на вкладку «Конфигурация» раскрывает плашку «Данные».
+    window._config_unlocked = True
+    window.show_page(IDX_DATA)
+    qt_app.processEvents()
+    view = window.data_view
+    assert view.data_panel.is_expanded()
+
+    left = view.supplier_debts_table
+    right = view.customer_debts_table
+    # Слева и справа: одна высота, разные колонки, равная ширина.
+    assert left.pos().x() < right.pos().x()
+    assert abs(left.pos().y() - right.pos().y()) <= 2
+    assert abs(left.width() - right.width()) <= 2
+    # Таблицы растянуты по высоте, а не сжаты до содержимого.
+    assert left.height() > left.sizeHint().height()
+    assert right.height() > right.sizeHint().height()
+    window.close()
+
+
 def test_arrows_are_next_to_today_and_bold_only_on_receipts(qt_app, store):
     """Стрелки — справа от «Сегодня»; жирные только на первой вкладке."""
     from PySide6.QtCore import Qt
