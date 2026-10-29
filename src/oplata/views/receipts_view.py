@@ -899,6 +899,8 @@ class MoneyBlock(QFrame):
         # Отметки календаря «Выходные и рабочие дни» (v0.23.3): блок
         # сам store не держит, их передаёт ReceiptsView при обновлении.
         self.day_overrides: dict[str, str] = {}
+        # v0.24.0: даты, отмеченные в карточке вида оплаты, по ключам строк.
+        self.payment_marks: dict[str, set[str]] = {}
         self.on_open_popup = on_open_popup
         self.on_amount_entered = on_amount_entered
         self.on_date_changed = on_date_changed
@@ -1062,6 +1064,16 @@ class MoneyBlock(QFrame):
         self.day_overrides = dict(overrides)
         self.paint_day_columns()
 
+    def set_payment_marks(self, marks: dict[str, set[str]]) -> None:
+        """Запомнить даты, отмеченные в карточках видов оплат (v0.24.0).
+
+        ``marks``: ключ строки (``other:<название>``) -> множество дат
+        ISO. Ячейки этих дней в строке вида оплаты станут красными.
+        """
+
+        self.payment_marks = {key: set(days) for key, days in marks.items()}
+        self.paint_day_columns()
+
     def paint_day_columns(self) -> None:
         """Раскрасить колонки дней, как в таблицах «Поставщики» (v0.23.3).
 
@@ -1073,21 +1085,33 @@ class MoneyBlock(QFrame):
         today = date.today()
         pink = QColor(styles.WEEK_TABLE_WEEKEND_PINK)
         green = QColor(styles.WEEK_TABLE_TODAY_GREEN)
+        # v0.24.0: даты, отмеченные в карточке вида оплаты, — красные.
+        red = QColor(styles.WEEK_TABLE_MARKED_RED)
         empty: QBrush = QBrush()
         header_colors: dict[int, QColor] = {}
+        off_days = {
+            day: calc.is_day_off(day, self.day_overrides) for day in self.days
+        }
         for index, day in enumerate(self.days):
             column = FIRST_DAY_COL + index
-            is_off = calc.is_day_off(day, self.day_overrides)
+            is_off = off_days[day]
             # v0.23.7: салатовой — только ячейка шапки с сегодняшней
             # датой, розовым — выходной/праздник (просьба пользователя).
             if day == today:
                 header_colors[column] = green
             elif is_off:
                 header_colors[column] = pink
-            for row in range(self.table.rowCount()):
+        for row, key in enumerate(self.row_keys):
+            marked = self.payment_marks.get(key, set())
+            for index, day in enumerate(self.days):
+                column = FIRST_DAY_COL + index
                 item = self.table.item(row, column)
-                if item is not None:
-                    item.setBackground(pink if is_off else empty)
+                if item is None:
+                    continue
+                if day.isoformat() in marked:
+                    item.setBackground(red)
+                else:
+                    item.setBackground(pink if off_days[day] else empty)
         self.day_header.set_section_colors(header_colors)
         self.table.viewport().update()
 
@@ -1465,8 +1489,14 @@ class ReceiptsView(QWidget):
                 return
             # Дата — та, что стоит в блоке; сумма вводится в ячейку.
             name = dialog.name_value
+            # v0.24.0: даты, отмеченные в календаре карточки, — их
+            # ячейки в таблице блока красятся красным.
             add_other_payment(
-                self.store.data, name, block.current_date().isoformat(), direction
+                self.store.data,
+                name,
+                block.current_date().isoformat(),
+                direction,
+                dates=dialog.marked_dates,
             )
             self.store.save()
             self.refresh_rows()
@@ -1830,6 +1860,25 @@ class ReceiptsView(QWidget):
             return self._other_total(other_row_name(key), day, direction)
         return ZERO
 
+    def _payment_marks(self, direction: str) -> dict[str, set[str]]:
+        """Даты, отмеченные в карточках видов оплат (v0.24.0).
+
+        Ключ — строка таблицы (``other:<название>``), значение — даты,
+        которые пользователь отметил в календаре карточки: их ячейки в
+        таблице блока красятся красным.
+        """
+
+        marks: dict[str, set[str]] = {}
+        for payment in self.store.data.other_payments:
+            if getattr(payment, "direction", OUTGOING) != direction:
+                continue
+            if not getattr(payment, "dates", None):
+                continue
+            marks.setdefault(other_row_key(payment.name), set()).update(
+                payment.dates
+            )
+        return marks
+
     def refresh(self) -> None:
         """Заполнить «Сумму» за выбранный день и колонки дней недели."""
 
@@ -1842,6 +1891,8 @@ class ReceiptsView(QWidget):
             block.refresh_columns()
             block.mark_current_day()
             block.set_day_overrides(self.store.data.day_overrides)
+            # v0.24.0: даты из карточек видов оплат — красные ячейки.
+            block.set_payment_marks(self._payment_marks(block.direction))
             day = block.current_date()
             for key in block.row_keys:
                 block.set_amount(

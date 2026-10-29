@@ -73,6 +73,11 @@ def patch_other_payment_card(monkeypatch, names=()):
         def name_value(self):
             return self._name
 
+        @property
+        def marked_dates(self):
+            """Календаря в подменной карточке нет — дат не отмечаем."""
+            return []
+
     monkeypatch.setattr(receipts_view_module, "OtherPaymentCardDialog", FakeCard)
 
 
@@ -2134,6 +2139,86 @@ def test_money_block_paints_weekends_and_today(qt_app, store, monkeypatch):
         assert table.showGrid() is True
         assert f"gridline-color:{styles.TABLE_GRID}" in table.styleSheet()
         assert f"border:1px solid {styles.BORDER}" in table.styleSheet()
+
+
+def test_payment_card_calendar_marks_dates(qt_app, store):
+    """v0.24.0: в карточке нового вида оплаты есть календарь — клик по
+    дате отмечает её, повторный клик снимает отметку."""
+
+    from datetime import date
+
+    from PySide6.QtWidgets import QPushButton
+
+    from oplata.models import OUTGOING
+    from oplata.views.receipts_view import (
+        OtherPaymentCardDialog,
+        PaymentDatesCalendar,
+    )
+
+    calendar = PaymentDatesCalendar(date(2026, 10, 29))
+    buttons = calendar.findChildren(QPushButton)
+    # Кнопки дней есть, месяц открыт на октябре 2026.
+    assert calendar.month_label.text() == "Октябрь 2026"
+    for day_number in ("27", "30"):
+        for button in buttons:
+            if button.text() == day_number:
+                button.click()
+                break
+    assert calendar.marked_dates() == ["2026-10-27", "2026-10-30"]
+    # Повторный клик снимает отметку.
+    for button in buttons:
+        if button.text() == "27":
+            button.click()
+            break
+    assert calendar.marked_dates() == ["2026-10-30"]
+
+    # Карточка отдаёт отмеченные даты наружу.
+    dialog = OtherPaymentCardDialog(OUTGOING, set(), date(2026, 10, 29))
+    assert dialog.marked_dates == []
+    dialog.calendar._marked.add("2026-11-02")
+    assert dialog.marked_dates == ["2026-11-02"]
+    dialog.calendar.deleteLater()
+
+
+def test_marked_dates_of_payment_paint_cells_red(qt_app, store):
+    """v0.24.0: даты, отмеченные в карточке вида оплаты, — красные
+    ячейки в таблице блока «Оплата»."""
+
+    from oplata import styles
+    from oplata.app import MainWindow
+    from oplata.models import OUTGOING, add_other_payment
+    from oplata.views.receipts_view import FIRST_DAY_COL
+
+    window = MainWindow(store)
+    window.show()
+    qt_app.processEvents()
+    view = window.receipts_view
+    block = view.outgoing
+    marked = [block.days[0].isoformat(), block.days[1].isoformat()]
+    add_other_payment(
+        store.data,
+        "Тестовая оплата",
+        block.current_date().isoformat(),
+        OUTGOING,
+        dates=marked,
+    )
+    view.refresh_rows()
+    view.refresh()
+    qt_app.processEvents()
+
+    row = block.row_keys.index("other:Тестовая оплата")
+    red = styles.WEEK_TABLE_MARKED_RED
+    for index, day in enumerate(block.days):
+        item = block.table.item(row, FIRST_DAY_COL + index)
+        assert item is not None
+        color = item.background().color().name()
+        if day.isoformat() in marked:
+            assert color == red, day
+        elif day.weekday() >= 5:
+            assert color == styles.WEEK_TABLE_WEEKEND_PINK, day
+        else:
+            assert color != red, day
+    window.close()
 
 
 def test_money_block_header_and_values_are_centered(qt_app, store):
