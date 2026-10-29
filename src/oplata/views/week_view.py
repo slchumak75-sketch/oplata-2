@@ -69,7 +69,6 @@ from ..models import (
 from ..storage import DataStore
 from ..widgets import (
     AmountLineEdit,
-    danger_button,
     date_edit_value,
     make_date_edit,
     set_date_edit,
@@ -342,6 +341,9 @@ class WeekView(QWidget):
         bar.addWidget(go_btn)
 
         bar.addStretch(1)
+        # v0.23.1: кнопка «Очистить суммы» убрана из таблицы
+        # «Поставщики» по просьбе пользователя — она удаляла введённые
+        # суммы за неделю безвозвратно и была лишней.
 
         # Кнопка карточки живёт в панели таблицы (с v0.11.0), а не в шапке
         # окна: пользователь просил перенести её слева от «Очистить суммы».
@@ -357,9 +359,6 @@ class WeekView(QWidget):
         bar.addWidget(self.card_button)
 
         if self.kind == "supplier":
-            self.clear_btn = danger_button("Очистить суммы")
-            self.clear_btn.clicked.connect(self._clear_amounts)
-            bar.addWidget(self.clear_btn)
             debt_title = QLabel("Задолженность за неделю:")
             debt_title.setObjectName("Muted")
             bar.addWidget(debt_title)
@@ -385,8 +384,6 @@ class WeekView(QWidget):
             else QAbstractItemView.EditTrigger.AllEditTriggers
         )
         # Кнопки, меняющие данные, без права ввода не показываем.
-        if hasattr(self, "clear_btn"):
-            self.clear_btn.setVisible(not read_only)
         self.card_button.setVisible(not read_only)
 
     # ------------------------------------------------------------- навигация
@@ -405,38 +402,6 @@ class WeekView(QWidget):
         self.week_start = week_monday(day)
         self.refresh()
 
-    def _clear_amounts(self) -> None:
-        """Кнопка «Очистить суммы»: удалить ВВЕДЁННЫЕ Приход/Оплата за эту неделю.
-
-        Предположение (SPEC Q5): удаляются операции с датой внутри
-        показанной недели, только после подтверждения.
-        """
-        answer = QMessageBox.question(
-            self,
-            "Очистить суммы",
-            "Удалить все введённые суммы «Приход» и «Оплата» за неделю "
-            f"{fmt_date(self._days[0])} — {fmt_date(self._days[-1])}?\n\n"
-            "Операции будут удалены безвозвратно.",
-        )
-        if answer != QMessageBox.StandardButton.Yes:
-            return
-        day_isos = {d.isoformat() for d in self._days}
-        partner_ids = {p.id for p in self._partners}
-        self.store.data.operations = [
-            op
-            for op in self.store.data.operations
-            if not (
-                op.counterparty_id in partner_ids
-                and op.date in day_isos
-                and op.kind in OP_KIND_BY_COLUMN.values()
-            )
-        ]
-        self.store.save()
-        self.refresh()
-        if self.on_data_changed is not None:
-            self.on_data_changed()
-
-    # ------------------------------------------------------------ клики/ввод
     def _on_item_clicked(self, item: QTableWidgetItem) -> None:
         if self.read_only:  # v0.18.0: без права ввода окна ввода не открываем
             return
