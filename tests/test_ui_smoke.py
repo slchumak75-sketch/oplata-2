@@ -413,61 +413,6 @@ def test_customer_card_has_no_supplier_payment_terms(qt_app, store):
     dialog.close()
 
 
-def test_summary_print_snapshot_and_pdf_render(qt_app, store, tmp_path):
-    """Печать «Сводки» берёт экранный снимок и реально рисуется в PDF."""
-    from datetime import datetime
-
-    from decimal import Decimal
-
-    from PySide6.QtGui import QPageLayout, QPageSize
-    from PySide6.QtPrintSupport import QPrinter
-
-    from oplata.app import MainWindow
-    from oplata.models import add_delivery
-
-    window = MainWindow(store)
-    view = window.summary_view
-    assert view.print_button.text() == "🖨  Печать"
-
-    # Поставка со сроком 20.10 попадает в задолженность поставщика.
-    archived = store.data.suppliers[0]
-    add_delivery(
-        store.data, archived.id, "2026-10-10", "2026-10-20", Decimal("1000")
-    )
-    view.refresh()
-    hidden_total = view.value_text("debt_total")
-    assert hidden_total == "1 000,00"
-    assert view.value_text("debt_overdue") == "1 000,00"
-    hidden_html = view.build_print_html(datetime(2026, 10, 27, 12, 0))
-    assert "Архивные поставщики: скрыты" in hidden_html
-    assert "Задолженность поставщикам" in hidden_html
-    assert "Средства" in hidden_html
-    assert "Месяц" in hidden_html
-
-    archived.archived = True
-    view.show_archived.setChecked(True)  # сигнал сам вызовет refresh()
-    shown_html = view.build_print_html(datetime(2026, 10, 27, 12, 0))
-    assert view.value_text("debt_total") == hidden_total
-    assert "Архивные поставщики: показаны" in shown_html
-    assert "1 000,00" in shown_html
-
-    document = view.create_print_document(datetime(2026, 10, 27, 12, 0))
-    printer = view.configure_print_printer(
-        QPrinter(QPrinter.PrinterMode.HighResolution)
-    )
-    assert printer.pageLayout().orientation() == QPageLayout.Orientation.Portrait
-    assert printer.pageLayout().pageSize().id() == QPageSize.PageSizeId.A4
-    pdf_path = tmp_path / "summary.pdf"
-    printer.setOutputFormat(QPrinter.OutputFormat.PdfFormat)
-    printer.setOutputFileName(str(pdf_path))
-
-    view.render_print_document(printer, document)
-    assert document.pageCount() >= 1
-    assert pdf_path.read_bytes().startswith(b"%PDF")
-    assert pdf_path.stat().st_size > 1000
-    window.close()
-
-
 def test_amount_edit_clears_zero_on_focus(qt_app):
     """Нулевое значение поля суммы не мешает начинать ввод."""
     from PySide6.QtCore import QEvent
@@ -718,6 +663,47 @@ def test_receipts_table_direct_input_and_totals(qt_app, store):
         ("card", "2026-10-27"),
         ("cash", "2026-10-26"),
     ]
+    window.close()
+
+
+def test_counterparty_popup_scrolls_long_list(qt_app, store):
+    """v0.22.1: в окне контрагентов есть прокрутка (их может быть много).
+
+    Проверяем окно покупателей (блок «Поступление») и окно
+    поставщиков (блок «Оплата»).
+    """
+
+    from oplata.app import MainWindow
+    from oplata.models import Counterparty
+    from oplata.views.receipts_view import POPUP_LIST_HEIGHT
+
+    store.data.customers.extend(
+        Counterparty(name=f"Покупатель {i}") for i in range(12)
+    )
+    expected_suppliers = len(store.data.suppliers) + 12
+    store.data.suppliers.extend(
+        Counterparty(name=f"Поставщик {i}") for i in range(12)
+    )
+    window = MainWindow(store)
+    window.show()
+    window.resize(1280, 900)
+    qt_app.processEvents()
+    view = window.receipts_view
+
+    popup = view.open_popup("customers", row=2)
+    qt_app.processEvents()
+    assert popup is not None
+    assert len(popup.edits) == 12
+    # Список лежит в прокручиваемой области и не выше 320 px.
+    assert popup.scroll_area.maximumHeight() == POPUP_LIST_HEIGHT
+    assert popup.scroll_area.height() <= POPUP_LIST_HEIGHT
+
+    suppliers = view.open_popup("suppliers", row=0)
+    qt_app.processEvents()
+    assert suppliers is not None
+    assert len(suppliers.edits) == expected_suppliers
+    assert suppliers.scroll_area.maximumHeight() == POPUP_LIST_HEIGHT
+    assert suppliers.scroll_area.height() <= POPUP_LIST_HEIGHT
     window.close()
 
 
@@ -1357,9 +1343,9 @@ def test_week_table_overdue_and_debt_headers_are_separate(qt_app, store):
     assert table.item(1, 1).text() == "ЗАДОЛЖЕННОСТЬ"
     # Ячейки объединены: подписи столбцов стоят строкой ниже.
     assert table.columnSpan(1, 1) == 3
-    # v0.16.0: «просрочено» стоит слева от «на сегодня».
-    assert table.item(2, 1).text() == "просрочено"
-    assert table.item(2, 2).text() == "на сегодня"
+    # v0.22.1: «Итого» стоит слева от «просрочено» (вместо «на сегодня»).
+    assert table.item(2, 1).text() == "Итого"
+    assert table.item(2, 2).text() == "просрочено"
     assert table.item(2, 3).text() == "за неделю"
     window.close()
 
@@ -1439,7 +1425,9 @@ def test_summary_panel_shows_three_blocks_line_by_line(qt_app, store):
     on_date = date(2026, 10, 27)
     supplier = store.data.suppliers[0]
 
-    # Средства: 50 000 на счету, поступление 3 000, оплата 1 200.
+    # Средства: 50 000 на счету, поступление 3 000, оплата 1 200
+    # (v0.22.1: ещё аренда 250 от 15.10 — она уже в остатке на 27.10,
+    # а в «Оплаты за день» не входит).
     set_year_start_funds(store.data, Decimal("50000"))
     add_cash_receipt(store.data, CASH_SOURCE, "2026-10-27", Decimal("3000"))
     add_supplier_payment(store.data, supplier.id, "2026-10-27", Decimal("1200"))
@@ -1464,9 +1452,10 @@ def test_summary_panel_shows_three_blocks_line_by_line(qt_app, store):
 
     # Блок «Средства».
     assert view.caption_text("funds") == "Остаток на счету"
-    assert view.value_text("funds") == "50 000,00"
+    # Остаток на начало 27.10: 50 000 − аренда 250 (15.10).
+    assert view.value_text("funds") == "49 750,00"
     assert view.value_text("income") == "3 000,00"
-    assert view.value_text("payments") == "1 450,00"
+    assert view.value_text("payments") == "1 200,00"
     assert view.value_text("balance") == "51 550,00"
 
     # Блок «Задолженность поставщикам».
@@ -1475,7 +1464,8 @@ def test_summary_panel_shows_three_blocks_line_by_line(qt_app, store):
     # гасит сначала просроченное (700 со сроком 20.10), остаток 500 —
     # долги недели (v0.15.0): и «на неделе», и «Просрочено» пусты.
     assert view.value_text("debt_week") == "0,00"
-    assert view.value_text("debt_overdue") == "0,00"
+    # v0.22.1: строки «Задолженность на сегодня» в сводке нет.
+    assert "debt_overdue" not in view._values
     assert view.caption_text("plan_1") == "Оплата 02.11 – 08.11"
     assert view.value_text("plan_1") == "0,00"
     assert view.caption_text("plan_2") == "Оплата 09.11 – 15.11"
@@ -1491,9 +1481,9 @@ def test_summary_panel_shows_three_blocks_line_by_line(qt_app, store):
 
     # Все значения построчно: подписи и числа лежат в сетке блоками.
     assert view.panel.isVisible()
-    # Блок поставщиков: всего, на неделе, на сегодня, просроченный
-    # платёж (v0.16.0) + четыре недели оплаты.
-    assert len(view._values) == len(view._captions) == 4 + 8 + 1 + 2
+    # Блок поставщиков: всего, на неделе, просроченный платёж
+    # (v0.16.0) + четыре недели оплаты (v0.22.1: без «на сегодня»).
+    assert len(view._values) == len(view._captions) == 4 + 7 + 1 + 2
     # Блок «Задолженность покупателей» пока пуст (покупателей нет).
     assert view.value_text("cust_total") == "0,00"
     window.close()
@@ -1550,9 +1540,10 @@ def test_summary_calc_helpers_are_pure(qt_app, store):
         "2026-11-23",
     ]
 
-    funds = calc.funds_totals(store.data)
+    # v0.22.1: блок «Средства» считается на дату.
+    funds = calc.funds_totals(store.data, date(2026, 10, 27))
     assert funds.funds == Decimal("0")   # «текущие средства» не задавали
-    assert funds.balance == funds.income - funds.payments
+    assert funds.balance == funds.funds + funds.income - funds.payments
 
 
 def test_summary_customer_debt_block_counts_sales_minus_payments(qt_app, store):
@@ -1572,7 +1563,7 @@ def test_summary_customer_debt_block_counts_sales_minus_payments(qt_app, store):
     buyer = Counterparty(name="Покупатель К")
     store.data.customers.append(buyer)
     add_realization(store.data, buyer.id, "2026-10-27", Decimal("5000"))
-    add_customer_receipt(store.data, buyer.id, "2026-10-28", Decimal("1500"))
+    add_customer_receipt(store.data, buyer.id, "2026-10-27", Decimal("1500"))
 
     window = MainWindow(store)
     window.show()
@@ -1587,6 +1578,116 @@ def test_summary_customer_debt_block_counts_sales_minus_payments(qt_app, store):
     # «Итого поступление» не включает реализацию покупателей (v0.15.0).
     assert view.value_text("income") == "0,00"
     assert view.value_text("payments") == "1 500,00"
+    window.close()
+
+
+def test_funds_movement_journal_shows_last_30_days(qt_app, store):
+    """v0.22.1: журнал движения средств за последние 30 дней.
+
+    В журнале: остаток на начало периода, все поступления и оплаты
+    за 30 дней и итого остаток. Записи старше 30 дней в журнал не
+    попадают, но уже учтены в остатке на начало.
+    """
+
+    from datetime import date, timedelta
+    from decimal import Decimal
+
+    from oplata import calc
+    from oplata.models import (
+        CASH_SOURCE,
+        add_cash_receipt,
+        add_supplier_payment,
+        set_year_start_funds,
+    )
+    from oplata.views.funds_view import MOVEMENT_DAYS, FundsMovementDialog
+
+    supplier = store.data.suppliers[0]
+    set_year_start_funds(store.data, Decimal("100"))
+    add_cash_receipt(store.data, CASH_SOURCE, "2026-09-01", Decimal("999"))
+    add_cash_receipt(store.data, CASH_SOURCE, "2026-10-27", Decimal("500"))
+    add_supplier_payment(store.data, supplier.id, "2026-10-28", Decimal("200"))
+
+    on_date = date(2026, 10, 28)
+    movement = calc.funds_movement(store.data, on_date)
+    assert movement.start == on_date - timedelta(days=MOVEMENT_DAYS - 1)
+    assert movement.end == on_date
+    # Остаток на начало 29.09: 100 (перенос) + 999 (поступление 01.09).
+    assert movement.start_funds == Decimal("1099")
+    assert [(r.day.isoformat(), r.income, r.payment) for r in movement.rows] == [
+        ("2026-10-27", Decimal("500"), Decimal("0")),
+        ("2026-10-28", Decimal("0"), Decimal("200")),
+    ]
+    assert [r.balance for r in movement.rows] == [
+        Decimal("1599"),
+        Decimal("1399"),
+    ]
+    assert movement.income == Decimal("500")
+    assert movement.payments == Decimal("200")
+    assert movement.balance == Decimal("1399")
+
+    # Окно журнала показывает те же цифры.
+    dialog = FundsMovementDialog(store, on_date)
+    assert dialog.table.rowCount() == 2
+    assert dialog.table.item(0, 0).text() == "27.10.2026"
+    assert dialog.table.item(0, 2).text() == "500,00"
+    assert dialog.table.item(1, 3).text() == "200,00"
+    assert dialog.table.item(1, 4).text() == "1 399,00"
+    assert "29.09.2026" in dialog.start_label.text()
+    assert "1 099,00" in dialog.start_label.text()
+    assert "Итого остаток: 1 399,00" in dialog.totals_label.text()
+    dialog.close()
+
+
+def test_funds_block_carries_balance_to_next_day(qt_app, store):
+    """v0.22.1: вчерашний «Итого остаток» = сегодняшний «Остаток на счету».
+
+    Правило пользователя: «сегодня после всех поступлений и оплат
+    итого остаток 350 руб, на следующий день эта сумма переходит в
+    остаток на счету, к ней добавляются поступления и отнимаются
+    оплаты».
+    """
+
+    from datetime import date
+    from decimal import Decimal
+
+    from PySide6.QtCore import QDate
+
+    from oplata.app import MainWindow
+    from oplata.models import CASH_SOURCE, add_cash_receipt, set_year_start_funds
+
+    set_year_start_funds(store.data, Decimal("100"))
+    add_cash_receipt(store.data, CASH_SOURCE, "2026-10-27", Decimal("500"))
+
+    window = MainWindow(store)
+    window.show()
+    qt_app.processEvents()
+    view = window.summary_view
+    view.date_edit.setDate(QDate(2026, 10, 27))
+    qt_app.processEvents()
+
+    # 27.10: остаток на начало дня 100, поступление 500, итого 600.
+    assert view.value_text("funds") == "100,00"
+    assert view.value_text("income") == "500,00"
+    assert view.value_text("payments") == "0,00"
+    assert view.value_text("balance") == "600,00"
+
+    # 28.10: 600 перешло в «Остаток на счету», за день пока ничего.
+    view.date_edit.setDate(QDate(2026, 10, 28))
+    qt_app.processEvents()
+    assert view.value_text("funds") == "600,00"
+    assert view.value_text("income") == "0,00"
+    assert view.value_text("payments") == "0,00"
+    assert view.value_text("balance") == "600,00"
+
+    # Дата блоков «Поступление»/«Оплата» идёт за датой сводки.
+    assert window.receipts_view.incoming.current_date() == date(2026, 10, 28)
+    assert window.receipts_view.outgoing.current_date() == date(2026, 10, 28)
+
+    # И наоборот: смена даты в блоке переставляет дату сводки.
+    window.receipts_view.incoming.set_date(date(2026, 10, 29))
+    qt_app.processEvents()
+    assert view.current_date() == date(2026, 10, 29)
+    assert view.value_text("funds") == "600,00"
     window.close()
 
 
@@ -1659,13 +1760,14 @@ def _DAY(view, day_index, subcolumn):
     return view._day_column(day_index, subcolumn)
 
 
-def test_supplier_today_column_shows_only_today_due(qt_app, store, monkeypatch):
-    """Столбец «на сегодня» информационный: только срок сегодня (v0.21.0).
+def test_supplier_total_column_shows_whole_debt(qt_app, store, monkeypatch):
+    """Столбец «Итого» — вся текущая задолженность поставщика (v0.22.1).
 
-    Просроченное лежит в столбце «просрочено» и в «на сегодня» не
-    копится: если сегодня оплат со сроком сегодня нет — ячейка пустая.
-    Дата в тесте зафиксирована, иначе расчёт менялся бы вместе с
-    календарём.
+    «Итого» не зависит от показанной недели и от сегодняшней даты: это
+    весь остаток долга по всем срокам. Просроченное лежит в столбце
+    «просрочено» (срок раньше даты), а «за неделю» — сроки внутри
+    показанной недели. Дата в тесте зафиксирована, иначе расчёт
+    менялся бы вместе с календарём.
     """
     from datetime import date, timedelta
     from decimal import Decimal
@@ -1682,7 +1784,8 @@ def test_supplier_today_column_shows_only_today_due(qt_app, store, monkeypatch):
     monkeypatch.setattr(week_view_module, "date", _FixedDate)
 
     supplier = store.data.suppliers[0]
-    # Срок 27.10 — сегодня; 05.11 — следующая неделя; 20.10 — просрочка.
+    # Срок 27.10 (700), 05.11 (900 — следующая неделя), 20.10 (150 —
+    # просрочка). Всего задолженность 1 750.
     add_delivery(store.data, supplier.id, "2026-10-20", "2026-10-27", Decimal("700"))
     add_delivery(store.data, supplier.id, "2026-10-20", "2026-11-05", Decimal("900"))
     add_delivery(store.data, supplier.id, "2026-10-10", "2026-10-20", Decimal("150"))
@@ -1696,24 +1799,23 @@ def test_supplier_today_column_shows_only_today_due(qt_app, store, monkeypatch):
 
     view.goto_date(date(2026, 10, 26))
     assert table.item(1, 1).text() == "ЗАДОЛЖЕННОСТЬ"
-    assert table.item(2, 1).text() == "просрочено"
-    assert table.item(2, 2).text() == "на сегодня"
+    assert table.item(2, 1).text() == "Итого"
+    assert table.item(2, 2).text() == "просрочено"
     assert table.item(2, 3).text() == "за неделю"
-    # Просрочка — 150 (срок 20.10); «на сегодня» — только срок 27.10;
-    # «за неделю» — сроки внутри 26.10–01.11, то есть 700.
-    assert table.item(row, 1).text() == "150,00"
-    assert table.item(row, 2).text() == "700,00"
+    # Итого — 700 + 900 + 150; просрочка — 150 (срок 20.10); за неделю
+    # (26.10–01.11) — 700.
+    assert table.item(row, 1).text() == "1 750,00"
+    assert table.item(row, 2).text() == "150,00"
     assert table.item(row, 3).text() == "700,00"
 
-    # Следующая неделя: «на сегодня» не зависит от того, какую неделю
-    # смотрят, — это всегда срок текущей датой.
+    # Следующая неделя: «Итого» то же, «за неделю» — срок 05.11.
     view.goto_date(date(2026, 10, 26) + timedelta(days=7))
-    assert table.item(row, 1).text() == "150,00"
-    assert table.item(row, 2).text() == "700,00"
+    assert table.item(row, 1).text() == "1 750,00"
+    assert table.item(row, 2).text() == "150,00"
     assert table.item(row, 3).text() == "900,00"
 
-    # Наступил следующий день: просрочка выросла, а «на сегодня» пусто —
-    # оплат со сроком 28.10 нет.
+    # Наступил следующий день: просрочка выросла (150 + 700), «Итого»
+    # не изменилось — это весь долг, а не только просроченный.
     class _NextDay(date):
         @classmethod
         def today(cls):
@@ -1721,8 +1823,8 @@ def test_supplier_today_column_shows_only_today_due(qt_app, store, monkeypatch):
 
     monkeypatch.setattr(week_view_module, "date", _NextDay)
     view.refresh()
-    assert table.item(row, 1).text() == "850,00"  # 150 + 700 просрочены
-    assert table.item(row, 2).text() == ""
+    assert table.item(row, 1).text() == "1 750,00"
+    assert table.item(row, 2).text() == "850,00"  # 150 + 700 просрочены
     window.close()
 
 
@@ -1731,8 +1833,8 @@ def test_supplier_payment_reduces_overdue_first_then_week(qt_app, store, monkeyp
 
     Сроки в тесте фиксированные (20.10 и 29.10), поэтому «сегодня»
     закрепляем на 27.10: иначе расчёт менялся бы вместе с календарём.
-    Столбец «на сегодня» с v0.21.0 показывает только срок текущей
-    датой — здесь такого срока нет, поэтому он пустой.
+    Столбец «Итого» (v0.22.1) показывает весь остаток долга
+    поставщику: до оплаты 1 200, после оплаты 900 — 300.
     """
     from datetime import date, timedelta
     from decimal import Decimal
@@ -1763,8 +1865,8 @@ def test_supplier_payment_reduces_overdue_first_then_week(qt_app, store, monkeyp
     table = view.table
     view.goto_date(date(2026, 10, 26))
 
-    assert table.item(row, 1).text() == "700,00"  # просрочено
-    assert table.item(row, 2).text() == ""  # «на сегодня» — только срок 27.10
+    assert table.item(row, 1).text() == "1 200,00"  # Итого (700 + 500)
+    assert table.item(row, 2).text() == "700,00"  # просрочено
     assert table.item(row, 3).text() == "500,00"  # за неделю
 
     # Оплата 900: сначала гасит просрочку 700, остаток 200 — неделю.
@@ -1772,8 +1874,8 @@ def test_supplier_payment_reduces_overdue_first_then_week(qt_app, store, monkeyp
         store.data, supplier.id, "2026-10-27", "Оплата", Decimal("900")
     )
     view.refresh()
-    assert table.item(row, 1).text() == ""  # просрочка погашена
-    assert table.item(row, 2).text() == ""  # «на сегодня» по-прежнему пусто
+    assert table.item(row, 1).text() == "300,00"  # Итого: 1 200 − 900
+    assert table.item(row, 2).text() == ""  # просрочка погашена
     assert table.item(row, 3).text() == "300,00"  # 500 − 200
 
     # Недоплата: оплата 100 вместо 900 — остаток просрочки переносится.
@@ -1784,21 +1886,20 @@ def test_supplier_payment_reduces_overdue_first_then_week(qt_app, store, monkeyp
         store.data, supplier.id, "2026-10-20", "Оплата", Decimal("100")
     )
     view.refresh()
-    assert table.item(row, 1).text() == "600,00"  # 700 − 100
-    assert table.item(row, 2).text() == ""  # срока 27.10 нет — пусто
+    assert table.item(row, 1).text() == "1 100,00"  # Итого: 1 200 − 100
+    assert table.item(row, 2).text() == "600,00"  # 700 − 100
     assert table.item(row, 3).text() == "500,00"  # оплата ушла в просрочку
-    # Следующая неделя (02.11–08.11): просрочка всё та же 600, «на
-    # сегодня» по-прежнему считается на текущую дату 27.10, а долг со
+    # Следующая неделя (02.11–08.11): просрочка всё та же 600, а долг со
     # сроком 29.10 в эту неделю не попадает («за неделю» пусто).
     view.goto_date(date(2026, 10, 26) + timedelta(days=7))
-    assert table.item(row, 1).text() == "600,00"
-    assert table.item(row, 2).text() == ""
+    assert table.item(row, 1).text() == "1 100,00"
+    assert table.item(row, 2).text() == "600,00"
     assert table.item(row, 3).text() == ""
     window.close()
 
 
 def test_supplier_with_realization_never_shows_overdue(qt_app, store):
-    """Поставщик со статусом «Реализация»: срок бессрочный, «на сегодня» — пусто."""
+    """Поставщик «Реализация»: срока нет, «просрочено» пусто, «Итого» — долг."""
     from datetime import date
     from decimal import Decimal
 
@@ -1822,8 +1923,11 @@ def test_supplier_with_realization_never_shows_overdue(qt_app, store):
     # Поставка со сроком в прошлом — но у «Реализации» срока нет.
     add_delivery(store.data, partner.id, "2026-10-01", "2026-10-05", Decimal("400"))
     view.refresh()
-    assert table.item(row, 1).text() == ""  # в «на сегодня» не попадает никогда
-    assert table.item(row, 2).text() == ""  # срок 05.10 вне недели 26.10–01.11
+    # v0.22.1: «Итого» — вся задолженность, «просрочено» у «Реализации»
+    # не бывает, срок 05.10 вне недели 26.10–01.11.
+    assert table.item(row, 1).text() == "400,00"
+    assert table.item(row, 2).text() == ""
+    assert table.item(row, 3).text() == ""
     window.close()
 
 

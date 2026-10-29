@@ -17,12 +17,10 @@
 from __future__ import annotations
 
 from collections.abc import Callable
-from datetime import date, datetime
+from datetime import date
 from decimal import Decimal
 
-from PySide6.QtCore import QMarginsF, Qt
-from PySide6.QtGui import QFont, QPageLayout, QPageSize, QTextDocument
-from PySide6.QtPrintSupport import QPrinter, QPrintPreviewDialog
+from PySide6.QtCore import QDate, Qt
 from PySide6.QtWidgets import (
     QCheckBox,
     QFrame,
@@ -35,9 +33,8 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from .. import __app_name__, __version__, calc, styles
-from ..dates import fmt_date, fmt_money_plain
-from ..reports import SummaryLine, SummarySection, build_summary_sections_html
+from .. import calc, styles
+from ..dates import fmt_money_plain
 from ..storage import DataStore
 from ..widgets import CollapsiblePanel, date_edit_value, make_date_edit
 
@@ -52,16 +49,14 @@ class SummaryView(QWidget):
         store: DataStore,
         on_open_supplier: Callable[[str | None], None],
         parent: QWidget | None = None,
+        on_date_changed: Callable[[], None] | None = None,
     ) -> None:
         super().__init__(parent)
         self.store = store
         self.on_open_supplier = on_open_supplier
-
-        # Снимок последних показанных значений для печатной формы.
-        # Заполняется в refresh(); печать ничего не пересчитывает сама.
-        self._report_date = date.today()
-        self._report_sections: list[SummarySection] = []
-        self._report_include_archived = False
+        # v0.22.1: дата сводки и даты блоков «Поступление»/«Оплата»
+        # идут вместе — смена даты здесь переставляет и их.
+        self.on_date_changed = on_date_changed
 
         # Подписи и значения строк: ключ -> (подпись, значение).
         self._captions: dict[str, QLabel] = {}
@@ -71,23 +66,33 @@ class SummaryView(QWidget):
         root.setContentsMargins(10, 10, 10, 10)
         root.setSpacing(10)
 
-        # --- верхняя строка: дата, архивные, печать ---
+        # --- шапка в две строки (v0.22.1): панель узкая, поэтому
+        # дата стоит отдельной строкой, а переключатели — под ней ---
         top = QHBoxLayout()
         date_label = QLabel("Сводка на дату")
         date_label.setStyleSheet("font-weight:700")
         top.addWidget(date_label)
         self.date_edit = make_date_edit(date.today())
-        self.date_edit.dateChanged.connect(lambda *_: self.refresh())
+        self.date_edit.dateChanged.connect(self._on_date_changed)
         top.addWidget(self.date_edit)
+        top.addStretch(1)
+        root.addLayout(top)
+
+        # Вторая строка шапки: архивные и журнал движения средств.
+        tools = QHBoxLayout()
         self.show_archived = QCheckBox("показывать архивных")
         self.show_archived.toggled.connect(lambda *_: self.refresh())
-        top.addWidget(self.show_archived)
-        top.addStretch(1)
-        self.print_button = QPushButton("🖨  Печать")
-        self.print_button.setToolTip("Открыть предпросмотр печати сводки")
-        self.print_button.clicked.connect(self._open_print_preview)
-        top.addWidget(self.print_button)
-        root.addLayout(top)
+        tools.addWidget(self.show_archived)
+        tools.addStretch(1)
+        self.movement_button = QPushButton("Журнал движения средств")
+        self.movement_button.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.movement_button.setToolTip(
+            "Поступления и оплаты за последние 30 дней с остатком по каждой "
+            "записи"
+        )
+        self.movement_button.clicked.connect(self._open_funds_movement)
+        tools.addWidget(self.movement_button)
+        root.addLayout(tools)
 
         # --- плашка со всеми строками ---
         self.panel = CollapsiblePanel("Сводка", expanded=True)
@@ -108,8 +113,8 @@ class SummaryView(QWidget):
             "СРЕДСТВА",
             [
                 ("funds", "Остаток на счету"),
-                ("income", "Итого поступление"),
-                ("payments", "Итого оплаты"),
+                ("income", "Поступление за день"),
+                ("payments", "Оплаты за день"),
                 ("balance", "Итого остаток"),
             ],
         )
@@ -121,13 +126,10 @@ class SummaryView(QWidget):
             [
                 ("debt_total", "Всего задолженность"),
                 ("debt_week", "Задолженность на неделе"),
-                # Строки «Задолженность на сегодня» больше нет (v0.15.0):
-                # «Просрочено» берётся из столбца «на сегодня» таблицы
-                # поставщиков, отдельная строка не нужна.
-                # v0.16.0: «Просрочено» переименовано в «Задолженность на
-                # сегодня», а под настоящий просроченный платёж добавлена
-                # отдельная строка ниже.
-                ("debt_overdue", "Задолженность на сегодня"),
+                # Строки «Задолженность на сегодня» больше нет
+                # (v0.22.1): в таблице поставщиков вместо столбца
+                # «на сегодня» стоит столбец «Итого» (общая текущая
+                # задолженность), отдельная строка не нужна.
                 ("debt_late", "Просроченный платеж"),
             ]
             + [
@@ -222,6 +224,32 @@ class SummaryView(QWidget):
     def caption_text(self, key: str) -> str:
         return self._captions[key].text()
 
+    # --------------------------------------------------------------- журнал
+    def _open_funds_movement(self) -> None:
+        """Открыть журнал движения средств за 30 дней (v0.22.1)."""
+
+        from .funds_view import FundsMovementDialog
+
+        dialog = FundsMovementDialog(self.store, self.current_date(), self)
+        dialog.exec()
+
+    # ----------------------------------------------------------------- дата
+    def current_date(self) -> date:
+        return date_edit_value(self.date_edit)
+
+    def set_date(self, day: date) -> None:
+        """Задать дату сводки (без повторного оповещения блоков)."""
+
+        self.date_edit.blockSignals(True)
+        self.date_edit.setDate(QDate(day.year, day.month, day.day))
+        self.date_edit.blockSignals(False)
+        self.refresh()
+
+    def _on_date_changed(self) -> None:
+        self.refresh()
+        if self.on_date_changed is not None:
+            self.on_date_changed()
+
     # -------------------------------------------------------------- расчёты
     def _set_value(self, key: str, amount: Decimal) -> None:
         self._values[key].setText(fmt_money_plain(amount))
@@ -231,7 +259,9 @@ class SummaryView(QWidget):
         include_archived = self.show_archived.isChecked()
         data = self.store.data
 
-        funds = calc.funds_totals(data)
+        # v0.22.1: блок «Средства» считается на выбранную дату: остаток
+        # на начало дня + поступления дня − оплаты дня.
+        funds = calc.funds_totals(data, on_date)
         debt = calc.debt_totals(data, on_date, include_archived)
         plan = calc.weekly_payment_plan(
             data, on_date, PLAN_WEEKS, include_archived
@@ -246,7 +276,6 @@ class SummaryView(QWidget):
         self._set_value("balance", funds.balance)
         self._set_value("debt_total", debt.total)
         self._set_value("debt_week", debt.week)
-        self._set_value("debt_overdue", debt.overdue)
         self._set_value("debt_late", debt.late)
         for index, week in enumerate(plan, start=1):
             key = f"plan_{index}"
@@ -258,126 +287,3 @@ class SummaryView(QWidget):
         self._set_value("cust_total", customers.total)
         self._set_value("month_income", month.income)
         self._set_value("month_payments", month.payments)
-
-        # Снимок для печати: те же строки, что видны на экране.
-        self._report_date = on_date
-        self._report_include_archived = include_archived
-        self._report_sections = [
-            SummarySection(
-                title="Средства",
-                lines=[
-                    SummaryLine("Остаток на счету", fmt_money_plain(funds.funds)),
-                    SummaryLine("Итого поступление", fmt_money_plain(funds.income)),
-                    SummaryLine("Итого оплаты", fmt_money_plain(funds.payments)),
-                    SummaryLine("Итого остаток", fmt_money_plain(funds.balance)),
-                ],
-            ),
-            SummarySection(
-                title="Задолженность поставщикам",
-                lines=[
-                    SummaryLine(
-                        "Всего задолженность", fmt_money_plain(debt.total)
-                    ),
-                    SummaryLine(
-                        "Задолженность на неделе", fmt_money_plain(debt.week)
-                    ),
-                    SummaryLine(
-                        "Задолженность на сегодня", fmt_money_plain(debt.overdue)
-                    ),
-                    SummaryLine(
-                        "Просроченный платеж", fmt_money_plain(debt.late)
-                    ),
-                ]
-                + [
-                    SummaryLine(
-                        f"Оплата {week.monday.strftime('%d.%m')}"
-                        f" – {week.sunday.strftime('%d.%m')}",
-                        fmt_money_plain(week.amount),
-                    )
-                    for week in plan
-                ],
-            ),
-            SummarySection(
-                title="Задолженность покупателей",
-                lines=[
-                    SummaryLine(
-                        "Задолженность покупателей",
-                        fmt_money_plain(customers.total),
-                    ),
-                ],
-            ),
-            SummarySection(
-                title="Месяц",
-                lines=[
-                    SummaryLine(
-                        "Приход с начала месяца", fmt_money_plain(month.income)
-                    ),
-                    SummaryLine(
-                        "Оплаты с начала месяца", fmt_money_plain(month.payments)
-                    ),
-                ],
-            ),
-        ]
-
-    # ---------------------------------------------------------------- печать
-    def build_print_html(self, generated_at: datetime | None = None) -> str:
-        """HTML печатной формы по последнему экранному снимку."""
-
-        return build_summary_sections_html(
-            on_date=self._report_date,
-            sections=self._report_sections,
-            include_archived=self._report_include_archived,
-            generated_at=generated_at,
-            app_name=__app_name__,
-            app_version=__version__,
-        )
-
-    def create_print_document(
-        self, generated_at: datetime | None = None
-    ) -> QTextDocument:
-        """Создать ``QTextDocument`` для предпросмотра/печати/PDF."""
-
-        document = QTextDocument()
-        font = QFont(self.font())
-        font.setPointSize(10)
-        document.setDefaultFont(font)
-        document.setDocumentMargin(0)
-        document.setHtml(self.build_print_html(generated_at))
-        return document
-
-    @staticmethod
-    def render_print_document(printer: QPrinter, document: QTextDocument) -> None:
-        """Настроить размер страницы документа и отправить его на печать."""
-
-        document.setPageSize(printer.pageRect(QPrinter.Unit.Point).size())
-        document.print_(printer)
-
-    def configure_print_printer(self, printer: QPrinter) -> QPrinter:
-        """Единая настройка страницы для предпросмотра, PDF и скриншотов."""
-
-        page_layout = printer.pageLayout()
-        page_layout.setPageSize(QPageSize(QPageSize.PageSizeId.A4))
-        page_layout.setOrientation(QPageLayout.Orientation.Portrait)
-        page_layout.setUnits(QPageLayout.Unit.Millimeter)
-        page_layout.setMargins(QMarginsF(12, 12, 12, 12))
-        printer.setPageLayout(page_layout)
-        printer.setDocName(f"Сводка на {fmt_date(self._report_date)}")
-        return printer
-
-    def _open_print_preview(self) -> None:
-        self.refresh()
-        document = self.create_print_document()
-
-        printer = self.configure_print_printer(
-            QPrinter(QPrinter.PrinterMode.HighResolution)
-        )
-
-        preview = QPrintPreviewDialog(printer, self)
-        preview.setWindowTitle("Предпросмотр печати — Сводка")
-        preview.resize(900, 1000)
-        preview.paintRequested.connect(
-            lambda target_printer: self.render_print_document(
-                target_printer, document
-            )
-        )
-        preview.exec()

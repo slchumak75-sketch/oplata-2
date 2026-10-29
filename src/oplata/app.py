@@ -96,7 +96,11 @@ class MainWindow(QMainWindow):
 
         # --- экраны (создаём до шапки: кнопкам шапки нужны колбэки) ---
         self.summary_view = SummaryView(
-            store, lambda sid: self.open_counterparty_card("supplier", sid)
+            store,
+            lambda sid: self.open_counterparty_card("supplier", sid),
+            # v0.22.1: смена даты в «Сводке» переставляет дату блоков
+            # «Поступление» и «Оплата» — дата на экране одна.
+            on_date_changed=self._sync_receipts_date_from_summary,
         )
         self.suppliers_view = WeekView(
             store,
@@ -160,6 +164,16 @@ class MainWindow(QMainWindow):
         self.show_page(
             IDX_RECEIPTS if IDX_RECEIPTS in self.access.pages else self.access.pages[0]
         )
+
+    def _sync_receipts_date_from_summary(self) -> None:
+        """v0.22.1: дату блоков «Поступление»/«Оплата» ставим по «Сводке»."""
+
+        day = self.summary_view.current_date()
+        self.receipts_view._syncing_date = True
+        try:
+            self.receipts_view.set_date(day)
+        finally:
+            self.receipts_view._syncing_date = False
 
     # ------------------------------------------------------------------ шапка
     def _build_header(self) -> QFrame:

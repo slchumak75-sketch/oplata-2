@@ -30,19 +30,20 @@
 
 from __future__ import annotations
 
-from collections.abc import Iterable, Mapping, Sequence
-from dataclasses import dataclass
+from collections.abc import Iterable, Iterator, Mapping, Sequence
+from dataclasses import dataclass, field
 from datetime import date, timedelta
 from decimal import Decimal, InvalidOperation
 
 from .dates import fmt_money_plain, week_monday
 from .models import (
+    AppData,
+    CASH_SOURCE,
+    Counterparty,
     INCOMING,
     KIND_INCOME,
     KIND_PAYMENT,
     KIND_SALE,
-    AppData,
-    Counterparty,
     Operation,
     cash_receipt_amount,
     daily_operation_total,
@@ -116,12 +117,36 @@ def overdue_payments(on_date: date) -> list:
 
 @dataclass(frozen=True)
 class FundsTotals:
-    """Блок «Средства» плашки «Сводка»."""
+    """Блок «Средства» плашки «Сводка» (на выбранную дату, v0.22.1)."""
 
-    funds: Decimal = ZERO        # остаток на счету (перенос на 1 января)
-    income: Decimal = ZERO       # итого поступление
-    payments: Decimal = ZERO     # итого оплаты
+    funds: Decimal = ZERO        # остаток на счету НА НАЧАЛО дня
+    income: Decimal = ZERO       # поступление за день
+    payments: Decimal = ZERO     # оплаты за день
     balance: Decimal = ZERO      # итого остаток = остаток + поступление − оплаты
+
+
+@dataclass(frozen=True)
+class FundsMovementRow:
+    """Одна строка журнала движения средств (v0.22.1)."""
+
+    day: date
+    name: str = ""
+    income: Decimal = ZERO        # поступление (пусто у оплат)
+    payment: Decimal = ZERO       # оплата (пусто у поступлений)
+    balance: Decimal = ZERO       # остаток после этой записи
+
+
+@dataclass(frozen=True)
+class FundsMovement:
+    """Журнал движения средств за период (v0.22.1)."""
+
+    start: date                   # первый день периода
+    end: date                     # последний день периода (выбранная дата)
+    start_funds: Decimal = ZERO   # остаток на счету НА НАЧАЛО периода
+    rows: list[FundsMovementRow] = field(default_factory=list)
+    income: Decimal = ZERO        # всего поступлений за период
+    payments: Decimal = ZERO      # всего оплат за период
+    balance: Decimal = ZERO       # итого остаток на конец периода
 
 
 @dataclass(frozen=True)
@@ -269,37 +294,137 @@ def visible_suppliers(data: AppData, include_archived: bool) -> list[Counterpart
     return [s for s in data.suppliers if include_archived or not s.archived]
 
 
-def funds_totals(data: AppData) -> FundsTotals:
-    """Блок «Средства»: остаток, поступления и оплаты за всё время."""
+def _funds_records(
+    data: AppData,
+) -> Iterator[tuple[date | None, Decimal, bool, str]]:
+    """Записи блока «Средства»: (дата, сумма, это поступление, название).
 
-    funds = ZERO
+    v0.15.0: «Реализация» покупателей в ИТОГ ПОСТУПЛЕНИЕ не входит,
+    поэтому из операций берём только ``KIND_PAYMENT``.
+    """
+
+    for receipt in data.cash_receipts:
+        name = (
+            "Поступление наличными"
+            if receipt.source == CASH_SOURCE
+            else "Поступление по картам"
+        )
+        yield _iso_day(receipt.date), cash_receipt_amount(receipt), True, name
+    for payment in data.other_payments:
+        yield (
+            _iso_day(payment.date),
+            other_payment_amount(payment),
+            payment.direction == INCOMING,
+            payment.name or "Прочий вид",
+        )
+    for op in data.operations:
+        if op.kind == KIND_PAYMENT:
+            partner = find_counterparty(data, op.counterparty_id)
+            name = f"Оплата: {partner.name}" if partner is not None else "Оплата"
+            yield _iso_day(op.date), operation_amount(op), False, name
+
+
+def funds_totals(data: AppData, on_date: date) -> FundsTotals:
+    """Блок «Средства» **на дату** ``on_date`` (v0.22.1).
+
+    Правило пользователя: вчерашний «Итого остаток» становится
+    сегодняшним «Остатком на счету», к нему за день прибавляются
+    поступления и отнимаются оплаты — результат снова показывается в
+    «Итого остаток». Поэтому:
+
+    * ``funds`` — остаток на счету **на начало дня** ``on_date``:
+      перенос с начала года плюс все поступления и минус все оплаты
+      за дни до ``on_date``;
+    * ``income`` / ``payments`` — поступления и оплаты **за этот день**;
+    * ``balance`` — итого остаток на конец дня:
+      ``funds + income − payments``.
+    """
+
     try:
         funds = Decimal(data.year_start.funds or "0")
     except InvalidOperation:
         funds = ZERO
+    # Дата, на которую внесён остаток: записи раньше неё уже учтены в нём.
+    start = _iso_day(data.year_start.date)
 
-    # v0.15.0: по просьбе пользователя «Реализация» покупателей в
-    # ИТОГ ПОСТУПЛЕНИЕ не входит. Больше в расчёте ничего не менялось.
-    income = ZERO
-    for receipt in data.cash_receipts:
-        income += cash_receipt_amount(receipt)
-    for payment in data.other_payments:
-        if payment.direction == INCOMING:
-            income += other_payment_amount(payment)
+    income_before = payments_before = ZERO
+    income_day = payments_day = ZERO
+    for day, amount, is_income, _name in _funds_records(data):
+        if day is None:
+            # Запись без даты (старые файлы) — считаем как прошедшую.
+            slot = "before"
+        elif start is not None and day < start:
+            continue  # уже в остатке на начало года
+        elif day > on_date:
+            continue  # будущее в остаток не входит
+        elif day == on_date:
+            slot = "day"
+        else:
+            slot = "before"
+        if is_income:
+            if slot == "day":
+                income_day += amount
+            else:
+                income_before += amount
+        elif slot == "day":
+            payments_day += amount
+        else:
+            payments_before += amount
 
-    payments = ZERO
-    for payment in data.other_payments:
-        if payment.direction != INCOMING:
-            payments += other_payment_amount(payment)
-    for op in data.operations:
-        if op.kind == KIND_PAYMENT:
-            payments += operation_amount(op)
-
+    funds += income_before - payments_before
     return FundsTotals(
         funds=funds,
+        income=income_day,
+        payments=payments_day,
+        balance=funds + income_day - payments_day,
+    )
+
+
+def funds_movement(data: AppData, on_date: date, days: int = 30) -> FundsMovement:
+    """Журнал движения средств за последние ``days`` дней (v0.22.1).
+
+    Первый день периода — ``on_date - (days - 1)``, последний — сама
+    выбранная дата. Остаток на начало периода берётся по тем же
+    правилам, что и в блоке «Средства» (``funds_totals``), поэтому
+    вчерашний «Итого остаток» становится сегодняшним «Остатком на
+    счету» и внутри журнала всё сходится.
+    """
+
+    start = on_date - timedelta(days=days - 1)
+    start_funds = funds_totals(data, start).funds
+
+    records = [
+        (day, name, amount, is_income)
+        for day, amount, is_income, name in _funds_records(data)
+        if day is not None and start <= day <= on_date
+    ]
+    # Внутри дня поступления показываем раньше оплат.
+    records.sort(key=lambda row: (row[0], not row[3]))
+
+    balance = start_funds
+    income = payments = ZERO
+    rows: list[FundsMovementRow] = []
+    for day, name, amount, is_income in records:
+        if is_income:
+            income += amount
+            balance += amount
+            rows.append(
+                FundsMovementRow(day, name, income=amount, balance=balance)
+            )
+        else:
+            payments += amount
+            balance -= amount
+            rows.append(
+                FundsMovementRow(day, name, payment=amount, balance=balance)
+            )
+    return FundsMovement(
+        start=start,
+        end=on_date,
+        start_funds=start_funds,
+        rows=rows,
         income=income,
         payments=payments,
-        balance=funds + income - payments,
+        balance=balance,
     )
 
 

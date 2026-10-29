@@ -244,6 +244,11 @@ class AmountItemDelegate(RowHoverMixin, QStyledItemDelegate):
         return editor
 
 
+# Максимальная высота прокручиваемого списка контрагентов в окне
+# справа (v0.22.1): длинные списки прокручиваются, короткие сжимаются.
+POPUP_LIST_HEIGHT = 320
+
+
 class AmountPopup(QFrame):
     """Окно справа: список контрагентов с полем суммы у каждого.
 
@@ -262,6 +267,7 @@ class AmountPopup(QFrame):
         parent: QWidget | None = None,
         hint: str = "",
         values: dict[str, Decimal] | None = None,
+        total_caption: str = "Итого по покупателям:",
     ) -> None:
         super().__init__(parent, Qt.WindowType.Popup)
         self.setObjectName("Popup")
@@ -277,6 +283,8 @@ class AmountPopup(QFrame):
         # ``ReceiptsView.open_popup``). При удалении окна Qt (вместе с
         # главным окном) Python-ссылка снимается через ``destroyed``.
         self._on_save = on_save
+        # v0.22.1: у блока «Оплата» итог подписывается по поставщикам.
+        self._total_caption = total_caption
         self.edits: dict[str, AmountLineEdit] = {}
         # Были ли уже сохранённые суммы: если да, то пустые поля — это
         # «убрать суммы», а не «нечего сохранять».
@@ -301,19 +309,21 @@ class AmountPopup(QFrame):
                 self._make_row(name, key, (values or {}).get(key))
             )
 
-        if len(entries) > 8:  # длинный список прокручиваем
-            scroll = QScrollArea()
-            scroll.setWidgetResizable(True)
-            scroll.setWidget(fields)
-            scroll.setMaximumHeight(320)
-            scroll.setFrameShape(QFrame.Shape.NoFrame)
-            root.addWidget(scroll)
-        else:
-            root.addWidget(fields)
+        # v0.22.1: список контрагентов прокручивается всегда — их
+        # может быть сколько угодно (запрос пользователя). Пока строк
+        # немного, окно само сжимается по высоте содержимого; когда
+        # строк больше, чем влезает в 320 px, появляется прокрутка.
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setWidget(fields)
+        scroll.setMaximumHeight(POPUP_LIST_HEIGHT)
+        scroll.setFrameShape(QFrame.Shape.NoFrame)
+        self.scroll_area = scroll
+        root.addWidget(scroll)
 
         total_row = QHBoxLayout()
         total_row.addStretch(1)
-        total_caption = QLabel("Итого по покупателям:")
+        total_caption = QLabel(self._total_caption)
         total_caption.setStyleSheet("font-weight:700")
         total_row.addWidget(total_caption)
         self.total_label = QLabel("0,00")
@@ -954,10 +964,14 @@ class MoneyBlock(QFrame):
             self.on_date_changed()
 
     def set_date(self, day: date) -> None:
-        self.date_edit.blockSignals(True)
-        self.date_edit.setDate(QDate(day.year, day.month, day.day))
-        self.date_edit.blockSignals(False)
-        self._on_date_changed()
+        # v0.22.1: сигнал не глушим — по нему «Сводка» синхронизирует
+        # свою дату с датой блока. Если дата та же, сигнал не придёт,
+        # поэтому пересчёт вызываем сами.
+        new_date = QDate(day.year, day.month, day.day)
+        if self.date_edit.date() == new_date:
+            self._on_date_changed()
+            return
+        self.date_edit.setDate(new_date)  # -> _on_date_changed()
 
     def go_today(self) -> None:
         self.set_date(_today())
@@ -1097,6 +1111,13 @@ class ReceiptsView(QWidget):
         root.addWidget(left, stretch=3 if summary_widget is not None else 1)
 
         # --- справа на всю высоту — «Сводка» ---
+        # v0.22.1: дата блоков и дата «Сводки» — одна: смена даты в
+        # блоке переставляет сводку, смена даты в сводке — блоки.
+        self._syncing_date = False
+        for block in self.blocks:
+            block.date_edit.dateChanged.connect(
+                lambda *_args, source=block: self._on_block_date_changed(source)
+            )
         if summary_widget is not None:
             # Ignored по горизонтали: сводка не должна отжимать блоки
             # влево — ширину держим долями раскладки (3 : 1).
@@ -1116,8 +1137,19 @@ class ReceiptsView(QWidget):
         """Задать дату обоим блокам (удобно для тестов и скриншотов)."""
 
         for block in self.blocks:
-            block.set_date(day)
+            block.set_date(day)   # каждый блок тянет за собой «Сводку»
         self.refresh()
+
+    def _on_block_date_changed(self, source: MoneyBlock) -> None:
+        """Смена даты в блоке: «Сводка» идёт на ту же дату (v0.22.1)."""
+
+        if self._syncing_date or self.summary_widget is None:
+            return
+        self._syncing_date = True
+        try:
+            self.summary_widget.set_date(source.current_date())
+        finally:
+            self._syncing_date = False
 
     # ------------------------------------------------------- прочие виды оплат
     def _incoming_rows(self) -> list[str]:
@@ -1360,6 +1392,9 @@ class ReceiptsView(QWidget):
             self,
             hint,
             values,
+            "Итого по покупателям:"
+            if row_key == CUSTOMERS_ROW
+            else "Итого по поставщикам:",
         )
         # Прежнее окно больше не нужно: скрываем и удаляем его, чтобы на
         # каждый клик по строке не копились виджеты.
