@@ -2221,6 +2221,55 @@ def test_marked_dates_of_payment_paint_cells_red(qt_app, store):
     window.close()
 
 
+def test_table_has_no_focus_frame_artifacts(qt_app, store):
+    """v0.24.3: после клика Qt не рисует рамку фокуса — иначе по таблице
+    шли вертикальные «штришки»-артефакты."""
+
+    from PySide6.QtCore import QModelIndex, QRect, Qt
+    from PySide6.QtWidgets import (
+        QStyle,
+        QStyleOptionViewItem,
+        QStyledItemDelegate,
+    )
+
+    from oplata.app import MainWindow
+    from oplata.styles import WIDE_SCROLLBAR_ON_TABLE
+    from oplata.widgets import RowHoverMixin
+
+    window = MainWindow(store)
+    window.show()
+    qt_app.processEvents()
+    # В стиле таблицы явно выключена рамка фокуса виджета.
+    assert "outline:none" in WIDE_SCROLLBAR_ON_TABLE.replace(" ", "")
+    # У таблиц блоков есть делегат с подсветкой строки — он же и снимает
+    # флаг фокуса перед отрисовкой ячейки.
+    assert window.receipts_view.incoming._hover_delegate is not None
+    window.close()
+
+    # Проверяем сам миксин: в базовую отрисовку состояние уходит уже без
+    # флага State_HasFocus, поэтому пунктирной рамки не будет.
+    class _Spy(QStyledItemDelegate):
+        def __init__(self) -> None:
+            super().__init__()
+            self.states: list[object] = []
+
+        def paint(self, painter, option, index):  # noqa: N802 - Qt API
+            self.states.append(option.state)
+
+    class _Probe(RowHoverMixin, _Spy):
+        pass
+
+    probe = _Probe()
+    option = QStyleOptionViewItem()
+    option.rect = QRect(0, 0, 20, 10)
+    option.state |= QStyle.StateFlag.State_HasFocus
+    probe.paint(None, option, QModelIndex())
+    assert probe.states, "базовая отрисовка не вызывалась"
+    assert not (probe.states[0] & QStyle.StateFlag.State_HasFocus)
+    # Исходный option не испорчен: флаг снимается с копии.
+    assert option.state & QStyle.StateFlag.State_HasFocus
+
+
 def test_money_block_first_column_left_others_centered(qt_app, store):
     """v0.23.9/v0.24.2: в таблицах «Поступление» и «Оплата» шапка и
     значения — по центру, кроме первого столбца: названия — слева."""

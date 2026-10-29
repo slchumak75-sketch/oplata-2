@@ -54,7 +54,9 @@ WIDE_SCROLLBAR_ON_AREA = (
     "QScrollArea > QWidget > QWidget{background:#ffffff}" + WIDE_SCROLLBAR
 )
 WIDE_SCROLLBAR_ON_TABLE = (
-    "QTableWidget{background:#ffffff;"
+    # v0.24.3: outline:none — рамка фокуса виджета (пунктир по периметру
+    # таблицы после клика) больше не рисуется.
+    "QTableWidget{background:#ffffff;outline:none;"
     f"border:1px solid {BORDER};border-radius:8px;"
     f"gridline-color:{TABLE_GRID};"
     f"selection-background-color:{SELECTION_BG};"

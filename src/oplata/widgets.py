@@ -13,6 +13,8 @@ from PySide6.QtWidgets import (
     QLineEdit,
     QPushButton,
     QSizePolicy,
+    QStyle,
+    QStyleOptionViewItem,
     QVBoxLayout,
     QWidget,
 )
@@ -294,6 +296,10 @@ class RowHoverMixin:
         self._hover_row = row
 
     def paint(self, painter, option, index):  # noqa: N802 - Qt API
+        # v0.24.3: без пунктирной рамки фокуса на ячейке. В Windows Qt
+        # рисует её после клика, и по таблице шли «штришки»-артефакты.
+        option = QStyleOptionViewItem(option)
+        option.state &= ~QStyle.StateFlag.State_HasFocus
         super().paint(painter, option, index)
         if (
             self._hover_row >= 0
