@@ -204,9 +204,9 @@ def debt_schedule(
 ) -> dict[date, Decimal]:
     """График долга поставщикам: дата срока -> сумма.
 
-    Складываются суммы поставок (``debt_by_due_date``) и разовые долги
-    переноса на 1 января (плашка «Данные» вкладки «Конфигурация») — у
-    них тоже есть дата оплаты. Оплаты долг не уменьшают (v0.3.1).
+    Складываются суммы поставок (``debt_by_due_date``). Оплаты долг не
+    уменьшают (v0.3.1). Разовые долги переноса на 1 января больше не
+    учитываются: плашка «Данные» удалена в v0.26.0.
     """
 
     if suppliers is None:
@@ -215,12 +215,6 @@ def debt_schedule(
     for supplier in suppliers:
         for due, amount in debt_by_due_date(data, supplier).items():
             schedule[due] = schedule.get(due, ZERO) + amount
-    for entry in data.year_start.supplier_debts:
-        due = _iso_day(entry.due_date)
-        amount = year_start_amount(entry)
-        if due is None or amount == 0:
-            continue
-        schedule[due] = schedule.get(due, ZERO) + amount
     return schedule
 
 
@@ -230,19 +224,10 @@ def supplier_schedule(
     """Полный график долга одного поставщика по срокам.
 
     Как :func:`debt_schedule`, но для одного контрагента: суммы поставок
-    по срокам **плюс его разовые долги переноса на 1 января**.
+    по срокам (перенос на 1 января не учитывается, v0.26.0).
     """
 
-    schedule = dict(debt_by_due_date(data, counterparty))
-    for entry in data.year_start.supplier_debts:
-        if entry.counterparty_id != counterparty.id:
-            continue
-        due = _iso_day(entry.due_date)
-        amount = year_start_amount(entry)
-        if due is None or amount == 0:
-            continue
-        schedule[due] = schedule.get(due, ZERO) + amount
-    return schedule
+    return dict(debt_by_due_date(data, counterparty))
 
 
 def supplier_schedule_remaining(
@@ -340,12 +325,10 @@ def funds_totals(data: AppData, on_date: date) -> FundsTotals:
       ``funds + income − payments``.
     """
 
-    try:
-        funds = Decimal(data.year_start.funds or "0")
-    except InvalidOperation:
-        funds = ZERO
-    # Дата, на которую внесён остаток: записи раньше неё уже учтены в нём.
-    start = _iso_day(data.year_start.date)
+    # v0.26.0: плашка «Данные» (перенос остатков) удалена, поэтому
+    # остаток на счёте считается только по операциям — иначе из-за даты
+    # остатков в «Сводку» не попадали данные блока «Поступление».
+    funds = ZERO
 
     income_before = payments_before = ZERO
     income_day = payments_day = ZERO
@@ -353,8 +336,6 @@ def funds_totals(data: AppData, on_date: date) -> FundsTotals:
         if day is None:
             # Запись без даты (старые файлы) — считаем как прошедшую.
             slot = "before"
-        elif start is not None and day < start:
-            continue  # уже в остатке на начало года
         elif day > on_date:
             continue  # будущее в остаток не входит
         elif day == on_date:
@@ -582,44 +563,9 @@ def customer_debt_amount(
             sale += operation_amount(op)
         elif op.kind == KIND_PAYMENT:
             payment += operation_amount(op)
-    total = sale - payment
-    if start is None and end is None:
-        entry = year_start_customer_debt(data, customer.id)
-        if entry is not None:
-            total += year_start_amount(entry)
-    return total
-
-
-def year_start_date(data: AppData) -> date | None:
-    """Дата остатков из плашки «Данные» (v0.25.2); её может не быть."""
-
-    return _iso_day(getattr(data.year_start, "date", "") or "")
-
-
-def year_start_customer_debts(
-    data: AppData, start: date, end: date
-) -> dict[str, Decimal]:
-    """Перенос задолженности из плашки «Данные» (v0.25.0, v0.25.2).
-
-    Возвращает ``{id покупателя: сумма}``. Перенос входит в расчёт,
-    когда дата остатков (``year_start.date``) уже наступила — не позднее
-    конца просматриваемого периода (``end``). Так введённая в «Данных»
-    задолженность попадает в таблицу «Покупатели» (колонка «Всего»)
-    **один раз** и остаётся в ней на всех следующих неделях: это долг на
-    дату остатков, а не еженедельная сумма (просьба пользователя).
-
-    Для недель раньше даты остатков словарь пуст: долг ещё не возник.
-    """
-
-    day = _iso_day(getattr(data.year_start, "date", "") or "")
-    if day is None or day > end:
-        return {}
-    result: dict[str, Decimal] = {}
-    for entry in data.year_start.customer_debts:
-        amount = year_start_amount(entry)
-        if amount:
-            result[entry.counterparty_id] = amount
-    return result
+    # v0.26.0: перенос остатков из плашки «Данные» больше не учитывается
+    # (вкладка удалена) — считаем только операции.
+    return sale - payment
 
 
 def customer_debt_totals(

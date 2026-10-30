@@ -46,12 +46,13 @@ from collections.abc import Callable, Iterable
 from datetime import date, timedelta
 from decimal import Decimal
 
-from PySide6.QtCore import QDate, QEvent, QPoint, Qt, QTimer
+from PySide6.QtCore import QDate, QEvent, QObject, QPoint, Qt, QTimer
 from PySide6.QtGui import QBrush, QColor, QFontMetrics
 from PySide6.QtWidgets import QStyle, QStyleOptionHeader
 from PySide6.QtWidgets import (
     QAbstractItemView,
     QGridLayout,
+    QAbstractItemDelegate,
     QApplication,
     QDateEdit,
     QDialog,
@@ -884,6 +885,55 @@ class JournalPopup(QFrame):
             self.move(max(free.left() + 8, x), max(free.top() + 8, y))
 
 
+class RowMouseFilter(QObject):
+    """Правый и двойной клик по строке своего вида оплаты (v0.26.0).
+
+    Сигнал ``cellDoubleClicked`` для этого не годится: таблица включила
+    ``AllEditTriggers``, поэтому первый клик открывает в ячейке поле
+    ввода и второго клика таблица уже не видит — карточка не открывалась
+    ни двойным кликом, ни правой кнопкой. Перехват события мыши до
+    таблицы работает и при открытом вводе.
+    """
+
+    def __init__(self, table: "QTableWidget", block: "MoneyBlock") -> None:
+        super().__init__(table)
+        self.table = table
+        self.block = block
+
+    def eventFilter(self, obj, event) -> bool:  # type: ignore[override]
+        if obj is not self.table.viewport():
+            return False
+        kind = event.type()
+        if kind == QEvent.Type.MouseButtonPress:
+            if event.button() == Qt.MouseButton.RightButton:
+                return self._handle(event, menu=True)
+            return False
+        if (
+            kind == QEvent.Type.MouseButtonDblClick
+            and event.button() == Qt.MouseButton.LeftButton
+        ):
+            return self._handle(event, menu=False)
+        return False
+
+    def _handle(self, event, menu: bool) -> bool:
+        """Обработать клик, если это строка своего вида (иначе — пропустить)."""
+
+        position = event.position().toPoint()
+        row = self.table.rowAt(position.y())
+        block = self.block
+        if row < 0 or row >= len(block.row_keys):
+            return False
+        if not block._is_own_payment_row(block.row_keys[row]):
+            return False
+        block._close_cell_editor()
+        if menu:
+            block._show_row_menu(position)
+        else:
+            block._open_card_for_row(row)
+        # Событие до таблицы не доходит: ввод в ячейке не открывается.
+        return True
+
+
 class MoneyBlock(QFrame):
     """Блок «Поступление»/«Оплата»: дата в одну строку с заголовком + таблица."""
 
@@ -999,12 +1049,11 @@ class MoneyBlock(QFrame):
         self.read_only = False
         self.table.cellClicked.connect(self._on_cell_clicked)
         # v0.25.1: двойной клик по своему виду — карточка, правая кнопка —
-        # меню («Дублировать»).
-        self.table.cellDoubleClicked.connect(self._on_cell_double_clicked)
-        self.table.setContextMenuPolicy(
-            Qt.ContextMenuPolicy.CustomContextMenu
-        )
-        self.table.customContextMenuRequested.connect(self._show_row_menu)
+        # меню («Дублировать»). v0.26.0: сигнал cellDoubleClicked при
+        # AllEditTriggers не доходит (первый клик открывает ввод), поэтому
+        # оба клика перехватывает фильтр на viewport.
+        self._row_filter = RowMouseFilter(self.table, self)
+        self.table.viewport().installEventFilter(self._row_filter)
         self.table.setAlternatingRowColors(False)
         # v0.23.7: своя шапка — чтобы подсветка дня была видна и в
         # Windows (фон секции рисует сам класс).
@@ -1324,7 +1373,21 @@ class MoneyBlock(QFrame):
 
         return key.startswith(OTHER_PREFIX) and key != FIXED_OTHER_ROW
 
-    def _on_cell_double_clicked(self, row: int, column: int) -> None:
+    def _close_cell_editor(self) -> None:
+        """Закрыть поле ввода, открытое в ячейке (v0.26.0).
+
+        Таблица открывает ввод уже по одному клику (AllEditTriggers), и
+        перед карточкой/меню его надо убрать, иначе он остаётся поверх.
+        """
+
+        editor = self.table.viewport().findChild(QLineEdit)
+        if editor is not None:
+            self.table.commitData(editor)
+            self.table.closeEditor(
+                editor, QAbstractItemDelegate.EndEditHint.NoHint
+            )
+
+    def _open_card_for_row(self, row: int) -> None:
         """Двойной клик: открыть карточку своего вида (v0.25.1)."""
 
         if row < 0 or row >= len(self.row_keys) or self.on_edit_card is None:
@@ -1332,11 +1395,6 @@ class MoneyBlock(QFrame):
         key = self.row_keys[row]
         if not self._is_own_payment_row(key):
             return
-        # Таблица сама открыла редактор ячейки — закрываем его, чтобы он
-        # не мешал карточке.
-        editor = self.table.item(row, column)
-        if editor is not None:
-            self.table.closePersistentEditor(editor)
         self.on_edit_card(key)
 
     def _show_row_menu(self, position) -> None:

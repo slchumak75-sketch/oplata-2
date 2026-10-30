@@ -78,12 +78,8 @@ from ..dates import MONTHS_RU, WEEKDAYS_RU_TITLE, fmt_money_plain, parse_money
 from ..models import (
     AppData,
     YearStart,
-    set_year_start_customer_debt,
-    set_year_start_date,
-    set_year_start_funds,
-    set_year_start_supplier_debt,
 )
-from ..storage import BASE_TITLES, OTHER_BASE, DataStore, data_path_for
+from ..storage import OTHER_BASE, DataStore, data_path_for
 from ..widgets import (
     AmountLineEdit,
     CollapsiblePanel,
@@ -95,7 +91,7 @@ from ..widgets import (
 
 MONTHS_PER_ROW = 5  # как на макете: Январь–Май в первой строке
 
-# Плашка «Данные»: разовый перенос остатков на 1 января (v0.14.0).
+# Формат даты в таблицах экрана (v0.26.0: плашка «Данные» удалена).
 DATE_FORMAT = "%d.%m.%Y"
 
 
@@ -136,14 +132,10 @@ class DataView(QWidget):
         on_calendar_saved: Callable[[], None] | None = None,
         parent: QWidget | None = None,
         on_users_saved: Callable[[User], None] | None = None,
-        on_toggle_base: Callable[[], None] | None = None,
     ) -> None:
         super().__init__(parent)
         self.store = store
         self.on_calendar_saved = on_calendar_saved
-        # v0.25.0: остатки ведутся отдельно для баз МИР и КОРЕЛИЧИ —
-        # со вкладки можно переключить базу, не уходя с неё.
-        self.on_toggle_base = on_toggle_base
         # v0.20.0: выбор текущего пользователя применяется сразу.
         self.on_users_saved = on_users_saved
         self.year = date.today().year
@@ -223,18 +215,6 @@ class DataView(QWidget):
         panel_layout.addWidget(self.scroll, stretch=1)
         root.addWidget(self.calendar_panel, stretch=1)
 
-        # --- раскрывающаяся плашка «Данные»: перенос остатков на 1 января ---
-        self.data_panel = CollapsiblePanel("Данные", expanded=False)
-        self._build_year_start_panel(self.data_panel.content_layout)
-        # v0.24.0: раскрытая плашка занимает всю высоту экрана — иначе
-        # таблицы остатков сжимались и не использовали место. Само
-        # содержимое плашки тоже должно тянуться, иначе место достаётся
-        # плашке, а не таблицам внутри неё.
-        self.data_panel.content.setSizePolicy(
-            QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding
-        )
-        root.addWidget(self.data_panel, stretch=1)
-
         # --- раскрывающаяся плашка «Пользователи и права» (v0.18.0) ---
         self.users_panel = CollapsiblePanel("Пользователи и права", expanded=False)
         self._build_users_panel(self.users_panel.content_layout)
@@ -295,286 +275,15 @@ class DataView(QWidget):
         admin_layout.addWidget(admin_hint)
         root.addWidget(self.admin_panel)
         # v0.24.0: пустой отступ внизу больше не забирает свободное
-        # место — иначе раскрытая плашка «Данные» не дорастала до низа
-        # экрана и таблицы остатков оставались низкими (просьба
-        # пользователя: разворачивать на всю высоту экрана).
+        # место — иначе раскрытая плашка не дорастала до низа экрана
+        # и её таблицы оставались низкими (просьба пользователя:
+        # разворачивать на всю высоту экрана).
         root.addStretch(0)
 
         self.refresh()
         self._update_save_state()
 
     # ------------------------------------------- перенос остатков на 1 января
-    def _build_year_start_panel(self, layout: QVBoxLayout) -> None:
-        """Плашка «Данные»: разовые переносимые остатки на начало года."""
-
-        title = QLabel("📥  Данные на 1 января (перенос остатков)")
-        title.setObjectName("PanelTitle")
-        layout.addWidget(title)
-
-        # v0.25.0: остатки у каждой базы (МИР/КОРЕЛИЧИ) свои — показываем,
-        # для какой базы вводим, и даём переключить её тут же.
-        base_row = QHBoxLayout()
-        base_row.setSpacing(8)
-        self.base_label = QLabel()
-        self.base_label.setObjectName("Muted")
-        base_row.addWidget(self.base_label)
-        base_row.addStretch(1)
-        self.base_switch_btn = QPushButton()
-        self.base_switch_btn.clicked.connect(self._toggle_base)
-        base_row.addWidget(self.base_switch_btn)
-        layout.addLayout(base_row)
-        self._update_base_row()
-
-        hint = QLabel(
-            "Разовые данные, с которых начинается год: по поставщикам — "
-            "дата оплаты и сумма долга, по покупателям — сумма "
-            "задолженности, отдельно — текущие средства на счету. Формул к "
-            "этим цифрам нет: они сохраняются и показываются как введены."
-        )
-        hint.setObjectName("Muted")
-        hint.setWordWrap(True)
-        layout.addWidget(hint)
-
-        # --- дата остатков ---
-        date_row = QHBoxLayout()
-        date_row.setSpacing(8)
-        date_row.addWidget(QLabel("Дата остатков"))
-        start_day = _parse_date_text(self.store.data.year_start.date)
-        if not start_day:
-            start_day = date(date.today().year, 1, 1).isoformat()
-        self.year_start_date_edit = make_date_edit(
-            date.fromisoformat(start_day)
-        )
-        date_row.addWidget(self.year_start_date_edit)
-        date_row.addStretch(1)
-        layout.addLayout(date_row)
-
-        # --- таблицы: поставщики слева, покупатели справа (v0.24.0) ---
-        # Раньше таблицы стояли друг под другом во всю ширину; по просьбе
-        # пользователя они стали двумя вертикальными списками рядом и
-        # занимают всю высоту экрана.
-        tables_row = QHBoxLayout()
-        tables_row.setSpacing(12)
-
-        left_column = QVBoxLayout()
-        left_column.setSpacing(6)
-        left_column.addWidget(QLabel("Поставщики — дата оплаты и сумма долга"))
-        self.supplier_debts_table = QTableWidget(0, 3)
-        self.supplier_debts_table.setHorizontalHeaderLabels(
-            ["Наименование", "Дата оплаты", "Сумма"]
-        )
-        self.supplier_debts_table.verticalHeader().setVisible(False)
-        self.supplier_debts_table.setEditTriggers(
-            QAbstractItemView.EditTrigger.AllEditTriggers
-        )
-        self.supplier_debts_table.setItemDelegateForColumn(2, _AmountDelegate())
-        supplier_header = self.supplier_debts_table.horizontalHeader()
-        supplier_header.setSectionResizeMode(0, supplier_header.ResizeMode.Stretch)
-        self.supplier_debts_table.setColumnWidth(1, 140)
-        self.supplier_debts_table.setColumnWidth(2, 140)
-        self._stretch_debts_table(self.supplier_debts_table)
-        left_column.addWidget(self.supplier_debts_table, stretch=1)
-        tables_row.addLayout(left_column, stretch=1)
-
-        right_column = QVBoxLayout()
-        right_column.setSpacing(6)
-        right_column.addWidget(QLabel("Покупатели — задолженность"))
-        self.customer_debts_table = QTableWidget(0, 2)
-        self.customer_debts_table.setHorizontalHeaderLabels(
-            ["Наименование", "Задолженность"]
-        )
-        self.customer_debts_table.verticalHeader().setVisible(False)
-        self.customer_debts_table.setEditTriggers(
-            QAbstractItemView.EditTrigger.AllEditTriggers
-        )
-        self.customer_debts_table.setItemDelegateForColumn(1, _AmountDelegate())
-        customer_header = self.customer_debts_table.horizontalHeader()
-        customer_header.setSectionResizeMode(0, customer_header.ResizeMode.Stretch)
-        self.customer_debts_table.setColumnWidth(1, 160)
-        self._stretch_debts_table(self.customer_debts_table)
-        right_column.addWidget(self.customer_debts_table, stretch=1)
-        tables_row.addLayout(right_column, stretch=1)
-
-        layout.addLayout(tables_row, stretch=1)
-
-        # --- текущие средства на счету ---
-        funds_row = QHBoxLayout()
-        funds_row.setSpacing(8)
-        funds_row.addWidget(QLabel("Текущие средства на счету"))
-        funds_value = parse_money(self.store.data.year_start.funds or "0")
-        self.funds_edit = make_amount_edit(
-            fmt_money_plain(funds_value) if funds_value else ""
-        )
-        self.funds_edit.setFixedWidth(200)
-        funds_row.addWidget(self.funds_edit)
-        funds_row.addStretch(1)
-        layout.addLayout(funds_row)
-
-        buttons = QHBoxLayout()
-        buttons.addStretch(1)
-        self.year_start_save_btn = blue_button("Сохранить")
-        self.year_start_save_btn.clicked.connect(self._save_year_start)
-        buttons.addWidget(self.year_start_save_btn)
-        layout.addLayout(buttons)
-
-        self.year_start_status_label = QLabel("")
-        self.year_start_status_label.setObjectName("Muted")
-        self.year_start_status_label.setWordWrap(True)
-        layout.addWidget(self.year_start_status_label)
-
-        self._fill_year_start_tables()
-
-    def _update_base_row(self) -> None:
-        """Подпись и кнопка переключения базы (v0.25.0)."""
-
-        key = self.store.base_key
-        title = BASE_TITLES.get(key, str(key))
-        other = BASE_TITLES.get(OTHER_BASE.get(key, ""), "")
-        self.base_label.setText(f"Остатки вводятся для базы: {title}")
-        self.base_switch_btn.setText(
-            f"Переключить на {other}" if other else "Переключить базу"
-        )
-        self.base_switch_btn.setVisible(self.on_toggle_base is not None)
-        self.base_switch_btn.setEnabled(self.on_toggle_base is not None)
-
-    def _toggle_base(self) -> None:
-        """Переключить базу (МИР <-> КОРЕЛИЧИ) — вызов в MainWindow."""
-
-        if self.on_toggle_base is not None:
-            self.on_toggle_base()
-
-    @staticmethod
-    def _stretch_debts_table(table: QTableWidget) -> None:
-        """Таблица тянется по высоте и всегда с широким скроллбаром.
-
-        v0.24.0: таблицы остатков стоят рядом (слева и справа) и
-        занимают всю высоту экрана, поэтому им нужна растягиваемая
-        политика и всегда видимая полоса прокрутки.
-        """
-
-        table.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
-        table.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOn)
-        table.setStyleSheet(styles.WIDE_SCROLLBAR_ON_TABLE)
-
-    def _fill_year_start_tables(self) -> None:
-        data = self.store.data
-
-        suppliers = [s for s in data.suppliers if not s.archived]
-        table = self.supplier_debts_table
-        table.setRowCount(len(suppliers))
-        for row, supplier in enumerate(suppliers):
-            entry = next(
-                (
-                    item
-                    for item in data.year_start.supplier_debts
-                    if item.counterparty_id == supplier.id
-                ),
-                None,
-            )
-            values = (
-                supplier.name,
-                _date_text(entry.due_date) if entry else "",
-                fmt_money_plain(parse_money(entry.amount or "0"))
-                if entry and parse_money(entry.amount or "0")
-                else "",
-            )
-            for column, text in enumerate(values):
-                item = QTableWidgetItem(text)
-                flags = (
-                    Qt.ItemFlag.ItemIsEnabled | Qt.ItemFlag.ItemIsSelectable
-                )
-                if column:  # дата и сумма вводятся прямо в ячейку
-                    flags |= Qt.ItemFlag.ItemIsEditable
-                item.setFlags(flags)
-                item.setData(Qt.ItemDataRole.UserRole, supplier.id)
-                if column == 2:
-                    item.setTextAlignment(
-                        Qt.AlignmentFlag.AlignRight
-                        | Qt.AlignmentFlag.AlignVCenter
-                    )
-                table.setItem(row, column, item)
-
-        customers = [c for c in data.customers if not c.archived]
-        table = self.customer_debts_table
-        table.setRowCount(len(customers))
-        for row, customer in enumerate(customers):
-            entry = next(
-                (
-                    item
-                    for item in data.year_start.customer_debts
-                    if item.counterparty_id == customer.id
-                ),
-                None,
-            )
-            amount = parse_money(entry.amount or "0") if entry else None
-            values = (
-                customer.name,
-                fmt_money_plain(amount) if amount else "",
-            )
-            for column, text in enumerate(values):
-                item = QTableWidgetItem(text)
-                flags = (
-                    Qt.ItemFlag.ItemIsEnabled | Qt.ItemFlag.ItemIsSelectable
-                )
-                if column:
-                    flags |= Qt.ItemFlag.ItemIsEditable
-                item.setFlags(flags)
-                item.setData(Qt.ItemDataRole.UserRole, customer.id)
-                if column == 1:
-                    item.setTextAlignment(
-                        Qt.AlignmentFlag.AlignRight
-                        | Qt.AlignmentFlag.AlignVCenter
-                    )
-                table.setItem(row, column, item)
-
-    def _save_year_start(self) -> None:
-        """Записать перенесённые остатки в файл данных."""
-
-        data = self.store.data
-        set_year_start_date(
-            data, self.year_start_date_edit.date().toPython().isoformat()
-        )
-
-        for row in range(self.supplier_debts_table.rowCount()):
-            name_item = self.supplier_debts_table.item(row, 0)
-            if name_item is None:
-                continue
-            counterparty_id = str(name_item.data(Qt.ItemDataRole.UserRole) or "")
-            date_item = self.supplier_debts_table.item(row, 1)
-            amount_item = self.supplier_debts_table.item(row, 2)
-            amount_text = amount_item.text().strip() if amount_item else ""
-            amount = parse_money(amount_text) if amount_text else None
-            set_year_start_supplier_debt(
-                data,
-                counterparty_id,
-                _parse_date_text(date_item.text() if date_item else ""),
-                amount,
-            )
-
-        for row in range(self.customer_debts_table.rowCount()):
-            name_item = self.customer_debts_table.item(row, 0)
-            if name_item is None:
-                continue
-            counterparty_id = str(name_item.data(Qt.ItemDataRole.UserRole) or "")
-            amount_item = self.customer_debts_table.item(row, 1)
-            amount_text = amount_item.text().strip() if amount_item else ""
-            amount = parse_money(amount_text) if amount_text else None
-            set_year_start_customer_debt(data, counterparty_id, amount)
-
-        funds_text = self.funds_edit.text().strip()
-        funds = parse_money(funds_text) if funds_text else Decimal("0")
-        set_year_start_funds(data, funds if funds else Decimal("0"))
-
-        self.store.save()
-        self._fill_year_start_tables()
-        saved_date = data.year_start.date
-        self.year_start_status_label.setText(
-            f"Сохранено: остатки на {_date_text(saved_date) or '—'}. "
-            f"Поставщиков: {len(data.year_start.supplier_debts)}, "
-            f"покупателей: {len(data.year_start.customer_debts)}, "
-            f"средства: {fmt_money_plain(parse_money(data.year_start.funds or '0'))}."
-        )
-
     # ------------------------------------------------------- администрирование
     def _open_data_folder(self) -> None:
         """Открыть папку с data.json средствами системы."""
@@ -1031,17 +740,6 @@ class DataView(QWidget):
         # Отметки в календаре меняют данные — без права ввода нельзя.
         self.save_button.setVisible(not read_only)
         self.cancel_button.setVisible(not read_only)
-        self.year_start_save_btn.setVisible(not read_only)
-        self.supplier_debts_table.setEditTriggers(
-            QAbstractItemView.EditTrigger.NoEditTriggers
-            if read_only
-            else QAbstractItemView.EditTrigger.AllEditTriggers
-        )
-        self.customer_debts_table.setEditTriggers(
-            QAbstractItemView.EditTrigger.NoEditTriggers
-            if read_only
-            else QAbstractItemView.EditTrigger.AllEditTriggers
-        )
         # v0.23.1: «Администрирование» видно всем, кто зашёл на вкладку
         # «Конфигурация» (она за паролем).
         self.admin_panel.setVisible(True)
@@ -1062,7 +760,6 @@ class DataView(QWidget):
     # ------------------------------------------------------------- календарь
     def refresh(self) -> None:
         self.year_label.setText(str(self.year))
-        self._update_base_row()  # v0.25.0: база могла переключиться
         self._day_buttons = {}
 
         container = QWidget()
@@ -1081,7 +778,6 @@ class DataView(QWidget):
         self.path_label.setText(str(self.store.path))
         self._fill_users_table()
         self._pending_overrides = dict(self.store.data.day_overrides)
-        self._fill_year_start_tables()
         self._update_admin_stats()
         self._update_save_state()
 

@@ -140,9 +140,6 @@ class MainWindow(QMainWindow):
             # v0.20.0: выбор текущего пользователя в «Конфигурации»
             # применяется сразу, без перезапуска.
             on_users_saved=self.apply_current_user,
-            # v0.25.0: остатки на 1 января вводятся для каждой базы
-            # отдельно — переключатель базы есть и на вкладке «Данные».
-            on_toggle_base=self.toggle_base,
         )
 
         # v0.21.0: столбец «на сегодня» считается по настоящей дате,
@@ -486,10 +483,8 @@ class MainWindow(QMainWindow):
             self.suppliers_view.reset_to_today()
         elif index == IDX_CUSTOMERS:
             self.customers_view.reset_to_today()
-        elif index == IDX_DATA:
-            # v0.24.0: на вкладке «Конфигурация» плашка «Данные» сразу
-            # раскрыта — таблицы остатков занимают всю высоту экрана.
-            self.data_view.data_panel.set_expanded(True)
+        # v0.26.0: плашка «Данные» (перенос остатков) удалена — на
+        # вкладке «Конфигурация» раскрывать больше нечего.
 
     def _ask_config_password(self) -> bool:
         """Пароль на вкладку «Конфигурация» (v0.18.0).
