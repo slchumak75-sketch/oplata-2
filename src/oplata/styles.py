@@ -51,9 +51,32 @@ WIDE_SCROLLBAR = (
 # сетку) приходится задавать заново: иначе вместо белого проглядывает
 # серый фон по умолчанию. Так и было в окнах «Покупатели»/«Поставщики»
 # после появления в них вертикальной прокрутки.
+# v0.26.6: правила, гасящие рамку фокуса на текущей ячейке и рамку
+# поля ввода. Их нужно повторять в **каждом** QSS, который применяется
+# к таблице отдельно: виджет со своей таблицей стилей становится корнем
+# новой области стилей Qt, и правила APP_STYLESHEET на него и на его
+# детей перестают действовать. Из-за этого с v0.23.1 (появление
+# WIDE_SCROLLBAR_ON_TABLE) на таблицах «Оплата», «Поступление»,
+# «Покупатели», «Поставщики» после клика появлялась системная синяя
+# рамка на нажатой ячейке — «артефакт».
+TABLE_CELL_RULES = (
+    "QTableWidget::item:focus,QTableView::item:focus{"
+    "background:transparent;border:none;outline:none}"
+    "QTableWidget::item:hover,QTableView::item:hover{"
+    "background:transparent}"
+    "QTableWidget QLineEdit,QTableView QLineEdit{"
+    "border:none;outline:none;background:#ffffff;"
+    f"color:{TEXT};"
+    f"selection-background-color:{SELECTION_BG};"
+    f"selection-color:{TEXT};"
+    "padding:0 4px}"
+)
+
 WIDE_SCROLLBAR_ON_AREA = (
     "QScrollArea{background:#ffffff;border:none}"
-    "QScrollArea > QWidget > QWidget{background:#ffffff}" + WIDE_SCROLLBAR
+    "QScrollArea > QWidget > QWidget{background:#ffffff}"
+    + WIDE_SCROLLBAR
+    + TABLE_CELL_RULES
 )
 WIDE_SCROLLBAR_ON_TABLE = (
     # v0.24.3: outline:none — рамка фокуса виджета (пунктир по периметру
@@ -64,6 +87,7 @@ WIDE_SCROLLBAR_ON_TABLE = (
     f"selection-background-color:{SELECTION_BG};"
     f"selection-color:{TEXT}}}"
     + WIDE_SCROLLBAR
+    + TABLE_CELL_RULES
 )
 
 

@@ -2204,6 +2204,30 @@ def test_payment_card_opens_for_editing_by_double_click(qt_app, store):
     window.close()
 
 
+def test_table_stylesheets_contain_cell_rules(qt_app):
+    """v0.26.6: правила ячейки есть и в APP_STYLESHEET, и в QSS,
+    который таблица получает отдельно.
+
+    Виджет со своей таблицей стилей становится корнем новой области
+    стилей Qt: правила APP_STYLESHEET на него не действуют. Из-за этого
+    с v0.23.1 (WIDE_SCROLLBAR_ON_TABLE) на таблицах «Оплата»,
+    «Поступление», «Покупатели», «Поставщики» после клика появлялась
+    системная рамка на нажатой ячейке.
+    """
+
+    from oplata import styles
+
+    for name in (
+        "APP_STYLESHEET",
+        "WIDE_SCROLLBAR_ON_TABLE",
+        "WIDE_SCROLLBAR_ON_AREA",
+    ):
+        sheet = getattr(styles, name)
+        assert "item:focus" in sheet, f"{name}: нет правила для ячейки"
+        assert "QLineEdit" in sheet, f"{name}: нет правила для ввода"
+        assert "outline" in sheet, f"{name}: не снят контур фокуса"
+
+
 def test_focus_frame_is_not_drawn_on_table_cells(qt_app):
     """v0.26.4: рамка фокуса на нажатой ячейке таблицы не рисуется.
 
