@@ -281,6 +281,17 @@ def _money_text(amount: Decimal) -> str:
 class _HoverDelegate(RowHoverMixin, QStyledItemDelegate):
     """Обычная ячейка блока + бежевая подсветка строки под курсором."""
 
+    def createEditor(self, parent, option, index):  # noqa: N802 - Qt API
+        # v0.26.1: ввод встаёт ровно на место значения — без этого текст
+        # «прыгал» влево и строка после клика выглядела иначе.
+        editor = super().createEditor(parent, option, index)
+        if isinstance(editor, QLineEdit):
+            editor.setAlignment(Qt.AlignmentFlag.AlignCenter)
+            # v0.26.1: рамка снимается и здесь — на Windows она
+            # проявлялась синими штрихами по краям ячейки.
+            editor.setFrame(False)
+        return editor
+
 
 class AmountItemDelegate(RowHoverMixin, QStyledItemDelegate):
     """Редактор суммы для ячейки: без мешающих нулей (AmountLineEdit).
@@ -296,6 +307,10 @@ class AmountItemDelegate(RowHoverMixin, QStyledItemDelegate):
 
     def createEditor(self, parent, option, index):  # noqa: N802 - Qt API
         editor = AmountLineEdit(parent=parent)
+        # v0.26.1: сумма в ячейке по центру (v0.23.9) — ввод тоже по
+        # центру, иначе при клике число сдвигалось.
+        editor.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        editor.setFrame(False)  # v0.26.1: без рамки (синие штрихи)
         self._editors.append(editor)
         editor.destroyed.connect(
             lambda *_: self._editors.remove(editor)

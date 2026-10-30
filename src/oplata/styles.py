@@ -155,6 +155,19 @@ QTableWidget {{
     selection-background-color: {SELECTION_BG};
     selection-color: {TEXT};
 }}
+/* v0.26.1: поле ввода в ячейке без рамки и без синего — иначе после
+   клика в строке появлялись белое поле с рамкой, синяя рамка фокуса и
+   синие вертикальные штрихи (жалоба на «артефакты» в «Оплате» и
+   «Поступлении»). */
+QTableWidget QLineEdit, QTableView QLineEdit {{
+    border: none;
+    outline: none;
+    background: #ffffff;
+    color: {TEXT};
+    selection-background-color: {SELECTION_BG};
+    selection-color: {TEXT};
+    padding: 0 4px;
+}}
 QHeaderView::section {{
     background: #eef2f8;
     border: none;

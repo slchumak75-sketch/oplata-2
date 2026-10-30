@@ -2172,6 +2172,56 @@ def test_payment_card_opens_for_editing_by_double_click(qt_app, store):
     window.close()
 
 
+def test_cell_editor_opens_without_frame_and_centered(qt_app, store):
+    """v0.26.1: поле ввода в ячейке открывается без рамки и по центру.
+
+    Рамка редактора на Windows выглядела как синие вертикальные штрихи
+    по краям ячейки, а само число при клике «прыгало» влево.
+    """
+
+    from PySide6.QtCore import QPoint, Qt
+    from PySide6.QtTest import QTest
+    from PySide6.QtWidgets import QLineEdit
+
+    from oplata import styles
+    from oplata.app import MainWindow
+    from oplata.models import OUTGOING, add_other_payment
+
+    # В стиле приложения у редактора нет рамки и синего выделения.
+    assert "QTableWidget QLineEdit" in styles.APP_STYLESHEET
+    assert "border: none" in styles.APP_STYLESHEET
+
+    window = MainWindow(store)
+    window.show()
+    qt_app.processEvents()
+    view = window.receipts_view
+    add_other_payment(
+        store.data, "Бензин", view.outgoing.current_date().isoformat(), OUTGOING
+    )
+    view.refresh_rows()
+    view.refresh()
+    qt_app.processEvents()
+
+    block = view.outgoing
+    table = block.table
+    row = block.row_keys.index("other:Бензин")
+    QTest.mouseClick(
+        table.viewport(),
+        Qt.MouseButton.LeftButton,
+        Qt.KeyboardModifier.NoModifier,
+        QPoint(
+            table.columnViewportPosition(1) + 20,
+            table.rowViewportPosition(row) + table.rowHeight(row) // 2,
+        ),
+    )
+    qt_app.processEvents()
+    editor = table.viewport().findChild(QLineEdit)
+    assert editor is not None, "клик по ячейке должен открыть ввод"
+    assert not editor.hasFrame()
+    assert editor.alignment() & Qt.AlignmentFlag.AlignHCenter
+    window.close()
+
+
 def test_duplicate_payment_creates_copy_with_dates(qt_app, store, monkeypatch):
     """v0.25.1: правая кнопка → «Дублировать»: копия вида с новым именем
     и теми же отмеченными датами."""
