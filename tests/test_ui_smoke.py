@@ -910,6 +910,8 @@ def test_other_payment_rows_add_sum_and_remove(qt_app, store, monkeypatch):
     """Блок «Оплата»: вид — карточкой, сумма — в ячейку, «−» удаляет."""
     from datetime import date
 
+    from PySide6.QtTest import QTest
+
     from oplata.app import MainWindow
     from oplata.views.receipts_view import COL_NAME, JournalPopup
 
@@ -930,6 +932,10 @@ def test_other_payment_rows_add_sum_and_remove(qt_app, store, monkeypatch):
     name_item = view.outgoing.table.item(1, 0)
     assert not (name_item.flags() & Qt.ItemFlag.ItemIsEditable)
     view.outgoing.table.cellClicked.emit(1, COL_NAME)
+    # v0.26.2: журнал своего вида открывается с задержкой, чтобы первый
+    # клик двойного не показывал журнал вместо карточки.
+    QTest.qWait(700)
+    qt_app.processEvents()
     assert isinstance(view._popup, JournalPopup)
 
     # Сумма — прямо в ячейку, итоги считаются по названию.
@@ -2106,8 +2112,10 @@ def test_payment_card_opens_for_editing_by_double_click(qt_app, store):
 
     opened: list[str] = []
     menus: list[object] = []
+    popups: list[str] = []
     view.outgoing.on_edit_card = opened.append
     view.outgoing._show_row_menu = menus.append
+    view.outgoing.on_open_popup = lambda key, widget, row: popups.append(key)
     block = view.outgoing
     table = block.table
 
@@ -2149,6 +2157,25 @@ def test_payment_card_opens_for_editing_by_double_click(qt_app, store):
     )
     qt_app.processEvents()
     assert opened == []
+
+    # Журнал своему виду не мешает: двойной клик его не открывает.
+    QTest.qWait(700)
+    qt_app.processEvents()
+    assert popups == []
+
+    # Один клик по названию — журнал открывается, но с задержкой
+    # (v0.26.2): первый клик двойного больше не показывает журнал.
+    QTest.mouseClick(
+        table.viewport(),
+        Qt.MouseButton.LeftButton,
+        Qt.KeyboardModifier.NoModifier,
+        point(row, 0),
+    )
+    qt_app.processEvents()
+    assert popups == []
+    QTest.qWait(700)
+    qt_app.processEvents()
+    assert popups == ["other:Аренда"]
 
     # Служебная строка «Поставщики» — не свой вид: ни карточки, ни меню.
     opened.clear()

@@ -1069,6 +1069,12 @@ class MoneyBlock(QFrame):
         # оба клика перехватывает фильтр на viewport.
         self._row_filter = RowMouseFilter(self.table, self)
         self.table.viewport().installEventFilter(self._row_filter)
+        # v0.26.2: журнал своего вида открывается с задержкой, чтобы
+        # первый клик двойного не показывал журнал вместо карточки.
+        self._popup_row = -1
+        self._popup_timer = QTimer(self)
+        self._popup_timer.setSingleShot(True)
+        self._popup_timer.timeout.connect(self._open_delayed_popup)
         self.table.setAlternatingRowColors(False)
         # v0.23.7: своя шапка — чтобы подсветка дня была видна и в
         # Windows (фон секции рисует сам класс).
@@ -1388,6 +1394,21 @@ class MoneyBlock(QFrame):
 
         return key.startswith(OTHER_PREFIX) and key != FIXED_OTHER_ROW
 
+    def _stop_popup_timer(self) -> None:
+        """Отменить отложенный журнал (двойной клик, меню, v0.26.2)."""
+
+        self._popup_timer.stop()
+        self._popup_row = -1
+
+    def _open_delayed_popup(self) -> None:
+        """Открыть журнал, если двойного клика не было (v0.26.2)."""
+
+        row = self._popup_row
+        self._popup_row = -1
+        if row < 0 or row >= len(self.row_keys):
+            return
+        self.on_open_popup(self.row_keys[row], self.table, row)
+
     def _close_cell_editor(self) -> None:
         """Закрыть поле ввода, открытое в ячейке (v0.26.0).
 
@@ -1410,6 +1431,7 @@ class MoneyBlock(QFrame):
         key = self.row_keys[row]
         if not self._is_own_payment_row(key):
             return
+        self._stop_popup_timer()  # v0.26.2: журнал не открываем
         self.on_edit_card(key)
 
     def _show_row_menu(self, position) -> None:
@@ -1423,6 +1445,7 @@ class MoneyBlock(QFrame):
         key = self.row_keys[row]
         if not self._is_own_payment_row(key):
             return
+        self._stop_popup_timer()  # v0.26.2: журнал не открываем
         menu = QMenu(self.table)
         duplicate = menu.addAction("Дублировать")
         if menu.exec(self.table.viewport().mapToGlobal(position)) == duplicate:
@@ -1439,6 +1462,15 @@ class MoneyBlock(QFrame):
         # названию или по итоговой колонке открывает журнал операций
         # этого вида. Клик по ячейке «Сумма» остаётся вводом за день.
         if is_popup_row(key) and column != COL_AMOUNT:
+            # v0.26.2: у своего вида журнал открывается с задержкой —
+            # иначе первый клик двойного показывал журнал, и до карточки
+            # было не добраться.
+            if self._is_own_payment_row(key):
+                self._popup_row = row
+                self._popup_timer.start(
+                    QApplication.doubleClickInterval() + 80
+                )
+                return
             self.on_open_popup(key, self.table, row)
             return
         _ = column  # клик по ячейке суммы уходит в режим ввода
