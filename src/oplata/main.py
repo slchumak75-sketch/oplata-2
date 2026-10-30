@@ -26,8 +26,8 @@ def main(argv: list[str] | None = None) -> int:
 
     from . import __app_name__, __version__, styles
     from .app import MainWindow
-from .widgets import disable_item_focus
     from .storage import DataStore
+    from .widgets import disable_item_focus
 
     app = QApplication(sys.argv[:1] + [a for a in argv if a != "--self-test"])
     app.setApplicationName(__app_name__)
