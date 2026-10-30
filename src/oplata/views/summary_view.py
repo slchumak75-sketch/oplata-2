@@ -284,7 +284,13 @@ class SummaryView(QWidget):
         self._set_value("income", funds.income)
         self._set_value("payments", funds.payments)
         self._set_value("balance", funds.balance)
-        self._set_value("debt_total", debt.total)
+        # v0.26.5: «Всего задолженность» берётся как в таблице
+        # поставщиков — строка «Всего», столбец «Итого» (остаток долга
+        # после оплат), а не полный график поставок.
+        self._set_value(
+            "debt_total",
+            calc.supplier_debt_total_on_week(data, on_date, include_archived),
+        )
         self._set_value("debt_week", debt.week)
         self._set_value("debt_late", debt.late)
         for index, week in enumerate(plan, start=1):

@@ -247,6 +247,8 @@ class OperationsView(QWidget):
             # «Комментарий» нет (просьба пользователя).
             headers = ["Тип", "Контрагент", "Дата", "Сумма"]
         self.table = QTableWidget(0, len(headers))
+        # v0.26.5: без фокуса — без рамки на нажатой ячейке.
+        self.table.setFocusPolicy(Qt.FocusPolicy.NoFocus)
         self.table.setHorizontalHeaderLabels(headers)
         self.table.verticalHeader().setVisible(False)
         self.table.setSelectionBehavior(

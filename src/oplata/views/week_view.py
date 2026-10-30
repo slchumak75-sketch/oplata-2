@@ -624,7 +624,10 @@ class WeekView(QWidget):
         remaining_maps = self._remaining_due_maps()
         partner_ids = [p.id for p in self._partners]
         operations = self.store.data.operations
-        total_all = ZERO      # v0.22.1: «Итого» по всем поставщикам
+        # v0.22.1: «Итого» по всем поставщикам. v0.26.5: считается той
+        # же функцией, что строка «Всего задолженность» в «Сводке»,
+        # чтобы цифры совпадали.
+        total_all = ZERO
         total_week = ZERO
         total_late = ZERO
         total_customer = ZERO
@@ -672,6 +675,12 @@ class WeekView(QWidget):
                             _money_text(due_map.get(day, ZERO)),
                         )
             if self.kind == "supplier":
+                total_all = sum(
+                    calc.supplier_debt_remaining(
+                        self._partners, self.store.data, self._week_end
+                    ).values(),
+                    ZERO,
+                )
                 self._set_cell_text(TOTAL_ROW, 1, _money_text(total_all))
                 self._set_cell_text(TOTAL_ROW, 2, _money_text(total_late))
                 self._set_cell_text(TOTAL_ROW, 3, _money_text(total_week))

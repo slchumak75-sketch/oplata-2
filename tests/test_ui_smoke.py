@@ -1445,7 +1445,10 @@ def test_summary_panel_shows_three_blocks_line_by_line(qt_app, store):
     assert view.value_text("balance") == "51 550,00"
 
     # Блок «Задолженность поставщикам».
-    assert view.value_text("debt_total") == "2 100,00"
+    # v0.26.5: «Всего задолженность» — как строка «Всего», столбец
+    # «Итого» таблицы поставщиков: остаток долга после оплат. Из 2 100
+    # (500 + 700 + 900) оплата 1 200 гасит 700 и 500, остаётся 900.
+    assert view.value_text("debt_total") == "900,00"
     # «Задолженность на сегодня» удалена. Оплата поставщику (1 200)
     # гасит сначала просроченное (700 со сроком 20.10), остаток 500 —
     # долги недели (v0.15.0): и «на неделе», и «Просрочено» пусты.
@@ -2241,6 +2244,49 @@ def test_focus_frame_is_not_drawn_on_table_cells(qt_app):
         if image.pixel(x, y) != white
     ]
     assert not painted, f"рамка фокуса на ячейке нарисована: {painted[:3]}"
+
+    # Ячейку рисует делегат: он вызывает стиль без виджета (None) —
+    # именно этот случай и давал артефакт на нажатой ячейке.
+    pixmap.fill(Qt.GlobalColor.white)
+    painter = QPainter(pixmap)
+    try:
+        style.drawPrimitive(
+            QStyle.PrimitiveElement.PE_FrameFocusRect,
+            option,
+            painter,
+            None,
+        )
+    finally:
+        painter.end()
+    image = pixmap.toImage()
+    painted = [
+        (x, y)
+        for x in range(60)
+        for y in range(30)
+        if image.pixel(x, y) != white
+    ]
+    assert not painted, f"рамка фокуса из делегата нарисована: {painted[:3]}"
+
+
+def test_tables_have_no_focus_after_disable_item_focus(qt_app, store):
+    """v0.26.5: у таблиц снят фокус — рамка на нажатой ячейке не
+    рисуется (ввод по клику при этом работает)."""
+
+    from PySide6.QtCore import Qt
+    from PySide6.QtWidgets import QAbstractItemView
+
+    from oplata.app import MainWindow
+    from oplata.widgets import disable_item_focus
+
+    window = MainWindow(store)
+    window.show()
+    qt_app.processEvents()
+    disable_item_focus(window)
+    tables = window.findChildren(QAbstractItemView)
+    assert tables, "в окне должны быть таблицы"
+    for table in tables:
+        assert table.focusPolicy() == Qt.FocusPolicy.NoFocus, type(table).__name__
+    window.close()
 
 
 def test_cell_editor_opens_without_frame_and_centered(qt_app, store):

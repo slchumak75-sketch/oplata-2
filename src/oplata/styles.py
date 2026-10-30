@@ -79,8 +79,11 @@ class NoFocusFrameStyle(QProxyStyle):
     """
 
     def drawPrimitive(self, element, option, painter, widget=None):  # noqa: N802
-        if element == QStyle.PrimitiveElement.PE_FrameFocusRect and isinstance(
-            widget, QAbstractItemView
+        if element == QStyle.PrimitiveElement.PE_FrameFocusRect and (
+            # Ячейку рисует делегат: виджет он не передаёт (None) — это
+            # и есть рамка на нажатой ячейке. Проверка «widget — таблица»
+            # не работала: Qt вызывает стиль без виджета.
+            widget is None or isinstance(widget, QAbstractItemView)
         ):
             return
         super().drawPrimitive(element, option, painter, widget)

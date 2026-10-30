@@ -7,6 +7,7 @@ from decimal import Decimal, InvalidOperation
 from PySide6.QtCore import QDate, QEvent, QObject, Qt, QTimer
 from PySide6.QtGui import QColor, QFocusEvent
 from PySide6.QtWidgets import (
+    QAbstractItemView,
     QDateEdit,
     QFrame,
     QLabel,
@@ -235,6 +236,19 @@ def kpi_card(title: str, value_text: str, green_value: bool = False) -> tuple[QF
 
 
 # ------------------------------------------------------------------ стрелки
+def disable_item_focus(root: "QWidget") -> None:
+    """Снять фокус у всех таблиц внутри ``root`` (v0.26.5).
+
+    Без фокуса Qt не рисует на текущей (нажатой) ячейке рамку и
+    отдельный прямоугольник — тот самый «артефакт», который появлялся
+    после клика и переезжал на следующую ячейку. Ввод по клику
+    (v0.12.0) работает и без фокуса: его берёт сам редактор.
+    """
+
+    for table in root.findChildren(QAbstractItemView):
+        table.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+
+
 def arrow_button(
     text: str, tooltip: str = "", bold: bool = False, plain: bool = False
 ) -> QPushButton:

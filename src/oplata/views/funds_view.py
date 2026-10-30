@@ -94,6 +94,8 @@ class FundsMovementDialog(QDialog):
         root.addWidget(self.period_label)
 
         self.table = QTableWidget(0, 5)
+        # v0.26.5: без фокуса — без рамки на нажатой ячейке.
+        self.table.setFocusPolicy(Qt.FocusPolicy.NoFocus)
         self.table.setHorizontalHeaderLabels(
             ["Дата", "Наименование", "Поступление", "Оплата", "Остаток"]
         )

@@ -492,16 +492,73 @@ def debt_totals(
     )
 
 
+def supplier_debt_remaining(
+    suppliers: Sequence[Counterparty],
+    data: AppData,
+    upto: date,
+) -> dict[date, Decimal]:
+    """Остаток долга после оплат — суммарно по поставщикам (v0.26.5).
+
+    То же, что столбец «Итого» в таблице поставщиков: по каждому
+    поставщику берётся :func:`supplier_schedule_remaining` (оплаты
+    гасят долги в порядке сроков — от ранних к поздним) и складывается.
+    """
+
+    schedule: dict[date, Decimal] = {}
+    for supplier in suppliers:
+        for due, amount in supplier_schedule_remaining(
+            data, supplier, upto
+        ).items():
+            schedule[due] = schedule.get(due, ZERO) + amount
+    return schedule
+
+
+def supplier_debt_total_on_week(
+    data: AppData,
+    on_date: date,
+    include_archived: bool = False,
+    upto: date | None = None,
+) -> Decimal:
+    """«Всего задолженность» — как строка «Всего», столбец «Итого»
+    таблицы поставщиков (v0.26.5).
+
+    Сумма остатков долга после оплат, сделанных не позже ``upto``
+    (по умолчанию — конец недели, на которую приходится ``on_date``,
+    как в таблице поставщиков).
+    """
+
+    limit = (
+        upto
+        if upto is not None
+        else week_monday(on_date) + timedelta(days=6)
+    )
+    schedule = supplier_debt_remaining(
+        visible_suppliers(data, include_archived), data, limit
+    )
+    return sum(schedule.values(), ZERO)
+
+
 def weekly_payment_plan(
     data: AppData,
     on_date: date,
     weeks: int = 4,
     include_archived: bool = False,
 ) -> list[WeekPlan]:
-    """«Оплата понедельно»: ``weeks`` недель, следующих за текущей."""
+    """«Оплата понедельно»: ``weeks`` недель, следующих за текущей.
 
-    schedule = debt_schedule(data, visible_suppliers(data, include_archived))
+    v0.26.5: считается **остаток долга после оплат**, как столбец
+    «Итого» в таблице поставщиков, а не полный график поставок. Поэтому
+    оплата, сделанная раньше срока отсрочки, уменьшает сумму будущей
+    недели: долги гасятся в порядке сроков — от ранних к поздним, и
+    оплаченный долг в плане не показывается.
+    """
+
+    suppliers = visible_suppliers(data, include_archived)
     current_monday = week_monday(on_date)
+    # Горизонт плана: все оплаты вплоть до конца последней недели
+    # гасят долги по срокам, даже если оплата сделана раньше срока.
+    horizon = current_monday + timedelta(days=7 * weeks + 6)
+    schedule = supplier_debt_remaining(suppliers, data, horizon)
     result: list[WeekPlan] = []
     for index in range(1, weeks + 1):
         monday = current_monday + timedelta(days=7 * index)

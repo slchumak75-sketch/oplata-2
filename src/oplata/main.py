@@ -26,6 +26,7 @@ def main(argv: list[str] | None = None) -> int:
 
     from . import __app_name__, __version__, styles
     from .app import MainWindow
+from .widgets import disable_item_focus
     from .storage import DataStore
 
     app = QApplication(sys.argv[:1] + [a for a in argv if a != "--self-test"])
@@ -39,6 +40,9 @@ def main(argv: list[str] | None = None) -> int:
     access = resolve_user(argv)
     store = DataStore()
     window = MainWindow(store, access)
+    # v0.26.5: без фокуса у таблиц Qt не рисует рамку на нажатой
+    # ячейке (артефакт после клика). Ввод по клику при этом работает.
+    disable_item_focus(window)
     # В заголовке окна видно роль — иначе непонятно, почему часть
     # вкладок и кнопок недоступна (v0.18.0).
     window.setWindowTitle(f"{__app_name__}  v{__version__} · {access.title}")
