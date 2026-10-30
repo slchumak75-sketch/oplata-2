@@ -31,6 +31,9 @@ def main(argv: list[str] | None = None) -> int:
     app = QApplication(sys.argv[:1] + [a for a in argv if a != "--self-test"])
     app.setApplicationName(__app_name__)
     app.setOrganizationName("Stroymarket")
+    # v0.26.4: стиль без рамки фокуса на ячейках таблиц (артефакт
+    # после клика — две вертикальные линии на нажатой ячейке).
+    app.setStyle(styles.NoFocusFrameStyle())
     app.setStyleSheet(styles.APP_STYLESHEET)
 
     access = resolve_user(argv)

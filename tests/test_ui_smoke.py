@@ -2201,6 +2201,48 @@ def test_payment_card_opens_for_editing_by_double_click(qt_app, store):
     window.close()
 
 
+def test_focus_frame_is_not_drawn_on_table_cells(qt_app):
+    """v0.26.4: рамка фокуса на нажатой ячейке таблицы не рисуется.
+
+    Qt рисует её (``PE_FrameFocusRect``) на текущей ячейке после клика:
+    это и был «артефакт», который переезжал на каждую следующую нажатую
+    ячейку. Делегат тут не помогает — рамку рисует стиль.
+    """
+
+    from PySide6.QtCore import QRect, Qt
+    from PySide6.QtGui import QColor, QPainter, QPixmap
+    from PySide6.QtWidgets import QStyle, QStyleOption, QTableWidget
+
+    from oplata.styles import NoFocusFrameStyle
+
+    style = NoFocusFrameStyle()
+    pixmap = QPixmap(60, 30)
+    pixmap.fill(Qt.GlobalColor.white)
+    option = QStyleOption()
+    option.rect = QRect(2, 2, 56, 26)
+    option.state |= QStyle.StateFlag.State_HasFocus
+    table = QTableWidget(2, 2)
+    painter = QPainter(pixmap)
+    try:
+        style.drawPrimitive(
+            QStyle.PrimitiveElement.PE_FrameFocusRect,
+            option,
+            painter,
+            table,
+        )
+    finally:
+        painter.end()
+    image = pixmap.toImage()
+    white = QColor(Qt.GlobalColor.white).rgb()
+    painted = [
+        (x, y)
+        for x in range(60)
+        for y in range(30)
+        if image.pixel(x, y) != white
+    ]
+    assert not painted, f"рамка фокуса на ячейке нарисована: {painted[:3]}"
+
+
 def test_cell_editor_opens_without_frame_and_centered(qt_app, store):
     """v0.26.1: поле ввода в ячейке открывается без рамки и по центру.
 

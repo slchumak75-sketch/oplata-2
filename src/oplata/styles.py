@@ -3,6 +3,8 @@
 Если пользователь пришлёт уточнённый дизайн, менять прежде всего здесь.
 """
 
+from PySide6.QtWidgets import QAbstractItemView, QProxyStyle, QStyle
+
 NAVY = "#0f2a5c"        # тёмно-синяя шапка (база МИР)
 MAROON = "#8e1b3f"      # вишнёвая шапка (база КОРЕЛИЧИ, v0.17.0)
 NAVY_TEXT = "#ffffff"
@@ -63,6 +65,25 @@ WIDE_SCROLLBAR_ON_TABLE = (
     f"selection-color:{TEXT}}}"
     + WIDE_SCROLLBAR
 )
+
+
+class NoFocusFrameStyle(QProxyStyle):
+    """Стиль без рамки фокуса на ячейках таблиц (v0.26.4).
+
+    После клика Qt рисует рамку фокуса на **текущей** ячейке
+    (``PE_FrameFocusRect``) — она и выглядела как артефакт: две
+    вертикальные синие линии, которые переезжают на каждую следующую
+    нажатую ячейку. Рамку рисует не делегат, а сам стиль, поэтому
+    снятие ``State_HasFocus`` в делегате (v0.24.3) её не убирало.
+    На остальных виджетах (кнопки, поля) рамка фокуса остаётся.
+    """
+
+    def drawPrimitive(self, element, option, painter, widget=None):  # noqa: N802
+        if element == QStyle.PrimitiveElement.PE_FrameFocusRect and isinstance(
+            widget, QAbstractItemView
+        ):
+            return
+        super().drawPrimitive(element, option, painter, widget)
 
 
 def fs(base_px: int) -> int:
@@ -154,6 +175,19 @@ QTableWidget {{
     gridline-color: {TABLE_GRID};
     selection-background-color: {SELECTION_BG};
     selection-color: {TEXT};
+}}
+/* v0.26.4: текущая (нажатая) ячейка не рисуется отдельным
+   прямоугольником поверх строки. Иначе после клика в строке появлялся
+   синий «артефакт», который переезжал на каждую следующую нажатую
+   ячейку (жалоба пользователя). */
+QTableWidget::item:focus, QTableView::item:focus {{
+    background: transparent;
+    color: {TEXT};
+    border: none;
+    outline: none;
+}}
+QTableWidget::item:hover, QTableView::item:hover {{
+    background: transparent;
 }}
 /* v0.26.1: поле ввода в ячейке без рамки и без синего — иначе после
    клика в строке появлялись белое поле с рамкой, синяя рамка фокуса и
