@@ -921,7 +921,12 @@ class RowMouseFilter(QObject):
         kind = event.type()
         if kind == QEvent.Type.MouseButtonPress:
             if event.button() == Qt.MouseButton.RightButton:
-                return self._handle(event, menu=True)
+                # v0.26.3: правый клик открывает карточку (просьба
+                # пользователя), а не меню.
+                return self._handle(event, menu=False)
+            # Любой клик: таблицу перерисовываем заново, иначе в
+            # ячейках остаются артефакты (следы рамки и ввода).
+            self._repaint_later()
             return False
         if (
             kind == QEvent.Type.MouseButtonDblClick
@@ -930,9 +935,15 @@ class RowMouseFilter(QObject):
             return self._handle(event, menu=False)
         return False
 
-    def _handle(self, event, menu: bool) -> bool:
-        """Обработать клик, если это строка своего вида (иначе — пропустить)."""
+    def _repaint_later(self) -> None:
+        """Перерисовать таблицу после обработки клика (v0.26.3)."""
 
+        self.block._repaint_table()
+
+    def _handle(self, event, menu: bool) -> bool:
+        """Открыть карточку, если это строка своего вида (v0.26.3)."""
+
+        _ = menu  # и правый, и двойной клик открывают карточку
         position = event.position().toPoint()
         row = self.table.rowAt(position.y())
         block = self.block
@@ -941,10 +952,8 @@ class RowMouseFilter(QObject):
         if not block._is_own_payment_row(block.row_keys[row]):
             return False
         block._close_cell_editor()
-        if menu:
-            block._show_row_menu(position)
-        else:
-            block._open_card_for_row(row)
+        block._open_card_for_row(row)
+        block._repaint_table()  # v0.26.3: без артефактов после клика
         # Событие до таблицы не доходит: ввод в ячейке не открывается.
         return True
 
@@ -1387,6 +1396,8 @@ class MoneyBlock(QFrame):
         if key in POPUP_ROWS:
             return
         self.on_amount_entered(key, item.text())
+        # v0.26.3: ячейка после ввода перерисовывается заново.
+        self._repaint_table()
 
     @staticmethod
     def _is_own_payment_row(key: str) -> bool:
@@ -1409,6 +1420,18 @@ class MoneyBlock(QFrame):
             return
         self.on_open_popup(self.row_keys[row], self.table, row)
 
+    def _repaint_table(self) -> None:
+        """Перерисовать таблицу и ячейки ввода заново (v0.26.3).
+
+        Просьба пользователя: в таблицах «Оплата» и «Поступление» после
+        клика остаются артефакты (следы рамки и поля ввода), поэтому
+        после клика и после закрытия ввода таблица перерисовывается
+        целиком.
+        """
+
+        self.table.viewport().update()
+        self.table.update()
+
     def _close_cell_editor(self) -> None:
         """Закрыть поле ввода, открытое в ячейке (v0.26.0).
 
@@ -1422,6 +1445,9 @@ class MoneyBlock(QFrame):
             self.table.closeEditor(
                 editor, QAbstractItemDelegate.EndEditHint.NoHint
             )
+        # v0.26.3: после ввода ячейку перерисовываем заново — иначе на
+        # её месте остаётся след от поля ввода.
+        self._repaint_table()
 
     def _open_card_for_row(self, row: int) -> None:
         """Двойной клик: открыть карточку своего вида (v0.25.1)."""

@@ -2111,10 +2111,10 @@ def test_payment_card_opens_for_editing_by_double_click(qt_app, store):
     qt_app.processEvents()
 
     opened: list[str] = []
-    menus: list[object] = []
+    repaints: list[int] = []
     popups: list[str] = []
     view.outgoing.on_edit_card = opened.append
-    view.outgoing._show_row_menu = menus.append
+    view.outgoing._repaint_table = lambda: repaints.append(1)
     view.outgoing.on_open_popup = lambda key, widget, row: popups.append(key)
     block = view.outgoing
     table = block.table
@@ -2137,7 +2137,8 @@ def test_payment_card_opens_for_editing_by_double_click(qt_app, store):
         )
         qt_app.processEvents()
         assert opened == ["other:Аренда"], f"двойной клик, колонка {column}"
-        menus.clear()
+        opened.clear()
+        # v0.26.3: правый клик открывает ту же карточку.
         QTest.mouseClick(
             table.viewport(),
             Qt.MouseButton.RightButton,
@@ -2145,7 +2146,10 @@ def test_payment_card_opens_for_editing_by_double_click(qt_app, store):
             point(row, column),
         )
         qt_app.processEvents()
-        assert len(menus) == 1, f"правый клик, колонка {column}"
+        assert opened == ["other:Аренда"], f"правый клик, колонка {column}"
+        # v0.26.3: после клика таблица перерисовывается заново.
+        assert repaints, f"перерисовка после клика, колонка {column}"
+        repaints.clear()
 
     # Один клик остаётся вводом в ячейке, карточку не открывает.
     opened.clear()
@@ -2177,9 +2181,8 @@ def test_payment_card_opens_for_editing_by_double_click(qt_app, store):
     qt_app.processEvents()
     assert popups == ["other:Аренда"]
 
-    # Служебная строка «Поставщики» — не свой вид: ни карточки, ни меню.
+    # Служебная строка «Поставщики» — не свой вид: карточки нет.
     opened.clear()
-    menus.clear()
     service = block.row_keys.index("suppliers")
     QTest.mouseDClick(
         table.viewport(),
@@ -2195,7 +2198,6 @@ def test_payment_card_opens_for_editing_by_double_click(qt_app, store):
     )
     qt_app.processEvents()
     assert opened == []
-    assert menus == []
     window.close()
 
 
@@ -2249,7 +2251,7 @@ def test_cell_editor_opens_without_frame_and_centered(qt_app, store):
     window.close()
 
 
-def test_duplicate_payment_creates_copy_with_dates(qt_app, store, monkeypatch):
+def test_duplicate_payment_creates_copy_with_dates(qt_app, store):
     """v0.25.1: правая кнопка → «Дублировать»: копия вида с новым именем
     и теми же отмеченными датами."""
 
@@ -2271,48 +2273,8 @@ def test_duplicate_payment_creates_copy_with_dates(qt_app, store, monkeypatch):
     view.refresh()
     qt_app.processEvents()
 
-    # v0.26.0: путь «правый клик → меню → Дублировать» проверяем
-    # настоящим событием мыши, а не вызовом метода напрямую.
-    from PySide6.QtCore import QPoint, Qt
-    from PySide6.QtTest import QTest
-
-    from oplata.views import receipts_view as receipts_view_module
-
-    class _FakeMenu:
-        """Меню без показа: «exec» сразу возвращает первый пункт."""
-
-        def __init__(self, parent=None):
-            self._actions: list[str] = []
-
-        def addAction(self, text):
-            self._actions.append(text)
-            return text
-
-        def exec(self, *args, **kwargs):
-            return self._actions[0] if self._actions else None
-
-    monkeypatch.setattr(receipts_view_module, "QMenu", _FakeMenu)
-    block = view.outgoing
-    table = block.table
-    row = block.row_keys.index("other:Аренда")
-    QTest.mouseClick(
-        table.viewport(),
-        Qt.MouseButton.RightButton,
-        Qt.KeyboardModifier.NoModifier,
-        QPoint(
-            table.columnViewportPosition(0) + 10,
-            table.rowViewportPosition(row) + table.rowHeight(row) // 2,
-        ),
-    )
-    qt_app.processEvents()
-    assert [item.name for item in store.data.other_payments] == [
-        "Аренда",
-        "Аренда (копия)",
-    ]
-    store.data.other_payments.pop()
-    view.refresh_rows()
-    qt_app.processEvents()
-
+    # v0.26.3: правый клик открывает карточку, поэтому дублирование
+    # проверяется вызовом метода напрямую.
     view.duplicate_payment("other:Аренда", OUTGOING)
     qt_app.processEvents()
     names = [item.name for item in store.data.other_payments]
