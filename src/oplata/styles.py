@@ -60,10 +60,20 @@ WIDE_SCROLLBAR = (
 # «Покупатели», «Поставщики» после клика появлялась системная синяя
 # рамка на нажатой ячейке — «артефакт».
 TABLE_CELL_RULES = (
-    "QTableWidget::item:focus,QTableView::item:focus{"
-    "background:transparent;border:none;outline:none}"
+    # v0.26.8: ячейка после клика **не меняет вид**: ни фон выделения,
+    # ни рамка, ни контур. Иначе на нажатой ячейке (в блоках
+    # «Оплата»/«Поступление» — по всей строке, там выделяется строка)
+    # проявляется системный синий прямоугольник — «артефакт», который
+    # переезжает на каждую следующую нажатую ячейку.
+    # Обычное состояние не трогаем: фон ячейки задаёт сама таблица
+    # (розовые выходные, салатовая дата, красные отметки), и QSS здесь
+    # перекрыл бы его.
+    "QTableWidget::item:selected,QTableView::item:selected,"
+    "QTableWidget::item:selected:focus,QTableView::item:selected:focus,"
+    "QTableWidget::item:focus,QTableView::item:focus,"
     "QTableWidget::item:hover,QTableView::item:hover{"
-    "background:transparent}"
+    "background:transparent;border:none;outline:none;"
+    f"color:{TEXT}}}"
     "QTableWidget QLineEdit,QTableView QLineEdit{"
     "border:none;outline:none;background:#ffffff;"
     f"color:{TEXT};"
@@ -203,32 +213,7 @@ QTableWidget {{
     selection-background-color: {SELECTION_BG};
     selection-color: {TEXT};
 }}
-/* v0.26.4: текущая (нажатая) ячейка не рисуется отдельным
-   прямоугольником поверх строки. Иначе после клика в строке появлялся
-   синий «артефакт», который переезжал на каждую следующую нажатую
-   ячейку (жалоба пользователя). */
-QTableWidget::item:focus, QTableView::item:focus {{
-    background: transparent;
-    color: {TEXT};
-    border: none;
-    outline: none;
-}}
-QTableWidget::item:hover, QTableView::item:hover {{
-    background: transparent;
-}}
-/* v0.26.1: поле ввода в ячейке без рамки и без синего — иначе после
-   клика в строке появлялись белое поле с рамкой, синяя рамка фокуса и
-   синие вертикальные штрихи (жалоба на «артефакты» в «Оплате» и
-   «Поступлении»). */
-QTableWidget QLineEdit, QTableView QLineEdit {{
-    border: none;
-    outline: none;
-    background: #ffffff;
-    color: {TEXT};
-    selection-background-color: {SELECTION_BG};
-    selection-color: {TEXT};
-    padding: 0 4px;
-}}
+{TABLE_CELL_RULES}
 QHeaderView::section {{
     background: #eef2f8;
     border: none;

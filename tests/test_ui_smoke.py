@@ -2224,6 +2224,7 @@ def test_table_stylesheets_contain_cell_rules(qt_app):
     ):
         sheet = getattr(styles, name)
         assert "item:focus" in sheet, f"{name}: нет правила для ячейки"
+        assert "item:selected" in sheet, f"{name}: нет правила для выделения"
         assert "QLineEdit" in sheet, f"{name}: нет правила для ввода"
         assert "outline" in sheet, f"{name}: не снят контур фокуса"
 
