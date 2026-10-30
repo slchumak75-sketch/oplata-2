@@ -7,7 +7,7 @@ from decimal import Decimal, InvalidOperation
 from PySide6.QtCore import QDate, QEvent, QObject, Qt, QTimer
 from PySide6.QtGui import QColor, QFocusEvent
 from PySide6.QtWidgets import (
-    QAbstractItemView,
+    QStyledItemDelegate,    QAbstractItemView,
     QDateEdit,
     QFrame,
     QLabel,
@@ -236,6 +236,20 @@ def kpi_card(title: str, value_text: str, green_value: bool = False) -> tuple[QF
 
 
 # ------------------------------------------------------------------ стрелки
+class NoFocusItemDelegate(QStyledItemDelegate):
+    """Ячейка таблицы без рамки фокуса (v0.26.9).
+
+    Qt рисует рамку на **текущей** ячейке поверх выделения: в узких
+    колонках дней она выглядит как два вертикальных штриха и
+    «переезжает» на каждую следующую нажатую ячейку.
+    """
+
+    def paint(self, painter, option, index):  # noqa: N802 - Qt API
+        option = QStyleOptionViewItem(option)
+        option.state &= ~QStyle.StateFlag.State_HasFocus
+        super().paint(painter, option, index)
+
+
 def disable_item_focus(root: "QWidget") -> None:
     """Снять фокус у всех таблиц внутри ``root`` (v0.26.5).
 
@@ -320,6 +334,12 @@ class RowHoverMixin:
         # рисует её после клика, и по таблице шли «штришки»-артефакты.
         option = QStyleOptionViewItem(option)
         option.state &= ~QStyle.StateFlag.State_HasFocus
+        # v0.26.9: без состояния Selected Qt не рисует ни фон, ни рамку
+        # выделения — ячейка после клика выглядит так же, как до него
+        # (жалоба на «штрихи»-артефакт на нажатой ячейке). Само
+        # выделение как механизм остаётся: по нему работают «−»,
+        # currentRow и ввод.
+        option.state &= ~QStyle.StateFlag.State_Selected
         super().paint(painter, option, index)
         if (
             self._hover_row >= 0
