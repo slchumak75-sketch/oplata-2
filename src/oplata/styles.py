@@ -94,7 +94,9 @@ WIDE_SCROLLBAR_ON_TABLE = (
     "QTableWidget{background:#ffffff;outline:none;"
     f"border:1px solid {BORDER};border-radius:8px;"
     f"gridline-color:{TABLE_GRID};"
-    f"selection-background-color:{SELECTION_BG};"
+    # v0.27.0: выделение строки не заливается цветом — подсветка
+    # всей строки после клика выглядела как артефакт.
+    "selection-background-color:transparent;"
     f"selection-color:{TEXT}}}"
     + WIDE_SCROLLBAR
     + TABLE_CELL_RULES
@@ -209,7 +211,8 @@ QTableWidget {{
     border: 1px solid {BORDER};
     border-radius: 8px;
     gridline-color: {TABLE_GRID};
-    selection-background-color: {SELECTION_BG};
+    /* v0.27.0: без заливки — см. WIDE_SCROLLBAR_ON_TABLE. */
+    selection-background-color: transparent;
     selection-color: {TEXT};
 }}
 {TABLE_CELL_RULES}

@@ -2229,6 +2229,58 @@ def test_table_stylesheets_contain_cell_rules(qt_app):
         assert "outline" in sheet, f"{name}: не снят контур фокуса"
 
 
+def test_click_does_not_paint_selection_over_row(qt_app, store):
+    """v0.27.0: клик по ячейке не меняет вид строки.
+
+    Проверка по пикселям: после клика в блоке «Оплата» не должно
+    появиться ни одного пикселя цвета выделения (``#dbeafe``). Раньше
+    вся строка заливалась этим цветом и «переезжала» за каждым кликом —
+    пользователь называл это артефактом.
+    """
+
+    from PySide6.QtCore import QPoint, Qt
+    from PySide6.QtGui import QColor
+    from PySide6.QtTest import QTest
+
+    from oplata.app import MainWindow
+
+    window = MainWindow(store)
+    window.resize(1400, 900)
+    window.show()
+    qt_app.processEvents()
+    window.receipts_view.refresh_rows()
+    window.receipts_view.refresh()
+    qt_app.processEvents()
+
+    table = window.receipts_view.outgoing.table
+    table.viewport().grab()  # первый снимок: раскладка доезжает
+    qt_app.processEvents()
+    before = table.viewport().grab().toImage()
+    point = QPoint(
+        table.columnViewportPosition(1) + 30,
+        table.rowViewportPosition(0) + table.rowHeight(0) // 2,
+    )
+    QTest.mouseClick(
+        table.viewport(),
+        Qt.MouseButton.LeftButton,
+        Qt.KeyboardModifier.NoModifier,
+        point,
+    )
+    qt_app.processEvents()
+    after = table.viewport().grab().toImage()
+    assert before.size() == after.size()
+
+    selection = QColor("#dbeafe").rgb()
+    painted = sum(
+        1
+        for y in range(after.height())
+        for x in range(after.width())
+        if after.pixel(x, y) == selection
+    )
+    assert painted == 0, f"после клика строка залита выделением: {painted}"
+    window.close()
+
+
 def test_focus_frame_is_not_drawn_on_table_cells(qt_app):
     """v0.26.4: рамка фокуса на нажатой ячейке таблицы не рисуется.
 
