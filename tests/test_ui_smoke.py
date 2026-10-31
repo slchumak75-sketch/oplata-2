@@ -326,6 +326,52 @@ def test_operations_journal_shows_name_and_minimizes_previous(qt_app, store):
     window.close()
 
 
+def test_calendar_marks_today_with_frame(qt_app, store):
+    """v0.27.5: в календаре текущая дата обведена рамкой.
+
+    Проверка по пикселям: рамка рисуется цветом текущей даты из
+    таблиц, поэтому в снимке календаря должны быть его пиксели.
+    """
+
+    from datetime import date
+
+    from PySide6.QtCore import QDate
+
+    from oplata import styles
+    from oplata.widgets import TodayFrameCalendar, make_date_edit
+
+    frame_color = styles.WEEK_TABLE_TODAY_GREEN.lstrip("#")
+    target = (
+        int(frame_color[0:2], 16),
+        int(frame_color[2:4], 16),
+        int(frame_color[4:6], 16),
+    )
+
+    calendar = TodayFrameCalendar()
+    calendar.setSelectedDate(QDate.currentDate())
+    calendar.resize(320, 220)
+    calendar.show()
+    qt_app.processEvents()
+
+    image = calendar.grab().toImage()
+    found = [
+        (x, y)
+        for y in range(image.height())
+        for x in range(image.width())
+        if (image.pixelColor(x, y).red(), image.pixelColor(x, y).green(),
+            image.pixelColor(x, y).blue()) == target
+    ]
+    assert found, "рамка текущей даты в календаре не нарисована"
+    # Рамка — контур, а не заливка: пикселей много, но не весь снимок.
+    assert len(found) < image.width() * image.height() // 4
+
+    # Поле даты «Сводка на дату» использует тот же календарь.
+    edit = make_date_edit(date.today())
+    assert isinstance(edit.calendarWidget(), TodayFrameCalendar)
+    calendar.close()
+    edit.deleteLater()
+
+
 def test_today_button_shows_current_date(qt_app, store):
     """v0.27.4: кнопка «Сегодня» показывает сегодня, а не понедельник.
 

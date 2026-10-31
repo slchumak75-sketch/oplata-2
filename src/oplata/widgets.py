@@ -5,8 +5,14 @@ from __future__ import annotations
 from decimal import Decimal, InvalidOperation
 
 from PySide6.QtCore import QDate, QEvent, QObject, Qt, QTimer
-from PySide6.QtGui import QColor, QFocusEvent, QPalette
+from PySide6.QtGui import (
+    QColor,
+    QFocusEvent,
+    QPalette,
+    QPen,
+)
 from PySide6.QtWidgets import (
+    QCalendarWidget,
     QStyledItemDelegate,    QAbstractItemView,
     QDateEdit,
     QFrame,
@@ -195,11 +201,32 @@ def blue_button(text: str) -> QPushButton:
     return btn
 
 
+class TodayFrameCalendar(QCalendarWidget):
+    """Календарь, в котором сегодняшняя дата обведена рамкой (v0.27.5).
+
+    Стиль Windows не выделяет текущий день вовсе, поэтому рамку
+    рисуем сами — цветом текущей даты из таблиц (салатовым).
+    """
+
+    def paintCell(self, painter, rect, day):  # noqa: N802 - Qt API
+        super().paintCell(painter, rect, day)
+        if day != QDate.currentDate():
+            return
+        painter.save()
+        painter.setPen(QPen(QColor(styles.WEEK_TABLE_TODAY_GREEN), 2))
+        painter.setBrush(Qt.BrushStyle.NoBrush)
+        # Рамка внутри ячейки: вплотную к краю она срезается соседями.
+        painter.drawRect(rect.adjusted(1, 1, -1, -1))
+        painter.restore()
+
+
 def make_date_edit(day) -> QDateEdit:
     """Поле даты в формате макетов дд.мм.гггг с всплывающим календарём."""
     edit = QDateEdit()
     edit.setDisplayFormat("dd.MM.yyyy")
     edit.setCalendarPopup(True)
+    # v0.27.5: текущая дата в календаре обведена рамкой.
+    edit.setCalendarWidget(TodayFrameCalendar(edit))
     # Дата целиком + зона стрелки календаря справа (без наложения на год).
     edit.setMinimumWidth(138)
     edit.setDate(QDate(day.year, day.month, day.day))
