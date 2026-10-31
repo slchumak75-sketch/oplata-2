@@ -529,19 +529,6 @@ class WeekView(QWidget):
             self._rebuilding = False
 
     # ------------------------------------------------------- расчётные ячейки
-    def _due_maps(self) -> list[dict[date, Decimal]]:
-        """Суммы поставок по срокам («Долг») для каждого контрагента таблицы.
-
-        Формулы долга пользователь дал только для поставщиков;
-        у покупателей карты пустые (Долг не показывается).
-        """
-        if self.kind != "supplier":
-            return [{} for _ in self._partners]
-        return [
-            calc.debt_by_due_date(self.store.data, partner)
-            for partner in self._partners
-        ]
-
     def _remaining_due_maps(self) -> list[dict[date, Decimal]]:
         """Остаток долга по срокам после оплат — для «Итого»/«за неделю».
 
@@ -620,7 +607,6 @@ class WeekView(QWidget):
     def _update_calculated_cells(self) -> None:
         """Пересчитать Долг, «Итого»/«за неделю», ВСЕГО и тулбар без перестройки."""
         today = date.today()
-        due_maps = self._due_maps()
         remaining_maps = self._remaining_due_maps()
         partner_ids = [p.id for p in self._partners]
         operations = self.store.data.operations
@@ -636,12 +622,10 @@ class WeekView(QWidget):
         days = self._days[: self.table_days]
         self._rebuilding = True
         try:
-            for r, (due_map, remaining_map) in enumerate(
-                zip(due_maps, remaining_maps)
-            ):
+            for r, remaining_map in enumerate(remaining_maps):
                 row = FIRST_DATA_ROW + r
-                # ``due_map`` — архивный «Долг» по дням, ``remaining_map``
-                # — остаток после оплат для «Итого»/«за неделю».
+                # v0.27.2: и ячейки дней «Долг», и «Итого»/«за неделю»
+                # считаются по остатку долга после оплат.
                 total, late, week = self._debt_columns(
                     remaining_map,
                     days,
@@ -672,7 +656,7 @@ class WeekView(QWidget):
                         self._set_cell_text(
                             row,
                             self._day_column(i, debt_index),
-                            _money_text(due_map.get(day, ZERO)),
+                            _money_text(remaining_map.get(day, ZERO)),
                         )
             if self.kind == "supplier":
                 total_all = sum(
@@ -689,7 +673,9 @@ class WeekView(QWidget):
             for i, day in enumerate(days):
                 for j, kind_name in enumerate(self.subheader_kinds):
                     if kind_name == "debt":
-                        amount = sum((m.get(day, ZERO) for m in due_maps), ZERO)
+                        amount = sum(
+                            (m.get(day, ZERO) for m in remaining_maps), ZERO
+                        )
                         text = _money_text(amount)
                     else:
                         text = calc.week_column_total(
@@ -918,11 +904,11 @@ class WeekView(QWidget):
 
         operations = self.store.data.operations
         partner_ids = [p.id for p in partners]
-        due_maps = self._due_maps()
-        # «Итого»/«за неделю» считаются по остатку долга после
-        # оплат (v0.15.0), а архивный «Долг» в днях — по исходному
-        # графику: для него и берётся ``due_maps``.
         remaining_maps = self._remaining_due_maps()
+        # v0.27.2: и «Итого»/«за неделю», и «Долг» в днях считаются
+        # по остатку после оплат — досрочная оплата уменьшает долг на
+        # своём сроке (архивный график без оплат больше не нужен,
+        # поэтому отдельные карты сроков не считаются).
         debt_columns = [
             self._debt_columns(
                 m,
@@ -969,7 +955,9 @@ class WeekView(QWidget):
         for i, day in enumerate(days):
             for j, kind_name in enumerate(self.subheader_kinds):
                 if kind_name == "debt":
-                    amount = sum((m.get(day, ZERO) for m in due_maps), ZERO)
+                    # v0.27.2: «Долг» в днях — остаток после оплат
+                    # (досрочная оплата уменьшает долг на своём сроке).
+                    amount = sum((m.get(day, ZERO) for m in remaining_maps), ZERO)
                     value = _money_text(amount)
                 else:
                     value = calc.week_column_total(
@@ -983,7 +971,9 @@ class WeekView(QWidget):
         # Строки контрагентов
         for r, partner in enumerate(partners):
             row = FIRST_DATA_ROW + r
-            due_map = due_maps[r]
+            # v0.27.2: ячейки дней показывают остаток долга после
+            # оплат (как «Итого»), а не архивную сумму поставки.
+            due_map = remaining_maps[r]
             total, late, week = debt_columns[r]
             name_item = put(row, 0, partner.name, center=False,
                             color=styles.LINK_BLUE, underline=True,
@@ -1022,8 +1012,9 @@ class WeekView(QWidget):
                             bg=day_body_bg(day),
                         )
                         cell.setToolTip(
-                            "Сумма поставок со сроком оплаты в этот день. "
-                            "Остаётся для архива: оплата её пока не уменьшает"
+                            "Остаток долга со сроком оплаты в этот день. "
+                            "Уменьшается на оплаты: оплатили часть раньше "
+                            "срока — здесь будет остаток"
                         )
                         continue
 

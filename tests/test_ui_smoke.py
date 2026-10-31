@@ -268,16 +268,71 @@ def test_delivery_dialog_saves_and_debt_shows_in_week(qt_app, store):
     assert table.item(3, 3).text() == "88 888,88"  # ВСЕГО за неделю
     assert window.suppliers_view.right_value_label.text() == "88 888,88 руб."
 
-    # Оплата НЕ убирает сумму из «Долга» (требование пользователя
-    # v0.3.1: остаётся для архива), но уменьшает «за неделю» (v0.15.0:
-    # оплата вычитается из «за неделю», а если есть просроченная
-    # задолженность — приоритетно из «на сегодня»).
+    # v0.27.2: оплата уменьшает «Долг» — в ячейке дня остаётся только
+    # остаток (требование пользователя: оплатили часть раньше срока —
+    # в графе «долг» виден остаток). «За неделю» гасится той же оплатой.
     payment_cell = table.item(ggg_row, _DAY(window.suppliers_view, 3, 2))  # Оплата чт 05.11
     payment_cell.setText("88 888,88")
-    assert table.item(ggg_row, _DAY(window.suppliers_view, 3, 1)).text() == "88 888,88"  # Долг на месте
+    assert table.item(ggg_row, _DAY(window.suppliers_view, 3, 1)).text() == ""  # долг погашен
     assert table.item(ggg_row, 3).text() == ""  # «за неделю» погашено
     assert table.item(3, 3).text() == ""  # ВСЕГО за неделю
     assert window.suppliers_view.right_value_label.text() == "0,00 руб."
+    window.close()
+
+
+def test_early_payment_reduces_debt_in_day_cell(qt_app, store):
+    """v0.27.2: досрочная оплата уменьшает «Долг» в день срока.
+
+    Пример пользователя: приход 100 с отсрочкой 30 дней → в графе
+    «Долг» в день срока стоит 100. Оплата 70 через 10 дней после
+    прихода → в той же графе должен быть остаток 30.
+    """
+
+    from datetime import date, timedelta
+
+    from oplata import calc
+    from oplata.app import MainWindow
+    from oplata.models import KIND_INCOME, KIND_PAYMENT, Counterparty, Operation
+
+    supplier = Counterparty(name="Тест отсрочки", deferment_days=30)
+    store.data.suppliers.append(supplier)
+
+    income_day = date(2026, 11, 2)          # понедельник
+    income = Operation(
+        kind=KIND_INCOME,
+        counterparty_id=supplier.id,
+        date=income_day.isoformat(),
+        amount="100.00",
+    )
+    store.data.operations.append(income)
+    due = calc.operation_due_date(income, supplier, store.data.day_overrides)
+    assert due == date(2026, 12, 2)         # среда, есть в таблице
+
+    window = MainWindow(store)
+    window.suppliers_view.goto_date(due)
+    table = window.suppliers_view.table
+    row = 4 + [s.name for s in store.data.suppliers].index(supplier.name)
+    debt_col = _DAY(window.suppliers_view, window.suppliers_view._days.index(due), 1)
+
+    # Оплаты ещё нет — в «Долге» вся сумма поставки.
+    assert table.item(row, debt_col).text() == "100,00"
+    assert table.item(row, 1).text() == "100,00"      # «Итого»
+
+    # Досрочная оплата: через 10 дней после прихода, задолго до срока.
+    store.data.operations.append(
+        Operation(
+            kind=KIND_PAYMENT,
+            counterparty_id=supplier.id,
+            date=(income_day + timedelta(days=10)).isoformat(),
+            amount="70.00",
+        )
+    )
+    window.suppliers_view.refresh()
+    table = window.suppliers_view.table
+
+    assert table.item(row, debt_col).text() == "30,00"    # остаток долга
+    assert table.item(row, 1).text() == "30,00"           # «Итого» тот же
+    assert table.item(3, debt_col).text() == "30,00"      # строка «ВСЕГО»
     window.close()
 
 
@@ -378,14 +433,18 @@ def test_operation_dialog_and_journal_crud(qt_app, store):
     window.receipts_view.outgoing.set_date(date(2026, 10, 27))
     assert window.receipts_view.outgoing.amount_text("suppliers") == "200,00"
 
-    # Поставка по-прежнему даёт долг на сроке 26.11 (чт). Удаление оплаты
-    # из журнала его не меняет: оплата архивный долг пока не уменьшает.
+    # Поставка даёт долг 1 200 на сроке 26.11 (чт); оплата 200 от 27.10
+    # этот долг уменьшает (v0.27.2) — в «Долге» остаётся 1 000.
     window.suppliers_view.goto_date(date(2026, 11, 26))
     week_table = window.suppliers_view.table
     ggg_row = 4 + [s.name for s in store.data.suppliers].index("ггг")
-    assert week_table.item(ggg_row, _DAY(window.suppliers_view, 3, 1)).text() == "1 200,00"
+    assert week_table.item(ggg_row, _DAY(window.suppliers_view, 3, 1)).text() == "1 000,00"
 
+    # Удаление оплаты возвращает долг к полной сумме поставки
+    # (в программе это делает колбэк on_data_changed журнала).
     assert journal.delete_operation(payment_op.id)
+    window.suppliers_view.refresh()
+    week_table = window.suppliers_view.table
     assert week_table.item(ggg_row, _DAY(window.suppliers_view, 3, 1)).text() == "1 200,00"
     assert [item.id for item in store.data.operations] == [op.id]
     assert journal.found_label.text() == "Найдено: 1"  # осталась поставка
