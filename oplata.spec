@@ -39,7 +39,10 @@ a = Analysis(
     pathex=[str(ROOT / "src")],
     binaries=[],
     datas=[],
-    hiddenimports=[],
+    # v0.20.0: openpyxl импортируется лениво (внутри функции), поэтому
+    # PyInstaller-у его называем явно — иначе выгрузка в Excel в
+    # собранной программе упала бы с «No module named openpyxl».
+    hiddenimports=["openpyxl"],
     hookspath=[],
     hooksconfig={},
     runtime_hooks=[],

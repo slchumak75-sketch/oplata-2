@@ -24,7 +24,7 @@ from datetime import date, timedelta
 from decimal import Decimal
 from itertools import groupby
 
-from PySide6.QtCore import QModelIndex, QTimer, Qt
+from PySide6.QtCore import QModelIndex, QPoint, QTimer, Qt
 from PySide6.QtGui import (
     QColor,
     QFont,
@@ -69,8 +69,6 @@ from ..models import (
 from ..storage import DataStore
 from ..widgets import (
     AmountLineEdit,
-    FlowLayout,
-    danger_button,
     date_edit_value,
     make_date_edit,
     set_date_edit,
@@ -154,6 +152,11 @@ class DaySeparatorDelegate(RowHoverMixin, QStyledItemDelegate):
         painter.restore()
 
 
+# Сколько дней показывает недельная таблица: понедельник–суббота, без
+# воскресенья (v0.18.0, запрос пользователя).
+TABLE_DAYS = 6
+
+
 class WeekView(QWidget):
     """``kind``: ``"supplier"`` | ``"customer"``."""
 
@@ -191,29 +194,53 @@ class WeekView(QWidget):
         # v0.15.0: у поставщиков две итоговые колонки — «ПРОСРОЧЕН.» и
         # «ЗАДОЛЖ.»; у покупателей столбца «просрочено» нет, остаётся
         # одна колонка — «ЗАДОЛЖ.» (подзаголовок «Всего»).
-        self.lead_columns = 2 if kind == "supplier" else 1
-        self.column_count = 1 + self.lead_columns + 7 * self.columns_per_day
-        self.separator_after_cols = {self.lead_columns} | {
-            self.lead_columns + (day_index + 1) * self.columns_per_day
-            for day_index in range(6)
+        # v0.16.0: у поставщиков три итоговых столбца — «просрочено»
+        # (срок оплаты уже прошёл), «на сегодня» и «за неделю».
+        self.lead_columns = 3 if kind == "supplier" else 1
+        # v0.27.3: у поставщиков справа от названия — узкая колонка
+        # условий: «П» — предоплата, «Р» — реализация, иначе срок
+        # отсрочки в днях (просьба пользователя). Итоговые колонки
+        # при этом сдвигаются вправо на одну; у покупателей колонки нет.
+        self.lead_offset = 1 if kind == "supplier" else 0
+        # v0.18.0: в таблице шесть дней — без воскресенья. Седьмая
+        # колонка съедала место, и сумма «88 888,88» не влезала.
+        # Расчёты при этом по-прежнему идут по полной неделе (пн–вс).
+        self.table_days = TABLE_DAYS
+        self.column_count = (
+            1
+            + self.lead_offset
+            + self.lead_columns
+            + self.table_days * self.columns_per_day
+        )
+        lead_last = self.lead_offset + self.lead_columns
+        self.separator_after_cols = {lead_last} | {
+            lead_last + (day_index + 1) * self.columns_per_day
+            for day_index in range(self.table_days - 1)
         }
         # Ширины выросли вместе со шрифтом (+30%, v0.12.0): колонкам дней
         # нужно место под «88 888,88», иначе подгонка снизит шрифт сумм
         # до нечитаемого. Если окно узкое — появится горизонтальный скролл.
+        # v0.18.0: колонкам дней отдаём больше места (78 -> 92), чтобы
+        # «88 888,88» влезало при возможно большем шрифте: воскресенье
+        # убрали, и освободившееся место делим между днями.
         self.base_widths = (
             [200]
+            + ([46] if self.lead_offset else [])
             + [110] * self.lead_columns
-            + [78] * (7 * self.columns_per_day)
+            + [92] * (self.table_days * self.columns_per_day)
         )
         self.min_widths = (
             [170]
+            + ([40] if self.lead_offset else [])
             + [90] * self.lead_columns
-            + [68] * (7 * self.columns_per_day)
+            + [72] * (self.table_days * self.columns_per_day)
         )
         self.week_start = week_monday(date.today())
         self._partners: list[Counterparty] = []
         self._days: list[date] = []
         self._rebuilding = False  # True, пока таблицу меняет код, а не пользователь
+        # v0.18.0: без права ввода данных таблица только для просмотра.
+        self.read_only = False
         self._amount_items: list[QTableWidgetItem] = []  # для подгонки шрифта сумм
 
         root = QVBoxLayout(self)
@@ -222,11 +249,19 @@ class WeekView(QWidget):
         root.addLayout(self._build_toolbar())
 
         self.table = QTableWidget()
-        # В недельной таблице 20+ колонок: базовый шрифт интерфейса
-        # (+30% по запросу v0.12.0) съедает место у дней, поэтому для
-        # самой таблицы берём промежуточный размер — названия и шапка
-        # крупнее прежнего, а суммы остаются читаемыми.
-        self.table.setStyleSheet(f"font-size:{styles.fs(11)}px")
+        # v0.16.0: единый шрифт для всей недельной таблицы — шапка,
+        # названия и ячейки одного размера (был разнобой 13/14/16 px).
+        # Суммы в днях всё равно подгоняет _fit_amount_font по ширине
+        # колонки, чтобы «88 888,88» влезало целиком.
+        # v0.23.1: широкий всегда видимый скроллбар — такой же, как на
+        # плашке «Оплата» (просьба пользователя).
+        self.table.setStyleSheet(
+            f"QTableWidget{{font-size:{styles.fs(12)}px}}"
+            f"{styles.WIDE_SCROLLBAR_ON_TABLE}"
+        )
+        self.table.setVerticalScrollBarPolicy(
+            Qt.ScrollBarPolicy.ScrollBarAlwaysOn
+        )
         self.table.horizontalHeader().setVisible(False)
         self.table.verticalHeader().setVisible(False)
         week_delegate = DaySeparatorDelegate(
@@ -244,32 +279,84 @@ class WeekView(QWidget):
         # «Реализация» у покупателя), чтобы оно не пропало после того,
         # как одинарный клик стал открывать журнал операций (v0.13.0).
         self.table.itemDoubleClicked.connect(self._on_item_double_clicked)
+        # v0.27.3: двойной клик убран (просьба пользователя), поэтому
+        # «Поставку»/«Реализацию» открывает правый клик по строке —
+        # иначе к окну не осталось бы ни одного способа.
+        self.table.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
+        self.table.customContextMenuRequested.connect(self._on_context_menu)
         self.table.itemChanged.connect(self._on_item_changed)
+        # v0.23.1: закреплённая шапка — три строки шапки и строка
+        # «ВСЕГО» лежат в отдельной таблице поверх основной: при
+        # вертикальной прокрутке они остаются на месте.
+        self.frozen_table = QTableWidget(self)
+        self.frozen_table.setObjectName("FrozenWeekHeader")
+        self.frozen_table.setStyleSheet(
+            f"QTableWidget{{font-size:{styles.fs(12)}px;"
+            f"background:#ffffff;border:0px;gridline-color:transparent}}"
+        )
+        self.frozen_table.horizontalHeader().setVisible(False)
+        self.frozen_table.verticalHeader().setVisible(False)
+        # Полос прокрутки у закреплённой шапки нет: её горизонтальный
+        # сдвиг повторяет прокрутку основной таблицы.
+        self.frozen_table.setHorizontalScrollBarPolicy(
+            Qt.ScrollBarPolicy.ScrollBarAlwaysOff
+        )
+        self.frozen_table.setVerticalScrollBarPolicy(
+            Qt.ScrollBarPolicy.ScrollBarAlwaysOff
+        )
+        self.frozen_table.setEditTriggers(
+            QAbstractItemView.EditTrigger.NoEditTriggers
+        )
+        self.frozen_table.setSelectionMode(
+            QAbstractItemView.SelectionMode.NoSelection
+        )
+        self.frozen_table.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+        # Клик по закреплённой шапке идёт в таблицу под ней.
+        self.frozen_table.setAttribute(
+            Qt.WidgetAttribute.WA_TransparentForMouseEvents
+        )
+        self.frozen_table.setItemDelegate(
+            DaySeparatorDelegate(self.separator_after_cols, self.frozen_table)
+        )
+        self.table.horizontalScrollBar().valueChanged.connect(
+            self._sync_frozen_offset
+        )
         root.addWidget(self.table, stretch=1)
         self.refresh()
 
     # ------------------------------------------------------------------ UI
-    def _build_toolbar(self) -> FlowLayout:
-        # Тулбар переносится по строкам (v0.15.0): кнопок и подписей
-        # много, и при узком окне они уходят на следующую строку, а не
-        # за край окна.
-        bar = FlowLayout(spacing=8)
+    def _build_toolbar(self) -> QHBoxLayout:
+        # Обычная горизонтальная раскладка, как в v0.15.0: самописный
+        # перенос по строкам (FlowLayout) оставлял за таблицей
+        # негерерисованные «призраки» кнопок (v0.16.0 — возвращено).
+        # Кнопки «← Неделя»/«Неделя →» при этом широкие, по тексту.
+        bar = QHBoxLayout()
+        bar.setSpacing(8)
 
-        self.prev_week_btn = arrow_button("← Неделя", "Неделя назад")
+        # v0.25.2: подпись «Неделя» — тем же шрифтом, что кнопка
+        # «Сегодня» (просьба пользователя), поэтому без своего кегля.
+        self.prev_week_btn = arrow_button(
+            "← Неделя", "Неделя назад", plain=True
+        )
         self.prev_week_btn.clicked.connect(lambda: self._shift_week(-7))
         bar.addWidget(self.prev_week_btn)
 
         self.week_label = QLabel()
-        self.week_label.setStyleSheet(f"font-weight:700;font-size:{styles.fs(14)}px")
+        # v0.23.1: шрифт «Недели» — такой же, как у кнопки «Сегодня»
+        # (просьба пользователя): базовый кегль и начертание кнопки,
+        # без отдельного увеличения.
+        self.week_label.setStyleSheet(f"font-weight:600;font-size:{styles.fs(13)}px")
         bar.addWidget(self.week_label)
 
-        self.next_week_btn = arrow_button("Неделя →", "Неделя вперёд")
+        self.next_week_btn = arrow_button(
+            "Неделя →", "Неделя вперёд", plain=True
+        )
         self.next_week_btn.clicked.connect(lambda: self._shift_week(7))
         bar.addWidget(self.next_week_btn)
 
-        today_btn = QPushButton("Сегодня")
-        today_btn.clicked.connect(self._go_today)
-        bar.addWidget(today_btn)
+        self.today_btn = QPushButton("Сегодня")
+        self.today_btn.clicked.connect(self._go_today)
+        bar.addWidget(self.today_btn)
 
         bar.addWidget(QLabel("Дата"))
         self.date_edit = make_date_edit(self.week_start)
@@ -279,12 +366,10 @@ class WeekView(QWidget):
         go_btn.clicked.connect(self._go_to_date)
         bar.addWidget(go_btn)
 
-        # Переносимый тулбар не поддерживает растяжку: разрыв между
-        # левой группой (неделя/дата) и правой (кнопки справа) делает
-        # невидимый разделитель.
-        spacer = QLabel("")
-        spacer.setFixedWidth(24)
-        bar.addWidget(spacer)
+        bar.addStretch(1)
+        # v0.23.1: кнопка «Очистить суммы» убрана из таблицы
+        # «Поставщики» по просьбе пользователя — она удаляла введённые
+        # суммы за неделю безвозвратно и была лишней.
 
         # Кнопка карточки живёт в панели таблицы (с v0.11.0), а не в шапке
         # окна: пользователь просил перенести её слева от «Очистить суммы».
@@ -300,23 +385,32 @@ class WeekView(QWidget):
         bar.addWidget(self.card_button)
 
         if self.kind == "supplier":
-            clear_btn = danger_button("Очистить суммы")
-            clear_btn.clicked.connect(self._clear_amounts)
-            bar.addWidget(clear_btn)
             debt_title = QLabel("Задолженность за неделю:")
             debt_title.setObjectName("Muted")
             bar.addWidget(debt_title)
             self.right_value_label = QLabel(fmt_money(ZERO))
-            self.right_value_label.setStyleSheet(f"font-weight:800;font-size:{styles.fs(15)}px")
+            self.right_value_label.setStyleSheet(f"font-weight:800;font-size:{styles.fs(14)}px")
             bar.addWidget(self.right_value_label)
         else:
             count_title = QLabel("Покупателей:")
             count_title.setObjectName("Muted")
             bar.addWidget(count_title)
             self.right_value_label = QLabel("0")
-            self.right_value_label.setStyleSheet(f"font-weight:800;font-size:{styles.fs(15)}px")
+            self.right_value_label.setStyleSheet(f"font-weight:800;font-size:{styles.fs(14)}px")
             bar.addWidget(self.right_value_label)
         return bar
+
+    def set_read_only(self, read_only: bool) -> None:
+        """Права пользователя: «только просмотр» или полный доступ (v0.18.0)."""
+
+        self.read_only = read_only
+        self.table.setEditTriggers(
+            QAbstractItemView.EditTrigger.NoEditTriggers
+            if read_only
+            else QAbstractItemView.EditTrigger.AllEditTriggers
+        )
+        # Кнопки, меняющие данные, без права ввода не показываем.
+        self.card_button.setVisible(not read_only)
 
     # ------------------------------------------------------------- навигация
     def _shift_week(self, days: int) -> None:
@@ -324,7 +418,15 @@ class WeekView(QWidget):
         self.refresh()
 
     def _go_today(self) -> None:
-        self.goto_date(date.today())
+        """Кнопка «Сегодня»: неделя сегодняшняя и в поле — сегодня.
+
+        v0.27.4: раньше вызывался ``goto_date``, а ``refresh``
+        ставит в поле даты начало недели — получалось, что «Сегодня»
+        показывает понедельник (26.10 вместо 31.10). Поэтому здесь
+        тот же переход, что при переключении вкладки.
+        """
+
+        self.reset_to_today()
 
     def _go_to_date(self) -> None:
         self.goto_date(date_edit_value(self.date_edit))
@@ -334,64 +436,68 @@ class WeekView(QWidget):
         self.week_start = week_monday(day)
         self.refresh()
 
-    def _clear_amounts(self) -> None:
-        """Кнопка «Очистить суммы»: удалить ВВЕДЁННЫЕ Приход/Оплата за эту неделю.
+    def reset_to_today(self) -> None:
+        """Показать сегодняшний день (v0.23.1).
 
-        Предположение (SPEC Q5): удаляются операции с датой внутри
-        показанной недели, только после подтверждения.
+        ``refresh`` ставит в поле даты начало недели, поэтому после
+        перехода на вкладку поле показываем отдельно: неделя — та, в
+        которой сегодня, а в окошке даты — само сегодняшнее число.
         """
-        answer = QMessageBox.question(
-            self,
-            "Очистить суммы",
-            "Удалить все введённые суммы «Приход» и «Оплата» за неделю "
-            f"{fmt_date(self._days[0])} — {fmt_date(self._days[-1])}?\n\n"
-            "Операции будут удалены безвозвратно.",
-        )
-        if answer != QMessageBox.StandardButton.Yes:
-            return
-        day_isos = {d.isoformat() for d in self._days}
-        partner_ids = {p.id for p in self._partners}
-        self.store.data.operations = [
-            op
-            for op in self.store.data.operations
-            if not (
-                op.counterparty_id in partner_ids
-                and op.date in day_isos
-                and op.kind in OP_KIND_BY_COLUMN.values()
-            )
-        ]
-        self.store.save()
-        self.refresh()
-        if self.on_data_changed is not None:
-            self.on_data_changed()
 
-    # ------------------------------------------------------------ клики/ввод
+        today = date.today()
+        self.goto_date(today)
+        set_date_edit(self.date_edit, today)
+
     def _on_item_clicked(self, item: QTableWidgetItem) -> None:
+        if self.read_only:  # v0.18.0: без права ввода окна ввода не открываем
+            return
         if item.column() != 0 or item.row() < FIRST_DATA_ROW:
             return
         counterparty_id = item.data(Qt.ItemDataRole.UserRole)
         if not counterparty_id:
             return
-        if self.kind == "supplier" and self.on_open_delivery is not None:
-            # По макету 07: клик по поставщику открывает «Поставку».
-            self.on_open_delivery(str(counterparty_id), None)
-        elif self.kind == "customer" and self.on_open_operations is not None:
-            # v0.13.0: по клику на покупателя показываем **журнал
-            # операций** этого покупателя — так видны все его записи.
+        # v0.23.1: и у поставщика, и у покупателя клик по имени
+        # открывает **журнал операций** контрагента (просьба
+        # пользователя). Раньше у поставщика клик открывал «Поставку» —
+        # она осталась на двойном клике.
+        if self.on_open_operations is not None:
             self.on_open_operations(str(counterparty_id))
+        elif self.kind == "supplier" and self.on_open_delivery is not None:
+            # Запасной вариант, если журнал не задан.
+            self.on_open_delivery(str(counterparty_id), None)
         elif self.kind == "customer" and self.on_open_realization is not None:
-            # Раньше клик открывал «Реализацию»; оставили как запасной
-            # вариант, если журнал не задан.
             self.on_open_realization(str(counterparty_id), None)
         else:
             self.on_open_card(str(counterparty_id))
 
     def _on_item_double_clicked(self, item: QTableWidgetItem) -> None:
-        """Двойной клик по контрагенту: «Поставка»/«Реализация»."""
+        """v0.27.3: двойной клик больше ничего не открывает.
 
-        if item.column() != 0 or item.row() < FIRST_DATA_ROW:
+        Раньше он открывал «Поставку»/«Реализацию», но по просьбе
+        пользователя двойной клик убран — окно открывается правой
+        кнопкой мыши. Метод оставлен: сигнал подключён, и пустой
+        обработчик нагляднее, чем снятое подключение.
+        """
+
+        _ = item
+
+    def _on_context_menu(self, position) -> None:
+        """Правый клик по строке контрагента: «Поставка»/«Реализация».
+
+        v0.27.3: вместо двойного клика, который убран по просьбе
+        пользователя. Работает по любой ячейке строки — как раньше
+        двойной клик по имени.
+        """
+
+        if self.read_only:  # v0.18.0: только просмотр
             return
-        counterparty_id = item.data(Qt.ItemDataRole.UserRole)
+        item = self.table.itemAt(position)
+        if item is None or item.row() < FIRST_DATA_ROW:
+            return
+        name_item = self.table.item(item.row(), 0)
+        if name_item is None:
+            return
+        counterparty_id = name_item.data(Qt.ItemDataRole.UserRole)
         if not counterparty_id:
             return
         if self.kind == "supplier" and self.on_open_delivery is not None:
@@ -467,21 +573,8 @@ class WeekView(QWidget):
             self._rebuilding = False
 
     # ------------------------------------------------------- расчётные ячейки
-    def _due_maps(self) -> list[dict[date, Decimal]]:
-        """Суммы поставок по срокам («Долг») для каждого контрагента таблицы.
-
-        Формулы долга пользователь дал только для поставщиков;
-        у покупателей карты пустые (Долг не показывается).
-        """
-        if self.kind != "supplier":
-            return [{} for _ in self._partners]
-        return [
-            calc.debt_by_due_date(self.store.data, partner)
-            for partner in self._partners
-        ]
-
     def _remaining_due_maps(self) -> list[dict[date, Decimal]]:
-        """Остаток долга по срокам после оплат — для «на сегодня»/«за неделю».
+        """Остаток долга по срокам после оплат — для «Итого»/«за неделю».
 
         v0.15.0: из «за неделю» вычитается оплата; если есть
         просроченная задолженность («на сегодня»), она гасится первой,
@@ -505,32 +598,42 @@ class WeekView(QWidget):
         days: list[date],
         today: date,
         open_ended: bool = False,
-    ) -> tuple[Decimal, Decimal]:
-        """(просрочено на сегодня, итог за показанную неделю).
+        week_end: date | None = None,
+    ) -> tuple[Decimal, Decimal, Decimal]:
+        """(итого задолженность, просрочено, итог за показанную неделю).
 
-        v0.15.0: «На сегодня» — оплаты, просроченные на эту дату: для
-        текущей недели считаются долги со сроком по сегодня включительно,
-        для будущей — всё, что просрочено к её началу (долги предыдущих
-        недель переносятся вперёд). «За неделю» — итог по срокам внутри
-        показанной недели, какой бы неделю ни смотрели.
+        v0.22.1: столбец «на сегодня» заменён на **«Итого»** — общая
+        текущая задолженность по поставщику: весь остаток долга после
+        оплат, по всем срокам (и просроченным, и будущим).
+
+        «Просрочено» — долги с истёкшим сроком (строго раньше даты).
+        «За неделю» — итог по срокам внутри показанной недели, какой бы
+        неделю ни смотрели.
 
         ``open_ended`` — поставщик со статусом «Реализация»: срок оплаты
-        у него бессрочный, поэтому в «на сегодня» его суммы **не
-        попадают никогда** (v0.15.0).
+        у него бессрочный, поэтому просрочки у него не бывает (v0.15.0),
+        а в «Итого» его долг участвует.
         """
         if not days:
-            return ZERO, ZERO
-        monday, sunday = days[0], days[-1]
-        limit = monday - timedelta(days=1) if today < monday else min(today, sunday)
-        overdue = (
+            return ZERO, ZERO, ZERO
+        # v0.18.0: ``days`` — это дни таблицы (без воскресенья), а
+        # считать надо по полной неделе, поэтому конец передают отдельно.
+        monday, sunday = days[0], week_end or days[-1]
+        # v0.22.1: «Итого» — вся текущая задолженность поставщику
+        # (остаток долга по всем срокам).
+        total = sum(due_map.values(), ZERO)
+        # v0.16.0: «просрочено» — долги с истёкшим сроком (строго раньше
+        # даты); при просмотре прошлой недели считаем на её конец.
+        late_limit = min(today, sunday)
+        late = (
             ZERO
             if open_ended
-            else sum((a for d, a in due_map.items() if d <= limit), ZERO)
+            else sum((a for d, a in due_map.items() if d < late_limit), ZERO)
         )
         week = sum(
             (a for d, a in due_map.items() if monday <= d <= sunday), ZERO
         )
-        return overdue, week
+        return total, late, week
 
     def _set_cell_text(self, row: int, col: int, text: str) -> None:
         item = self.table.item(row, col)
@@ -540,66 +643,110 @@ class WeekView(QWidget):
     def _day_column(self, day_index: int, subcolumn_index: int) -> int:
         return (
             1
+            + self.lead_offset
             + self.lead_columns
             + day_index * self.columns_per_day
             + subcolumn_index
         )
 
+    @staticmethod
+    def _conditions_text(partner: Counterparty) -> str:
+        """Условия поставщика для узкой колонки (v0.27.3).
+
+        «П» — предоплата, «Р» — реализация (бессрочный долг), иначе —
+        срок отсрочки в днях.
+        """
+
+        if partner.prepayment:
+            return "П"
+        if partner.realization:
+            return "Р"
+        return str(partner.deferment_days)
+
     def _update_calculated_cells(self) -> None:
-        """Пересчитать Долг, «на сегодня»/«за неделю», ВСЕГО и тулбар без перестройки."""
+        """Пересчитать Долг, «Итого»/«за неделю», ВСЕГО и тулбар без перестройки."""
         today = date.today()
-        due_maps = self._due_maps()
         remaining_maps = self._remaining_due_maps()
         partner_ids = [p.id for p in self._partners]
         operations = self.store.data.operations
-        total_overdue = ZERO
+        # v0.22.1: «Итого» по всем поставщикам. v0.26.5: считается той
+        # же функцией, что строка «Всего задолженность» в «Сводке»,
+        # чтобы цифры совпадали.
+        total_all = ZERO
         total_week = ZERO
+        total_late = ZERO
         total_customer = ZERO
-        days = self._days
+        # v0.18.0: колонки дней в таблице — без воскресенья, расчёты
+        # при этом идут по полной неделе (self._days / self._week_end).
+        days = self._days[: self.table_days]
         self._rebuilding = True
         try:
-            for r, (due_map, remaining_map) in enumerate(
-                zip(due_maps, remaining_maps)
-            ):
+            for r, remaining_map in enumerate(remaining_maps):
                 row = FIRST_DATA_ROW + r
-                # ``due_map`` — архивный «Долг» по дням, ``remaining_map``
-                # — остаток после оплат для «на сегодня»/«за неделю».
-                overdue, week = self._debt_columns(
+                # v0.27.2: и ячейки дней «Долг», и «Итого»/«за неделю»
+                # считаются по остатку долга после оплат.
+                total, late, week = self._debt_columns(
                     remaining_map,
                     days,
                     today,
                     open_ended=calc.is_open_ended(self._partners[r]),
+                    week_end=self._week_end,
                 )
-                total_overdue += overdue
+                total_all += total
                 total_week += week
+                total_late += late
                 if self.kind == "supplier":
-                    self._set_cell_text(row, 1, _money_text(overdue))
-                    self._set_cell_text(row, 2, _money_text(week))
+                    # v0.22.1: порядок столбцов — «Итого», «просрочено»,
+                    # «за неделю».
+                    self._set_cell_text(
+                        row, 1 + self.lead_offset, _money_text(total)
+                    )
+                    self._set_cell_text(
+                        row, 2 + self.lead_offset, _money_text(late)
+                    )
+                    self._set_cell_text(
+                        row, 3 + self.lead_offset, _money_text(week)
+                    )
                 else:
                     # Покупатели: «Всего» = Реализация − Оплата (v0.15.0).
                     partner = self._partners[r]
                     debt = calc.customer_debt_amount(
-                        self.store.data, partner, days[0], days[-1]
+                        self.store.data, partner, days[0], self._week_end
                     )
                     total_customer += debt
                     self._set_cell_text(row, 1, _money_text(debt))
                 if "debt" in self.subheader_kinds:
                     debt_index = self.subheader_kinds.index("debt")
-                    for i, day in enumerate(self._days):
+                    for i, day in enumerate(days):
                         self._set_cell_text(
                             row,
                             self._day_column(i, debt_index),
-                            _money_text(due_map.get(day, ZERO)),
+                            _money_text(remaining_map.get(day, ZERO)),
                         )
             if self.kind == "supplier":
-                self._set_cell_text(TOTAL_ROW, 1, _money_text(total_overdue))
-                self._set_cell_text(TOTAL_ROW, 2, _money_text(total_week))
+                total_all = sum(
+                    calc.supplier_debt_remaining(
+                        self._partners, self.store.data, self._week_end
+                    ).values(),
+                    ZERO,
+                )
+                self._set_cell_text(
+                    TOTAL_ROW, 1 + self.lead_offset, _money_text(total_all)
+                )
+                self._set_cell_text(
+                    TOTAL_ROW, 2 + self.lead_offset, _money_text(total_late)
+                )
+                self._set_cell_text(
+                    TOTAL_ROW, 3 + self.lead_offset, _money_text(total_week)
+                )
             else:
                 self._set_cell_text(TOTAL_ROW, 1, _money_text(total_customer))
-            for i, day in enumerate(self._days):
+            for i, day in enumerate(days):
                 for j, kind_name in enumerate(self.subheader_kinds):
                     if kind_name == "debt":
-                        amount = sum((m.get(day, ZERO) for m in due_maps), ZERO)
+                        amount = sum(
+                            (m.get(day, ZERO) for m in remaining_maps), ZERO
+                        )
                         text = _money_text(amount)
                     else:
                         text = calc.week_column_total(
@@ -610,6 +757,72 @@ class WeekView(QWidget):
             self._rebuilding = False
         if self.kind == "supplier":
             self.right_value_label.setText(fmt_money(total_week))
+        # v0.23.1: строка «ВСЕГО» закреплена — обновляем и её копию.
+        self._sync_frozen()
+
+    # ----------------------------------------------- закреплённая шапка
+    def _sync_frozen(self) -> None:
+        """Перерисовать закреплённые строки по содержимому таблицы."""
+
+        source = self.table
+        frozen = self.frozen_table
+        rows = TOTAL_ROW + 1
+        frozen.setColumnCount(self.column_count)
+        frozen.setRowCount(rows)
+        frozen.clearSpans()
+        covered: set[tuple[int, int]] = set()
+        for row in range(rows):
+            frozen.setRowHeight(row, source.rowHeight(row))
+            for column in range(self.column_count):
+                frozen.setColumnWidth(column, source.columnWidth(column))
+                item = source.item(row, column)
+                cell = QTableWidgetItem(
+                    item.text() if item is not None else ""
+                )
+                cell.setFlags(Qt.ItemFlag.NoItemFlags)
+                if item is not None:
+                    cell.setFont(item.font())
+                    cell.setBackground(item.background())
+                    cell.setForeground(item.foreground())
+                    cell.setTextAlignment(Qt.Alignment(item.textAlignment()))
+                frozen.setItem(row, column, cell)
+                if (row, column) in covered:
+                    continue
+                row_span = source.rowSpan(row, column)
+                column_span = source.columnSpan(row, column)
+                if row_span > 1 or column_span > 1:
+                    frozen.setSpan(row, column, row_span, column_span)
+                    for spanned_row in range(row, row + row_span):
+                        for spanned_column in range(
+                            column, column + column_span
+                        ):
+                            covered.add((spanned_row, spanned_column))
+        self._update_frozen_geometry()
+
+    def _update_frozen_geometry(self) -> None:
+        """Посадить закреплённую шапку на верхнюю кромку таблицы."""
+
+        frame = self.table.frameWidth()
+        height = sum(
+            self.table.rowHeight(row) for row in range(TOTAL_ROW + 1)
+        )
+        origin = self.table.mapTo(self, QPoint(frame, frame))
+        self.frozen_table.setGeometry(
+            origin.x(), origin.y(), self.table.viewport().width(), height
+        )
+        self._sync_frozen_offset()
+
+    def _sync_frozen_offset(self) -> None:
+        """Повторить горизонтальную прокрутку основной таблицы."""
+
+        self.frozen_table.horizontalScrollBar().setValue(
+            self.table.horizontalScrollBar().value()
+        )
+
+    def resizeEvent(self, event) -> None:  # type: ignore[override]
+        super().resizeEvent(event)
+        # Ширина закреплённой шапки зависит от размера таблицы.
+        self._update_frozen_geometry()
 
     # --------------------------------------------------------------- данные
     def counterparties(self) -> list[Counterparty]:
@@ -624,7 +837,10 @@ class WeekView(QWidget):
         partners = self.counterparties()
         days = week_days(self.week_start)
         self._partners = partners
+        # Расчётная неделя — полная (пн–вс): долги и оплаты считаются
+        # по всем семи дням, даже если в таблице их не показываем.
         self._days = days
+        self._week_end = days[-1]
         today = date.today()
         set_date_edit(self.date_edit, self.week_start)
         self.week_label.setText(
@@ -632,7 +848,8 @@ class WeekView(QWidget):
         )
         if self.kind == "customer":
             self.right_value_label.setText(str(len(partners)))
-        self._rebuild_table(partners, days, today)
+        # В таблицу уходят только первые TABLE_DAYS дней (без воскресенья).
+        self._rebuild_table(partners, days[: self.table_days], today)
 
     # --------------------------------------------------------------- таблица
     def _rebuild_table(self, partners, days, today) -> None:
@@ -643,6 +860,8 @@ class WeekView(QWidget):
         finally:
             self._rebuilding = False
         self._fit_columns_to_width()
+        # v0.23.1: закреплённая шапка повторяет перестроенную таблицу.
+        self._sync_frozen()
 
     def _rebuild_table_inner(self, partners, days, today) -> None:
         table = self.table
@@ -653,7 +872,7 @@ class WeekView(QWidget):
         table.setColumnCount(self.column_count)
 
         for row in range(HEADER_ROWS):
-            table.setRowHeight(row, 36)  # шапка выше — шрифт увеличен
+            table.setRowHeight(row, 38)  # три строки шапки под общий шрифт
 
         def put(row, col, text, *, bg=None, bold=False, center=True,
                 editable=False, color=None, underline=False, size=None):
@@ -679,7 +898,7 @@ class WeekView(QWidget):
 
         def money_cell(row, col, text, **kwargs) -> QTableWidgetItem:
             """Ячейка суммы: правый край + шрифт, который потом подгонит _fit_*."""
-            cell = put(row, col, text, size=styles.fs(11), **kwargs)
+            cell = put(row, col, text, size=styles.fs(12), **kwargs)
             cell.setTextAlignment(
                 Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter
             )
@@ -706,38 +925,54 @@ class WeekView(QWidget):
             return day_body_bg(day)
 
         # Строка 0: месяцы (неделя может захватывать 1–2 месяца)
-        lead = self.lead_columns
+        lead = self.lead_columns + self.lead_offset
         put(0, 0, "")
         table.setSpan(0, 0, 1, 1 + lead)
         col = 1 + lead
         for (_year, _month), group in groupby(days, key=lambda d: (d.year, d.month)):
             group_days = list(group)
-            put(0, col, month_title(group_days[0]), bold=True, size=13)
+            put(0, col, month_title(group_days[0]), bold=True,
+                size=styles.fs(12))
             table.setSpan(0, col, 1, len(group_days) * self.columns_per_day)
             col += len(group_days) * self.columns_per_day
 
         # Строка 1: дни недели (шрифт шапки увеличен по запросу пользователя)
         put(1, 0, "ПОСТАВЩИК" if self.kind == "supplier" else "ПОКУПАТЕЛЬ",
-            bold=True, size=13)
+            bold=True, size=styles.fs(12))
         # v0.14.0: «ПРОСРОЧЕН.» и «ЗАДОЛЖ.» — разные ячейки, без
         # объединения: каждая подпись стоит над своей колонкой.
         if self.kind == "supplier":
-            put(1, 1, "ПРОСРОЧЕН.", bold=True, size=styles.fs(12))
-            put(1, 2, "ЗАДОЛЖ.", bold=True, size=styles.fs(12))
+            # v0.27.3: узкая колонка условий входит в объединённую шапку
+            # названия: своей подписи у неё нет, смысл — в подзаголовке
+            # «Отср.» строкой ниже.
+            table.setSpan(1, 0, 1, 1 + self.lead_offset)
+            # v0.16.0: три итоговые колонки объединены одной шапкой
+            # «ЗАДОЛЖЕННОСТЬ», а их смысловые подписи стоят строкой
+            # ниже («Итого», «просрочено», «за неделю» — v0.22.1).
+            put(1, 1 + self.lead_offset, "ЗАДОЛЖЕННОСТЬ", bold=True,
+                size=styles.fs(12), center=False)
+            table.setSpan(1, 1 + self.lead_offset, 1, self.lead_columns)
         else:
             # v0.15.0: столбца «просрочено» у покупателей нет.
             put(1, 1, "ЗАДОЛЖ.", bold=True, size=styles.fs(12))
         for i, day in enumerate(days):
             c = self._day_column(i, 0)
             put(1, c, f"{day.day}  {WEEKDAYS_RU_SHORT[day.weekday()]}",
-                bg=day_header_bg(day), bold=True, size=13)
+                bg=day_header_bg(day), bold=True, size=styles.fs(12))
             table.setSpan(1, c, 1, self.columns_per_day)
 
         # Строка 2: подзаголовки; выходные розовые, сегодня здесь без заливки.
         put(2, 0, "")
         if self.kind == "supplier":
-            put(2, 1, "на сегодня", bold=True, size=styles.fs(12))
-            put(2, 2, "за неделю", bold=True, size=styles.fs(12))
+            # v0.27.3: узкая колонка условий — «П»/«Р»/дней отсрочки.
+            put(2, 1, "Отср.", bold=True, size=styles.fs(12))
+            # v0.22.1: вместо «на сегодня» — «Итого», оно слева от
+            # «просрочено».
+            put(2, 1 + self.lead_offset, "Итого", bold=True, size=styles.fs(12))
+            put(2, 2 + self.lead_offset, "просрочено", bold=True,
+                size=styles.fs(12))
+            put(2, 3 + self.lead_offset, "за неделю", bold=True,
+                size=styles.fs(12))
         else:
             # v0.15.0: у покупателей итоговая колонка одна — «Всего».
             put(2, 1, "Всего", bold=True, size=styles.fs(12))
@@ -748,48 +983,68 @@ class WeekView(QWidget):
 
         operations = self.store.data.operations
         partner_ids = [p.id for p in partners]
-        due_maps = self._due_maps()
-        # «на сегодня»/«за неделю» считаются по остатку долга после
-        # оплат (v0.15.0), а архивный «Долг» в днях — по исходному
-        # графику: для него и берётся ``due_maps``.
         remaining_maps = self._remaining_due_maps()
+        # v0.27.2: и «Итого»/«за неделю», и «Долг» в днях считаются
+        # по остатку после оплат — досрочная оплата уменьшает долг на
+        # своём сроке (архивный график без оплат больше не нужен,
+        # поэтому отдельные карты сроков не считаются).
         debt_columns = [
             self._debt_columns(
-                m, days, today, open_ended=calc.is_open_ended(partner)
+                m,
+                days,
+                today,
+                open_ended=calc.is_open_ended(partner),
+                week_end=self._week_end,
             )
             for m, partner in zip(remaining_maps, partners)
         ]
 
         # Строка «ВСЕГО»
-        total_overdue = sum((c[0] for c in debt_columns), ZERO)
-        total_week = sum((c[1] for c in debt_columns), ZERO)
+        # v0.22.1: debt_columns = (Итого, просрочено, за неделю).
+        total_all = sum((c[0] for c in debt_columns), ZERO)
+        total_late = sum((c[1] for c in debt_columns), ZERO)
+        total_week = sum((c[2] for c in debt_columns), ZERO)
         # Покупатели: задолженность = Реализация − Оплата за неделю
         # (v0.15.0). Считается до строки «ВСЕГО», поэтому собирается
         # заранее, а не по ходу вывода строк контрагентов.
         customer_debts: list[Decimal] = []
         if self.kind != "supplier":
+            # v0.26.0: плашка «Данных» удалена — считаем только
+            # операции недели (Реализация − Оплата).
             customer_debts = [
                 calc.customer_debt_amount(
-                    self.store.data, partner, days[0], days[-1]
+                    self.store.data, partner, days[0], self._week_end
                 )
                 for partner in partners
             ]
             total_customer_debt = sum(customer_debts, ZERO)
-        put(TOTAL_ROW, 0, "ВСЕГО", bold=True, center=False)
+        put(TOTAL_ROW, 0, "ВСЕГО", bold=True, center=False,
+            size=styles.fs(12))
         total_columns = (
-            ((1, total_overdue), (2, total_week))
+            (
+                (1 + self.lead_offset, total_all),
+                (2 + self.lead_offset, total_late),
+                (3 + self.lead_offset, total_week),
+            )
             if self.kind == "supplier"
             else ((1, total_customer_debt),)
         )
+        # v0.27.3: в колонке условий у «ВСЕГО» пусто — суммы условий
+        # не бывает.
+        if self.lead_offset:
+            put(TOTAL_ROW, 1, "", bold=True, size=styles.fs(12))
         for col_idx, amount in total_columns:
-            cell = put(TOTAL_ROW, col_idx, _money_text(amount), bold=True, size=styles.fs(11))
+            cell = put(TOTAL_ROW, col_idx, _money_text(amount), bold=True,
+                       size=styles.fs(12))
             cell.setTextAlignment(
                 Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter
             )
         for i, day in enumerate(days):
             for j, kind_name in enumerate(self.subheader_kinds):
                 if kind_name == "debt":
-                    amount = sum((m.get(day, ZERO) for m in due_maps), ZERO)
+                    # v0.27.2: «Долг» в днях — остаток после оплат
+                    # (досрочная оплата уменьшает долг на своём сроке).
+                    amount = sum((m.get(day, ZERO) for m in remaining_maps), ZERO)
                     value = _money_text(amount)
                 else:
                     value = calc.week_column_total(
@@ -803,29 +1058,49 @@ class WeekView(QWidget):
         # Строки контрагентов
         for r, partner in enumerate(partners):
             row = FIRST_DATA_ROW + r
-            due_map = due_maps[r]
-            overdue, week = debt_columns[r]
+            # v0.27.2: ячейки дней показывают остаток долга после
+            # оплат (как «Итого»), а не архивную сумму поставки.
+            due_map = remaining_maps[r]
+            total, late, week = debt_columns[r]
             name_item = put(row, 0, partner.name, center=False,
-                            color=styles.LINK_BLUE, underline=True)
+                            color=styles.LINK_BLUE, underline=True,
+                            size=styles.fs(12))
             name_item.setData(Qt.ItemDataRole.UserRole, partner.id)
             if self.kind == "supplier":
                 name_item.setToolTip(
-                    "Клик — окно «Поставка» для этого поставщика; двойной "
-                    "клик — то же окно"
+                    "Клик — журнал операций этого поставщика; двойной "
+                    "клик — окно «Поставка»"
                 )
             elif self.kind == "customer":
                 name_item.setToolTip(
                     "Клик — журнал операций этого покупателя; двойной "
                     "клик — окно «Реализация»"
                 )
-            # Просрочено «на сегодня» / задолженность «за неделю» (calc);
+            # «Итого», «просрочено» / задолженность «за неделю» (calc);
             # у покупателей — одна колонка «Всего» = Реализация − Оплата.
             if self.kind == "supplier":
-                lead_amounts = ((1, overdue), (2, week))
+                # v0.27.3: условия поставщика — узкая колонка справа от
+                # названия. Подсказка расшифровывает «П» и «Р».
+                conditions = put(
+                    row, 1, self._conditions_text(partner), bold=True,
+                    size=styles.fs(12),
+                )
+                conditions.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
+                conditions.setToolTip(
+                    "Условия: П — предоплата, Р — реализация, "
+                    "число — срок отсрочки в днях"
+                )
+                # v0.22.1: «Итого» стоит слева от «просрочено».
+                lead_amounts = (
+                    (1 + self.lead_offset, total),
+                    (2 + self.lead_offset, late),
+                    (3 + self.lead_offset, week),
+                )
             else:
                 lead_amounts = ((1, customer_debts[r]),)
             for col_idx, amount in lead_amounts:
-                cell = put(row, col_idx, _money_text(amount), size=styles.fs(11))
+                cell = put(row, col_idx, _money_text(amount),
+                           size=styles.fs(12))
                 cell.setTextAlignment(
                     Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter
                 )
@@ -839,8 +1114,9 @@ class WeekView(QWidget):
                             bg=day_body_bg(day),
                         )
                         cell.setToolTip(
-                            "Сумма поставок со сроком оплаты в этот день. "
-                            "Остаётся для архива: оплата её пока не уменьшает"
+                            "Остаток долга со сроком оплаты в этот день. "
+                            "Уменьшается на оплаты: оплатили часть раньше "
+                            "срока — здесь будет остаток"
                         )
                         continue
 
@@ -916,7 +1192,13 @@ class WeekView(QWidget):
                 diff += 1
         for col, width in enumerate(widths):
             table.setColumnWidth(col, width)
-        self._fit_amount_font(widths[3])
+        # v0.18.0: ширину берём у колонки дня (первая после итоговых),
+        # а не у фиксированного индекса: тот указывал на итоговую
+        # колонку, и шрифт сумм подбирался слишком крупным —
+        # «88 888,88» не влезало.
+        self._fit_amount_font(
+            min(widths[1 + self.lead_offset + self.lead_columns:])
+        )
 
     def _fit_amount_font(self, day_column_width: int) -> None:
         """Подобрать размер шрифта сумм так, чтобы «88 888,88» влезало целиком."""

@@ -30,19 +30,20 @@
 
 from __future__ import annotations
 
-from collections.abc import Iterable, Mapping, Sequence
-from dataclasses import dataclass
+from collections.abc import Iterable, Iterator, Mapping, Sequence
+from dataclasses import dataclass, field
 from datetime import date, timedelta
 from decimal import Decimal, InvalidOperation
 
 from .dates import fmt_money_plain, week_monday
 from .models import (
+    AppData,
+    CASH_SOURCE,
+    Counterparty,
     INCOMING,
     KIND_INCOME,
     KIND_PAYMENT,
     KIND_SALE,
-    AppData,
-    Counterparty,
     Operation,
     cash_receipt_amount,
     daily_operation_total,
@@ -116,12 +117,36 @@ def overdue_payments(on_date: date) -> list:
 
 @dataclass(frozen=True)
 class FundsTotals:
-    """Блок «Средства» плашки «Сводка»."""
+    """Блок «Средства» плашки «Сводка» (на выбранную дату, v0.22.1)."""
 
-    funds: Decimal = ZERO        # остаток на счету (перенос на 1 января)
-    income: Decimal = ZERO       # итого поступление
-    payments: Decimal = ZERO     # итого оплаты
+    funds: Decimal = ZERO        # остаток на счету НА НАЧАЛО дня
+    income: Decimal = ZERO       # поступление за день
+    payments: Decimal = ZERO     # оплаты за день
     balance: Decimal = ZERO      # итого остаток = остаток + поступление − оплаты
+
+
+@dataclass(frozen=True)
+class FundsMovementRow:
+    """Одна строка журнала движения средств (v0.22.1)."""
+
+    day: date
+    name: str = ""
+    income: Decimal = ZERO        # поступление (пусто у оплат)
+    payment: Decimal = ZERO       # оплата (пусто у поступлений)
+    balance: Decimal = ZERO       # остаток после этой записи
+
+
+@dataclass(frozen=True)
+class FundsMovement:
+    """Журнал движения средств за период (v0.22.1)."""
+
+    start: date                   # первый день периода
+    end: date                     # последний день периода (выбранная дата)
+    start_funds: Decimal = ZERO   # остаток на счету НА НАЧАЛО периода
+    rows: list[FundsMovementRow] = field(default_factory=list)
+    income: Decimal = ZERO        # всего поступлений за период
+    payments: Decimal = ZERO      # всего оплат за период
+    balance: Decimal = ZERO       # итого остаток на конец периода
 
 
 @dataclass(frozen=True)
@@ -131,7 +156,8 @@ class DebtTotals:
     total: Decimal = ZERO        # всего задолженность по всем поставщикам
     week: Decimal = ZERO         # задолженность на текущей неделе
     today: Decimal = ZERO        # задолженность со сроком ровно на эту дату
-    overdue: Decimal = ZERO      # просрочено = столбец «на сегодня» поставщиков
+    overdue: Decimal = ZERO      # задолженность на сегодня (столбец «на сегодня»)
+    late: Decimal = ZERO         # просроченный платёж (столбец «ПРОСРОЧЕНО»)
 
 
 @dataclass(frozen=True)
@@ -178,9 +204,9 @@ def debt_schedule(
 ) -> dict[date, Decimal]:
     """График долга поставщикам: дата срока -> сумма.
 
-    Складываются суммы поставок (``debt_by_due_date``) и разовые долги
-    переноса на 1 января (плашка «Данные» вкладки «Конфигурация») — у
-    них тоже есть дата оплаты. Оплаты долг не уменьшают (v0.3.1).
+    Складываются суммы поставок (``debt_by_due_date``). Оплаты долг не
+    уменьшают (v0.3.1). Разовые долги переноса на 1 января больше не
+    учитываются: плашка «Данные» удалена в v0.26.0.
     """
 
     if suppliers is None:
@@ -189,12 +215,6 @@ def debt_schedule(
     for supplier in suppliers:
         for due, amount in debt_by_due_date(data, supplier).items():
             schedule[due] = schedule.get(due, ZERO) + amount
-    for entry in data.year_start.supplier_debts:
-        due = _iso_day(entry.due_date)
-        amount = year_start_amount(entry)
-        if due is None or amount == 0:
-            continue
-        schedule[due] = schedule.get(due, ZERO) + amount
     return schedule
 
 
@@ -204,19 +224,10 @@ def supplier_schedule(
     """Полный график долга одного поставщика по срокам.
 
     Как :func:`debt_schedule`, но для одного контрагента: суммы поставок
-    по срокам **плюс его разовые долги переноса на 1 января**.
+    по срокам (перенос на 1 января не учитывается, v0.26.0).
     """
 
-    schedule = dict(debt_by_due_date(data, counterparty))
-    for entry in data.year_start.supplier_debts:
-        if entry.counterparty_id != counterparty.id:
-            continue
-        due = _iso_day(entry.due_date)
-        amount = year_start_amount(entry)
-        if due is None or amount == 0:
-            continue
-        schedule[due] = schedule.get(due, ZERO) + amount
-    return schedule
+    return dict(debt_by_due_date(data, counterparty))
 
 
 def supplier_schedule_remaining(
@@ -268,37 +279,137 @@ def visible_suppliers(data: AppData, include_archived: bool) -> list[Counterpart
     return [s for s in data.suppliers if include_archived or not s.archived]
 
 
-def funds_totals(data: AppData) -> FundsTotals:
-    """Блок «Средства»: остаток, поступления и оплаты за всё время."""
+def _funds_records(
+    data: AppData,
+) -> Iterator[tuple[date | None, Decimal, bool, str]]:
+    """Записи блока «Средства»: (дата, сумма, это поступление, название).
 
-    funds = ZERO
-    try:
-        funds = Decimal(data.year_start.funds or "0")
-    except InvalidOperation:
-        funds = ZERO
+    v0.15.0: «Реализация» покупателей в ИТОГ ПОСТУПЛЕНИЕ не входит,
+    поэтому из операций берём только ``KIND_PAYMENT``.
+    """
 
-    # v0.15.0: по просьбе пользователя «Реализация» покупателей в
-    # ИТОГ ПОСТУПЛЕНИЕ не входит. Больше в расчёте ничего не менялось.
-    income = ZERO
     for receipt in data.cash_receipts:
-        income += cash_receipt_amount(receipt)
+        name = (
+            "Поступление наличными"
+            if receipt.source == CASH_SOURCE
+            else "Поступление по картам"
+        )
+        yield _iso_day(receipt.date), cash_receipt_amount(receipt), True, name
     for payment in data.other_payments:
-        if payment.direction == INCOMING:
-            income += other_payment_amount(payment)
-
-    payments = ZERO
-    for payment in data.other_payments:
-        if payment.direction != INCOMING:
-            payments += other_payment_amount(payment)
+        yield (
+            _iso_day(payment.date),
+            other_payment_amount(payment),
+            payment.direction == INCOMING,
+            payment.name or "Прочий вид",
+        )
     for op in data.operations:
         if op.kind == KIND_PAYMENT:
-            payments += operation_amount(op)
+            partner = find_counterparty(data, op.counterparty_id)
+            name = f"Оплата: {partner.name}" if partner is not None else "Оплата"
+            yield _iso_day(op.date), operation_amount(op), False, name
 
+
+def funds_totals(data: AppData, on_date: date) -> FundsTotals:
+    """Блок «Средства» **на дату** ``on_date`` (v0.22.1).
+
+    Правило пользователя: вчерашний «Итого остаток» становится
+    сегодняшним «Остатком на счету», к нему за день прибавляются
+    поступления и отнимаются оплаты — результат снова показывается в
+    «Итого остаток». Поэтому:
+
+    * ``funds`` — остаток на счету **на начало дня** ``on_date``:
+      перенос с начала года плюс все поступления и минус все оплаты
+      за дни до ``on_date``;
+    * ``income`` / ``payments`` — поступления и оплаты **за этот день**;
+    * ``balance`` — итого остаток на конец дня:
+      ``funds + income − payments``.
+    """
+
+    # v0.26.0: плашка «Данные» (перенос остатков) удалена, поэтому
+    # остаток на счёте считается только по операциям — иначе из-за даты
+    # остатков в «Сводку» не попадали данные блока «Поступление».
+    funds = ZERO
+
+    income_before = payments_before = ZERO
+    income_day = payments_day = ZERO
+    for day, amount, is_income, _name in _funds_records(data):
+        if day is None:
+            # Запись без даты (старые файлы) — считаем как прошедшую.
+            slot = "before"
+        elif day > on_date:
+            continue  # будущее в остаток не входит
+        elif day == on_date:
+            slot = "day"
+        else:
+            slot = "before"
+        if is_income:
+            if slot == "day":
+                income_day += amount
+            else:
+                income_before += amount
+        elif slot == "day":
+            payments_day += amount
+        else:
+            payments_before += amount
+
+    funds += income_before - payments_before
     return FundsTotals(
         funds=funds,
+        income=income_day,
+        payments=payments_day,
+        balance=funds + income_day - payments_day,
+    )
+
+
+def funds_movement(data: AppData, on_date: date, days: int = 1) -> FundsMovement:
+    """Журнал движения средств за последние ``days`` дней (v0.22.1).
+
+    С v0.23.1 журнал показывается **за один день** (``days=1``): первая
+    строка — остаток на начало дня, затем все поступления, затем все
+    оплаты, последняя — итого остаток.
+
+    Первый день периода — ``on_date - (days - 1)``, последний — сама
+    выбранная дата. Остаток на начало периода берётся по тем же
+    правилам, что и в блоке «Средства» (``funds_totals``), поэтому
+    вчерашний «Итого остаток» становится сегодняшним «Остатком на
+    счету» и внутри журнала всё сходится.
+    """
+
+    start = on_date - timedelta(days=days - 1)
+    start_funds = funds_totals(data, start).funds
+
+    records = [
+        (day, name, amount, is_income)
+        for day, amount, is_income, name in _funds_records(data)
+        if day is not None and start <= day <= on_date
+    ]
+    # Внутри дня поступления показываем раньше оплат.
+    records.sort(key=lambda row: (row[0], not row[3]))
+
+    balance = start_funds
+    income = payments = ZERO
+    rows: list[FundsMovementRow] = []
+    for day, name, amount, is_income in records:
+        if is_income:
+            income += amount
+            balance += amount
+            rows.append(
+                FundsMovementRow(day, name, income=amount, balance=balance)
+            )
+        else:
+            payments += amount
+            balance -= amount
+            rows.append(
+                FundsMovementRow(day, name, payment=amount, balance=balance)
+            )
+    return FundsMovement(
+        start=start,
+        end=on_date,
+        start_funds=start_funds,
+        rows=rows,
         income=income,
         payments=payments,
-        balance=funds + income - payments,
+        balance=balance,
     )
 
 
@@ -331,6 +442,27 @@ def supplier_overdue_total(
     return total
 
 
+def supplier_late_total(
+    data: AppData, on_date: date, include_archived: bool = False
+) -> Decimal:
+    """«Просроченный платёж» = сумма столбца «ПРОСРОЧЕНО» поставщиков.
+
+    v0.16.0: считаются долги со сроком оплаты, который **уже истёк**
+    (строго раньше даты), за вычетом оплат. У поставщика со статусом
+    «Реализация» срок бессрочный — просрочки у него не бывает.
+    """
+
+    sunday = week_monday(on_date) + timedelta(days=6)
+    limit = min(on_date, sunday)
+    total = ZERO
+    for supplier in visible_suppliers(data, include_archived):
+        if is_open_ended(supplier):
+            continue
+        due_map = supplier_schedule_remaining(data, supplier, sunday)
+        total += sum((amount for due, amount in due_map.items() if due < limit), ZERO)
+    return total
+
+
 def debt_totals(
     data: AppData, on_date: date, include_archived: bool = False
 ) -> DebtTotals:
@@ -351,10 +483,59 @@ def debt_totals(
         total=sum(schedule.values(), ZERO),
         week=week,
         today=schedule.get(on_date, ZERO),
-        # «Просрочено» считается по столбцу «на сегодня» таблицы
-        # поставщиков (v0.15.0), а не по срокам раньше сегодня.
+        # «Задолженность на сегодня» считается по столбцу «на сегодня»
+        # таблицы поставщиков (v0.15.0), а не по срокам раньше сегодня.
         overdue=supplier_overdue_total(data, on_date, include_archived),
+        # v0.16.0: отдельная строка «Просроченный платёж» — столбец
+        # «ПРОСРОЧЕНО» (срок уже истёк).
+        late=supplier_late_total(data, on_date, include_archived),
     )
+
+
+def supplier_debt_remaining(
+    suppliers: Sequence[Counterparty],
+    data: AppData,
+    upto: date,
+) -> dict[date, Decimal]:
+    """Остаток долга после оплат — суммарно по поставщикам (v0.26.5).
+
+    То же, что столбец «Итого» в таблице поставщиков: по каждому
+    поставщику берётся :func:`supplier_schedule_remaining` (оплаты
+    гасят долги в порядке сроков — от ранних к поздним) и складывается.
+    """
+
+    schedule: dict[date, Decimal] = {}
+    for supplier in suppliers:
+        for due, amount in supplier_schedule_remaining(
+            data, supplier, upto
+        ).items():
+            schedule[due] = schedule.get(due, ZERO) + amount
+    return schedule
+
+
+def supplier_debt_total_on_week(
+    data: AppData,
+    on_date: date,
+    include_archived: bool = False,
+    upto: date | None = None,
+) -> Decimal:
+    """«Всего задолженность» — как строка «Всего», столбец «Итого»
+    таблицы поставщиков (v0.26.5).
+
+    Сумма остатков долга после оплат, сделанных не позже ``upto``
+    (по умолчанию — конец недели, на которую приходится ``on_date``,
+    как в таблице поставщиков).
+    """
+
+    limit = (
+        upto
+        if upto is not None
+        else week_monday(on_date) + timedelta(days=6)
+    )
+    schedule = supplier_debt_remaining(
+        visible_suppliers(data, include_archived), data, limit
+    )
+    return sum(schedule.values(), ZERO)
 
 
 def weekly_payment_plan(
@@ -363,10 +544,21 @@ def weekly_payment_plan(
     weeks: int = 4,
     include_archived: bool = False,
 ) -> list[WeekPlan]:
-    """«Оплата понедельно»: ``weeks`` недель, следующих за текущей."""
+    """«Оплата понедельно»: ``weeks`` недель, следующих за текущей.
 
-    schedule = debt_schedule(data, visible_suppliers(data, include_archived))
+    v0.26.5: считается **остаток долга после оплат**, как столбец
+    «Итого» в таблице поставщиков, а не полный график поставок. Поэтому
+    оплата, сделанная раньше срока отсрочки, уменьшает сумму будущей
+    недели: долги гасятся в порядке сроков — от ранних к поздним, и
+    оплаченный долг в плане не показывается.
+    """
+
+    suppliers = visible_suppliers(data, include_archived)
     current_monday = week_monday(on_date)
+    # Горизонт плана: все оплаты вплоть до конца последней недели
+    # гасят долги по срокам, даже если оплата сделана раньше срока.
+    horizon = current_monday + timedelta(days=7 * weeks + 6)
+    schedule = supplier_debt_remaining(suppliers, data, horizon)
     result: list[WeekPlan] = []
     for index in range(1, weeks + 1):
         monday = current_monday + timedelta(days=7 * index)
@@ -428,12 +620,9 @@ def customer_debt_amount(
             sale += operation_amount(op)
         elif op.kind == KIND_PAYMENT:
             payment += operation_amount(op)
-    total = sale - payment
-    if start is None and end is None:
-        entry = year_start_customer_debt(data, customer.id)
-        if entry is not None:
-            total += year_start_amount(entry)
-    return total
+    # v0.26.0: перенос остатков из плашки «Данные» больше не учитывается
+    # (вкладка удалена) — считаем только операции.
+    return sale - payment
 
 
 def customer_debt_totals(
@@ -570,10 +759,9 @@ def debt_by_due_date(
 ) -> dict[date, Decimal]:
     """Суммы поставок по датам срока оплаты («Долг») — архивный график.
 
-    ⚠️ Оплаты здесь сознательно НЕ вычитаются (требование пользователя
-    v0.3.1: сумма в «Долге» остаётся для архива и не исчезает). Как
-    «Оплата» будет влиять на долг — отдельный этап по разъяснениям
-    пользователя; до тех пор это исходные суммы поставок по срокам.
+    Оплаты здесь НЕ вычитаются — это исходный график поставок по
+    срокам (архив). Таблица «Поставщики» показывает не его, а остаток
+    после оплат (v0.27.2): см. :func:`debt_remaining_by_due_date`.
     """
     result: dict[date, Decimal] = {}
     for op in data.operations:
@@ -600,8 +788,8 @@ def debt_remaining_by_due_date(
     остаётся на своём сроке, поэтому при переходе на следующую неделю
     он сам попадает в «на сегодня».
 
-    Архивный «Долг» в ячейках дней при этом не меняется (v0.3.1) —
-    для него по-прежнему есть :func:`debt_by_due_date`.
+    v0.27.2: этой функцией считается и «Долг» в ячейках дней таблицы
+    «Поставщики» — досрочная оплата уменьшает долг на своём сроке.
     """
 
     remaining = {
@@ -673,9 +861,10 @@ def week_cell_amount(
 ) -> Decimal:
     """Числовое значение ячейки Приход/Реализация/Долг/Оплата.
 
-    ``income``/``sale``/``payment`` — суммы операций за день. ``debt`` — исходная сумма
-    поставок со сроком в этот день (архив, оплата не уменьшает) (нужен ``data``: поставщик,
-    его условия и календарь выходных).
+    ``income``/``sale``/``payment`` — суммы операций за день. ``debt`` —
+    исходная сумма поставок со сроком в этот день (архив, оплата не
+    уменьшает). Таблица «Поставщики» берёт для «Долга» остаток после
+    оплат (v0.27.2), поэтому здесь — архивный график.
     """
     if column_kind == "debt":
         if data is None:

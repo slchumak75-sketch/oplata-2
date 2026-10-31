@@ -4,17 +4,24 @@ from __future__ import annotations
 
 from decimal import Decimal, InvalidOperation
 
-from PySide6.QtCore import QDate, QEvent, QObject, QPoint, QRect, QSize, Qt, QTimer
-from PySide6.QtGui import QColor, QFocusEvent
+from PySide6.QtCore import QDate, QEvent, QObject, Qt, QTimer
+from PySide6.QtGui import (
+    QColor,
+    QFocusEvent,
+    QPalette,
+    QPen,
+)
 from PySide6.QtWidgets import (
+    QCalendarWidget,
+    QStyledItemDelegate,    QAbstractItemView,
     QDateEdit,
     QFrame,
     QLabel,
-    QLayout,
-    QLayoutItem,
     QLineEdit,
     QPushButton,
     QSizePolicy,
+    QStyle,
+    QStyleOptionViewItem,
     QVBoxLayout,
     QWidget,
 )
@@ -194,11 +201,33 @@ def blue_button(text: str) -> QPushButton:
     return btn
 
 
+class TodayFrameCalendar(QCalendarWidget):
+    """Календарь, в котором сегодняшняя дата обведена рамкой (v0.27.5).
+
+    Стиль Windows не выделяет текущий день вовсе, поэтому рамку
+    рисуем сами — общим для всех календарей цветом
+    ``styles.TODAY_FRAME``.
+    """
+
+    def paintCell(self, painter, rect, day):  # noqa: N802 - Qt API
+        super().paintCell(painter, rect, day)
+        if day != QDate.currentDate():
+            return
+        painter.save()
+        painter.setPen(QPen(QColor(styles.TODAY_FRAME), 2))
+        painter.setBrush(Qt.BrushStyle.NoBrush)
+        # Рамка внутри ячейки: вплотную к краю она срезается соседями.
+        painter.drawRect(rect.adjusted(1, 1, -1, -1))
+        painter.restore()
+
+
 def make_date_edit(day) -> QDateEdit:
     """Поле даты в формате макетов дд.мм.гггг с всплывающим календарём."""
     edit = QDateEdit()
     edit.setDisplayFormat("dd.MM.yyyy")
     edit.setCalendarPopup(True)
+    # v0.27.5: текущая дата в календаре обведена рамкой.
+    edit.setCalendarWidget(TodayFrameCalendar(edit))
     # Дата целиком + зона стрелки календаря справа (без наложения на год).
     edit.setMinimumWidth(138)
     edit.setDate(QDate(day.year, day.month, day.day))
@@ -235,14 +264,66 @@ def kpi_card(title: str, value_text: str, green_value: bool = False) -> tuple[QF
 
 
 # ------------------------------------------------------------------ стрелки
+class NoFocusItemDelegate(QStyledItemDelegate):
+    """Ячейка таблицы без рамки фокуса (v0.26.9).
+
+    Qt рисует рамку на **текущей** ячейке поверх выделения: в узких
+    колонках дней она выглядит как два вертикальных штриха и
+    «переезжает» на каждую следующую нажатую ячейку.
+    """
+
+    def paint(self, painter, option, index):  # noqa: N802 - Qt API
+        option = QStyleOptionViewItem(option)
+        option.state &= ~QStyle.StateFlag.State_HasFocus
+        super().paint(painter, option, index)
+
+
+def disable_selection_color(root: "QWidget") -> None:
+    """Сделать цвет выделения невидимым у всех таблиц (v0.27.1).
+
+    Линии и фон на текущей (нажатой) строке Qt рисует цветом
+    ``QPalette.Highlight``. Замер показал: QSS, заданный **на самом
+    виджете**, его палитру не меняет — у таблиц с
+    ``WIDE_SCROLLBAR_ON_TABLE`` цвет выделения остаётся системным
+    (``#308cc6``, на Windows — синий), отсюда синие штрихи-артефакты.
+    Поэтому цвет задаётся напрямую, а не через QSS.
+    """
+
+    white = QColor("#ffffff")
+    text = QColor("#1c2733")
+    for table in root.findChildren(QAbstractItemView):
+        palette = table.palette()
+        palette.setColor(QPalette.ColorRole.Highlight, white)
+        palette.setColor(QPalette.ColorRole.HighlightedText, text)
+        table.setPalette(palette)
+        table.viewport().setPalette(palette)
+
+
+def disable_item_focus(root: "QWidget") -> None:
+    """Снять фокус у всех таблиц внутри ``root`` (v0.26.5).
+
+    Без фокуса Qt не рисует на текущей (нажатой) ячейке рамку и
+    отдельный прямоугольник — тот самый «артефакт», который появлялся
+    после клика и переезжал на следующую ячейку. Ввод по клику
+    (v0.12.0) работает и без фокуса: его берёт сам редактор.
+    """
+
+    for table in root.findChildren(QAbstractItemView):
+        table.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+
+
 def arrow_button(
-    text: str, tooltip: str = "", bold: bool = False
+    text: str, tooltip: str = "", bold: bool = False, plain: bool = False
 ) -> QPushButton:
     """Кнопка-стрелка «←»/«→».
 
     По умолчанию — обычная, как до v0.13.0. С ``bold=True`` стрелка
     жирная и крупнее: с v0.15.0 жирными остались только стрелки блоков
     «Поступление» и «Оплата» на первой вкладке.
+
+    С ``plain=True`` (v0.25.2) свой кегль и жирность не задаются вовсе:
+    кнопка набрана обычным шрифтом — так же, как кнопка «Сегодня»
+    (просьба пользователя: подпись «Неделя» — шрифтом «Сегодня»).
     """
 
     button = QPushButton(text)
@@ -252,7 +333,9 @@ def arrow_button(
     # (v0.15.0).
     if len(text) <= 2:
         button.setFixedWidth(52)
-    if bold:
+    if plain:
+        pass  # шрифт как у обычной кнопки — без своего кегля
+    elif bold:
         # Стиль приложения задаёт кнопкам свой шрифт, поэтому жирность
         # и кегль задаются таблицей стилей самого виджета: она имеет
         # приоритет над общим QSS и над ``setFont``.
@@ -276,87 +359,6 @@ def arrow_button(
 
 
 # ------------------------------------------------------- подсветка строки
-class FlowLayout(QLayout):
-    """Раскладка «переносом по строкам» — как текст в абзаце.
-
-    Нужна тулбару недельной таблицы (v0.15.0): кнопок и подписей там
-    много, и при узком окне они должны переноситься на следующую
-    строку, а не уезжать за край.
-    """
-
-    def __init__(self, parent=None, spacing: int = 8) -> None:
-        super().__init__(parent)
-        self.setSpacing(spacing)
-        self._items: list[QLayoutItem] = []
-
-    # --- обязательные методы QLayout ---
-    def addItem(self, item):
-        self._items.append(item)
-
-    def count(self):
-        return len(self._items)
-
-    def itemAt(self, index):
-        if 0 <= index < len(self._items):
-            return self._items[index]
-        return None
-
-    def takeAt(self, index):
-        if 0 <= index < len(self._items):
-            return self._items.pop(index)
-        return None
-
-    def expandingDirections(self):
-        return Qt.Orientation(0)
-
-    def hasHeightForWidth(self):
-        return True
-
-    def heightForWidth(self, width):
-        return self._layout(QRect(0, 0, width, 0), apply_geometry=False)
-
-    def setGeometry(self, rect):
-        super().setGeometry(rect)
-        self._layout(rect, apply_geometry=True)
-
-    def sizeHint(self):
-        return self.minimumSize()
-
-    def minimumSize(self):
-        size = QSize()
-        for item in self._items:
-            size = size.expandedTo(item.minimumSize())
-        margins = self.contentsMargins()
-        return size + QSize(
-            margins.left() + margins.right(), margins.top() + margins.bottom()
-        )
-
-    # --- раскладка ---
-    def _layout(self, rect, apply_geometry):
-        margins = self.contentsMargins()
-        available = QRect(rect)
-        available.adjust(
-            margins.left(), margins.top(), -margins.right(), -margins.bottom()
-        )
-        x, y = available.x(), available.y()
-        row_height = 0
-        spacing = self.spacing()
-        for item in self._items:
-            widget = item.widget()
-            if widget is not None and not widget.isVisible():
-                continue
-            hint = item.sizeHint()
-            if x > available.x() and x + hint.width() > available.right() + 1:
-                x = available.x()
-                y += row_height + spacing
-                row_height = 0
-            if apply_geometry:
-                item.setGeometry(QRect(QPoint(x, y), hint))
-            x += hint.width() + spacing
-            row_height = max(row_height, hint.height())
-        return y + row_height - rect.y() + margins.bottom()
-
-
 class RowHoverMixin:
     """Рисует бежевую подсветку **всей строки** под курсором (v0.13.0).
 
@@ -377,6 +379,16 @@ class RowHoverMixin:
         self._hover_row = row
 
     def paint(self, painter, option, index):  # noqa: N802 - Qt API
+        # v0.24.3: без пунктирной рамки фокуса на ячейке. В Windows Qt
+        # рисует её после клика, и по таблице шли «штришки»-артефакты.
+        option = QStyleOptionViewItem(option)
+        option.state &= ~QStyle.StateFlag.State_HasFocus
+        # v0.26.9: без состояния Selected Qt не рисует ни фон, ни рамку
+        # выделения — ячейка после клика выглядит так же, как до него
+        # (жалоба на «штрихи»-артефакт на нажатой ячейке). Само
+        # выделение как механизм остаётся: по нему работают «−»,
+        # currentRow и ввод.
+        option.state &= ~QStyle.StateFlag.State_Selected
         super().paint(painter, option, index)
         if (
             self._hover_row >= 0

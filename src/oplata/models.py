@@ -145,6 +145,10 @@ class OtherPayment:
     name: str = ""      # название вида оплаты, которое ввёл пользователь
     amount: str = "0"   # Decimal строкой
     direction: str = OUTGOING
+    # v0.24.0: даты, отмеченные в календаре карточки вида оплаты. В
+    # таблице блока ячейки этих дней красятся красным. У старых записей
+    # поля нет — from_dict подставит пустой список.
+    dates: list[str] = field(default_factory=list)
     id: str = field(default_factory=new_id)
 
     @classmethod
@@ -155,6 +159,7 @@ class OtherPayment:
             amount=str(data.get("amount", "0")),
             id=str(data.get("id") or new_id()),
             direction=str(data.get("direction") or OUTGOING),
+            dates=[str(day) for day in data.get("dates", []) if day],
         )
 
 
@@ -588,12 +593,24 @@ def other_payment_names(
 
 
 def add_other_payment(
-    data: AppData, name: str, date_iso: str, direction: str = OUTGOING
+    data: AppData,
+    name: str,
+    date_iso: str,
+    direction: str = OUTGOING,
+    dates: list[str] | None = None,
 ) -> OtherPayment:
-    """Создать строку вида оплаты (сумма 0 — строка только появилась)."""
+    """Создать строку вида оплаты (сумма 0 — строка только появилась).
+
+    ``dates`` — даты, отмеченные в календаре карточки (v0.24.0): их
+    ячейки в таблице блока будут красными.
+    """
 
     payment = OtherPayment(
-        date=date_iso, name=name, amount="0", direction=direction
+        date=date_iso,
+        name=name,
+        amount="0",
+        direction=direction,
+        dates=list(dates or []),
     )
     data.other_payments.append(payment)
     return payment
