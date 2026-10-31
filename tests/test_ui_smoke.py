@@ -326,6 +326,35 @@ def test_operations_journal_shows_name_and_minimizes_previous(qt_app, store):
     window.close()
 
 
+def test_today_button_shows_current_date(qt_app, store):
+    """v0.27.4: кнопка «Сегодня» показывает сегодня, а не понедельник.
+
+    ``refresh`` ставит в поле даты начало недели, поэтому одного
+    перехода на неделю мало — иначе «Сегодня» показывало 26.10 при
+    сегодняшнем 31.10. Проверяется в обеих таблицах.
+    """
+
+    from datetime import date
+
+    from oplata.app import MainWindow
+    from oplata.dates import week_monday
+    from oplata.widgets import date_edit_value
+
+    today = date.today()
+    monday = week_monday(today)
+    window = MainWindow(store)
+    for view in (window.suppliers_view, window.customers_view):
+        # Сначала уходим на другую неделю, потом возвращаемся.
+        view.goto_date(date(2026, 10, 5))
+        assert date_edit_value(view.date_edit) != today
+        view.today_btn.click()
+        qt_app.processEvents()
+        assert date_edit_value(view.date_edit) == today
+        if monday != today:  # в понедельник обе даты совпадают
+            assert date_edit_value(view.date_edit) != monday
+    window.close()
+
+
 def test_summary_week_debt_includes_overdue(qt_app, store):
     """v0.27.3: «Задолженность на неделе» = неделя + просроченная.
 

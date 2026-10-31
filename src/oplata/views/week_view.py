@@ -418,7 +418,15 @@ class WeekView(QWidget):
         self.refresh()
 
     def _go_today(self) -> None:
-        self.goto_date(date.today())
+        """Кнопка «Сегодня»: неделя сегодняшняя и в поле — сегодня.
+
+        v0.27.4: раньше вызывался ``goto_date``, а ``refresh``
+        ставит в поле даты начало недели — получалось, что «Сегодня»
+        показывает понедельник (26.10 вместо 31.10). Поэтому здесь
+        тот же переход, что при переключении вкладки.
+        """
+
+        self.reset_to_today()
 
     def _go_to_date(self) -> None:
         self.goto_date(date_edit_value(self.date_edit))
