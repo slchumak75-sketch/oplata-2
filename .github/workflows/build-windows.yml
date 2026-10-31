@@ -124,6 +124,7 @@ jobs:
           New-Item -ItemType Directory -Force ".\package-folder" | Out-Null
           Copy-Item ".\dist\Oplata" ".\package-folder\Oplata" -Recurse -Force
           Copy-Item ".\packaging\START_HERE_RU.txt" ".\package-folder\START_HERE_RU.txt"
+          Copy-Item ".\packaging\Start-With-Google-Drive.bat" ".\package-folder\Start-With-Google-Drive.bat"
           Remove-Item ".\dist" -Recurse -Force
 
           # Smoke-тест именно того, что уходит в артефакт: раньше
@@ -155,6 +156,7 @@ jobs:
           New-Item -ItemType Directory -Force ".\package-single" | Out-Null
           Copy-Item $exe ".\package-single\Oplata.exe"
           Copy-Item ".\packaging\START_HERE_RU.txt" ".\package-single\START_HERE_RU.txt"
+          Copy-Item ".\packaging\Start-With-Google-Drive.bat" ".\package-single\Start-With-Google-Drive.bat"
 
       - name: Verify EXE metadata and record SHA-256
         shell: pwsh

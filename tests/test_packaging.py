@@ -55,6 +55,41 @@ def test_render_version_info_contains_windows_metadata():
     assert "Оплаты — Строймаркет" in rendered
 
 
+def test_google_drive_launcher_is_shipped():
+    """v0.28.1: bat-файл запуска с общей папкой есть и уходит в сборку.
+
+    Он задаёт ``OPLATA_DATA_DIR``, поэтому программа читает и пишет
+    данные в общей папке Google Диска, а не в локальном каталоге.
+    """
+
+    launcher = ROOT / "packaging" / "Start-With-Google-Drive.bat"
+    assert launcher.exists(), "нет bat-файла запуска с Google Диска"
+
+    raw = launcher.read_bytes()
+    assert b"\r\n" in raw, "bat-файл должен быть с переводами строк CRLF"
+    text = raw.decode("cp866")  # русский текст для cmd.exe — в кодировке 866
+
+    assert "OPLATA_DATA_DIR" in text
+    assert "Oplata.exe" in text
+    # путь можно задать вручную: строка закомментирована в начале файла
+    assert 'rem set "OPLATA_DATA_DIR=' in text
+    # папка ищется сама — по стандартным расположениям Диска
+    assert "Google" in text and "USERPROFILE" in text
+
+    # Файл копируется в оба пакета (папка и один exe).
+    workflow = (
+        ROOT / ".github" / "workflows" / "build-windows.yml"
+    ).read_text(encoding="utf-8")
+    assert workflow.count(
+        'Copy-Item ".\\packaging\\Start-With-Google-Drive.bat"'
+    ) == 2
+    # И упомянут в START_HERE: пользователь должен о нём узнать.
+    start_here = (ROOT / "packaging" / "START_HERE_RU.txt").read_text(
+        encoding="utf-8"
+    )
+    assert "Start-With-Google-Drive.bat" in start_here
+
+
 def test_application_and_project_versions_are_in_sync():
     with (ROOT / "pyproject.toml").open("rb") as file:
         project = tomllib.load(file)["project"]
