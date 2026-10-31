@@ -326,11 +326,53 @@ def test_operations_journal_shows_name_and_minimizes_previous(qt_app, store):
     window.close()
 
 
+def test_all_calendars_frame_today(qt_app, store):
+    """v0.27.6: текущая дата в рамке во всех календарях программы.
+
+    Кроме всплывающего календаря поля даты (его проверяет соседний
+    тест по пикселям) это календарь в карточке вида оплаты и
+    календарь выходных на вкладке «Данные».
+    """
+
+    from datetime import date
+
+    from PySide6.QtWidgets import QPushButton
+
+    from oplata import styles
+    from oplata.app import MainWindow
+    from oplata.views.receipts_view import PaymentDatesCalendar
+
+    today = date.today()
+    frame = f"2px solid {styles.TODAY_FRAME}"
+
+    # Календарь в карточке вида оплаты: кнопка нужного дня.
+    payment_calendar = PaymentDatesCalendar(today)
+    buttons = [
+        button
+        for button in payment_calendar.findChildren(QPushButton)
+        if button.text() == str(today.day)
+    ]
+    assert buttons, "кнопка текущего дня в календаре не найдена"
+    assert frame in buttons[0].styleSheet()
+    # Отметка даты не отменяет рамку: правила складываются.
+    buttons[0].click()
+    qt_app.processEvents()
+    assert frame in buttons[0].styleSheet()
+    payment_calendar.deleteLater()
+
+    # Календарь выходных на вкладке «Данные».
+    window = MainWindow(store)
+    data_view = window.data_view
+    assert today in data_view._day_buttons
+    assert frame in data_view._day_buttons[today].styleSheet()
+    window.close()
+
+
 def test_calendar_marks_today_with_frame(qt_app, store):
     """v0.27.5: в календаре текущая дата обведена рамкой.
 
-    Проверка по пикселям: рамка рисуется цветом текущей даты из
-    таблиц, поэтому в снимке календаря должны быть его пиксели.
+    Проверка по пикселям: рамка рисуется общим для календарей
+    цветом, поэтому в снимке календаря должны быть его пиксели.
     """
 
     from datetime import date
@@ -340,7 +382,7 @@ def test_calendar_marks_today_with_frame(qt_app, store):
     from oplata import styles
     from oplata.widgets import TodayFrameCalendar, make_date_edit
 
-    frame_color = styles.WEEK_TABLE_TODAY_GREEN.lstrip("#")
+    frame_color = styles.TODAY_FRAME.lstrip("#")
     target = (
         int(frame_color[0:2], 16),
         int(frame_color[2:4], 16),
@@ -1960,14 +2002,20 @@ def test_funds_block_carries_balance_to_next_day(qt_app, store):
     assert view.value_text("payments") == "0,00"
     assert view.value_text("balance") == "600,00"
 
-    # Дата блоков «Поступление»/«Оплата» идёт за датой сводки.
-    assert window.receipts_view.incoming.current_date() == date(2026, 10, 28)
-    assert window.receipts_view.outgoing.current_date() == date(2026, 10, 28)
+    # v0.27.6: даты плашек независимы — «Сводка» не тянет за собой
+    # блоки «Поступление»/«Оплата».
+    window.receipts_view.incoming.set_date(date(2026, 10, 20))
+    window.receipts_view.outgoing.set_date(date(2026, 10, 20))
+    view.date_edit.setDate(QDate(2026, 10, 28))
+    qt_app.processEvents()
+    assert view.current_date() == date(2026, 10, 28)
+    assert window.receipts_view.incoming.current_date() == date(2026, 10, 20)
+    assert window.receipts_view.outgoing.current_date() == date(2026, 10, 20)
 
-    # И наоборот: смена даты в блоке переставляет дату сводки.
+    # И наоборот: смена даты в блоке не переставляет дату «Сводки».
     window.receipts_view.incoming.set_date(date(2026, 10, 29))
     qt_app.processEvents()
-    assert view.current_date() == date(2026, 10, 29)
+    assert view.current_date() == date(2026, 10, 28)
     assert view.value_text("funds") == "600,00"
     window.close()
 

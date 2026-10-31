@@ -205,7 +205,8 @@ class TodayFrameCalendar(QCalendarWidget):
     """Календарь, в котором сегодняшняя дата обведена рамкой (v0.27.5).
 
     Стиль Windows не выделяет текущий день вовсе, поэтому рамку
-    рисуем сами — цветом текущей даты из таблиц (салатовым).
+    рисуем сами — общим для всех календарей цветом
+    ``styles.TODAY_FRAME``.
     """
 
     def paintCell(self, painter, rect, day):  # noqa: N802 - Qt API
@@ -213,7 +214,7 @@ class TodayFrameCalendar(QCalendarWidget):
         if day != QDate.currentDate():
             return
         painter.save()
-        painter.setPen(QPen(QColor(styles.WEEK_TABLE_TODAY_GREEN), 2))
+        painter.setPen(QPen(QColor(styles.TODAY_FRAME), 2))
         painter.setBrush(Qt.BrushStyle.NoBrush)
         # Рамка внутри ячейки: вплотную к краю она срезается соседями.
         painter.drawRect(rect.adjusted(1, 1, -1, -1))

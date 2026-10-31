@@ -685,14 +685,20 @@ class PaymentDatesCalendar(QWidget):
                 self._grid.addWidget(button, row, column)
 
     def _paint(self, button: QPushButton, day: date) -> None:
-        """Отмеченный день — красный (v0.24.0)."""
+        """Отмеченный день — красный, сегодняшний — в рамке.
+
+        v0.27.6: текущая дата обводится во всех календарях программы.
+        """
 
         marked = day.isoformat() in self._marked
-        button.setStyleSheet(
-            f"background:{styles.WEEK_TABLE_MARKED_RED};font-weight:700"
-            if marked
-            else ""
-        )
+        rules = []
+        if marked:
+            rules.append(
+                f"background:{styles.WEEK_TABLE_MARKED_RED};font-weight:700"
+            )
+        if day == date.today():
+            rules.append(f"border:2px solid {styles.TODAY_FRAME}")
+        button.setStyleSheet(";".join(rules))
         button.setToolTip(
             "Отмечено: ячейка в таблице красная"
             if marked
@@ -1608,13 +1614,9 @@ class ReceiptsView(QWidget):
         root.addWidget(left, stretch=3 if summary_widget is not None else 1)
 
         # --- справа на всю высоту — «Сводка» ---
-        # v0.22.1: дата блоков и дата «Сводки» — одна: смена даты в
-        # блоке переставляет сводку, смена даты в сводке — блоки.
-        self._syncing_date = False
-        for block in self.blocks:
-            block.date_edit.dateChanged.connect(
-                lambda *_args, source=block: self._on_block_date_changed(source)
-            )
+        # v0.27.6: даты платёжек независимы (просьба пользователя) —
+        # смена даты в «Поступлении» не переставляет «Оплату» и
+        # «Сводку», и наоборот. Раньше они были одной датой (v0.22.1).
         if summary_widget is not None:
             # Ignored по горизонтали: сводка не должна отжимать блоки
             # влево — ширину держим долями раскладки (3 : 1).
@@ -1636,17 +1638,6 @@ class ReceiptsView(QWidget):
         for block in self.blocks:
             block.set_date(day)   # каждый блок тянет за собой «Сводку»
         self.refresh()
-
-    def _on_block_date_changed(self, source: MoneyBlock) -> None:
-        """Смена даты в блоке: «Сводка» идёт на ту же дату (v0.22.1)."""
-
-        if self._syncing_date or self.summary_widget is None:
-            return
-        self._syncing_date = True
-        try:
-            self.summary_widget.set_date(source.current_date())
-        finally:
-            self._syncing_date = False
 
     # ------------------------------------------------------- прочие виды оплат
     def _incoming_rows(self) -> list[str]:
