@@ -107,7 +107,13 @@ class DeliveryDialog(QDialog):
         self.saved_due_date: date | None = None
         self.changed = False
 
-        self.setWindowTitle("Поставка")
+        # v0.27.3: в шапке — наименование поставщика (просьба
+        # пользователя): окно открывается из таблицы, и по заголовку
+        # сразу видно, чья это поставка.
+        title = "Поставка"
+        if self.supplier is not None:
+            title = f"{title} — {self.supplier.name}"
+        self.setWindowTitle(title)
         self.setModal(True)
         self.setMinimumWidth(560)
 

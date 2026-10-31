@@ -291,7 +291,10 @@ class SummaryView(QWidget):
             "debt_total",
             calc.supplier_debt_total_on_week(data, on_date, include_archived),
         )
-        self._set_value("debt_week", debt.week)
+        # v0.27.3: «Задолженность на неделе» = долги со сроком внутри
+        # недели **плюс** просроченная задолженность (просьба
+        # пользователя): просрочку всё равно платить на этой неделе.
+        self._set_value("debt_week", debt.week + debt.late)
         self._set_value("debt_late", debt.late)
         for index, week in enumerate(plan, start=1):
             key = f"plan_{index}"

@@ -623,6 +623,11 @@ class MainWindow(QMainWindow):
     def open_operations_journal(self, kind: str, counterparty_id: str) -> None:
         """Окно «Операции контрагента» по кнопке «Операции и долги»."""
 
+        # v0.27.3: открытые раньше журналы сворачиваем — иначе они
+        # перекрывают друг друга и не видно, чей журнал открыт последним.
+        for previous in self._journal_dialogs:
+            if previous.isVisible():
+                previous.showMinimized()
         dialog = OperationsJournalDialog(
             self.store,
             kind,

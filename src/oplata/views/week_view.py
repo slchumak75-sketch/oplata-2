@@ -197,15 +197,24 @@ class WeekView(QWidget):
         # v0.16.0: у поставщиков три итоговых столбца — «просрочено»
         # (срок оплаты уже прошёл), «на сегодня» и «за неделю».
         self.lead_columns = 3 if kind == "supplier" else 1
+        # v0.27.3: у поставщиков справа от названия — узкая колонка
+        # условий: «П» — предоплата, «Р» — реализация, иначе срок
+        # отсрочки в днях (просьба пользователя). Итоговые колонки
+        # при этом сдвигаются вправо на одну; у покупателей колонки нет.
+        self.lead_offset = 1 if kind == "supplier" else 0
         # v0.18.0: в таблице шесть дней — без воскресенья. Седьмая
         # колонка съедала место, и сумма «88 888,88» не влезала.
         # Расчёты при этом по-прежнему идут по полной неделе (пн–вс).
         self.table_days = TABLE_DAYS
         self.column_count = (
-            1 + self.lead_columns + self.table_days * self.columns_per_day
+            1
+            + self.lead_offset
+            + self.lead_columns
+            + self.table_days * self.columns_per_day
         )
-        self.separator_after_cols = {self.lead_columns} | {
-            self.lead_columns + (day_index + 1) * self.columns_per_day
+        lead_last = self.lead_offset + self.lead_columns
+        self.separator_after_cols = {lead_last} | {
+            lead_last + (day_index + 1) * self.columns_per_day
             for day_index in range(self.table_days - 1)
         }
         # Ширины выросли вместе со шрифтом (+30%, v0.12.0): колонкам дней
@@ -216,11 +225,13 @@ class WeekView(QWidget):
         # убрали, и освободившееся место делим между днями.
         self.base_widths = (
             [200]
+            + ([46] if self.lead_offset else [])
             + [110] * self.lead_columns
             + [92] * (self.table_days * self.columns_per_day)
         )
         self.min_widths = (
             [170]
+            + ([40] if self.lead_offset else [])
             + [90] * self.lead_columns
             + [72] * (self.table_days * self.columns_per_day)
         )
@@ -268,6 +279,11 @@ class WeekView(QWidget):
         # «Реализация» у покупателя), чтобы оно не пропало после того,
         # как одинарный клик стал открывать журнал операций (v0.13.0).
         self.table.itemDoubleClicked.connect(self._on_item_double_clicked)
+        # v0.27.3: двойной клик убран (просьба пользователя), поэтому
+        # «Поставку»/«Реализацию» открывает правый клик по строке —
+        # иначе к окну не осталось бы ни одного способа.
+        self.table.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
+        self.table.customContextMenuRequested.connect(self._on_context_menu)
         self.table.itemChanged.connect(self._on_item_changed)
         # v0.23.1: закреплённая шапка — три строки шапки и строка
         # «ВСЕГО» лежат в отдельной таблице поверх основной: при
@@ -447,13 +463,33 @@ class WeekView(QWidget):
             self.on_open_card(str(counterparty_id))
 
     def _on_item_double_clicked(self, item: QTableWidgetItem) -> None:
-        """Двойной клик по контрагенту: «Поставка»/«Реализация»."""
+        """v0.27.3: двойной клик больше ничего не открывает.
+
+        Раньше он открывал «Поставку»/«Реализацию», но по просьбе
+        пользователя двойной клик убран — окно открывается правой
+        кнопкой мыши. Метод оставлен: сигнал подключён, и пустой
+        обработчик нагляднее, чем снятое подключение.
+        """
+
+        _ = item
+
+    def _on_context_menu(self, position) -> None:
+        """Правый клик по строке контрагента: «Поставка»/«Реализация».
+
+        v0.27.3: вместо двойного клика, который убран по просьбе
+        пользователя. Работает по любой ячейке строки — как раньше
+        двойной клик по имени.
+        """
 
         if self.read_only:  # v0.18.0: только просмотр
             return
-        if item.column() != 0 or item.row() < FIRST_DATA_ROW:
+        item = self.table.itemAt(position)
+        if item is None or item.row() < FIRST_DATA_ROW:
             return
-        counterparty_id = item.data(Qt.ItemDataRole.UserRole)
+        name_item = self.table.item(item.row(), 0)
+        if name_item is None:
+            return
+        counterparty_id = name_item.data(Qt.ItemDataRole.UserRole)
         if not counterparty_id:
             return
         if self.kind == "supplier" and self.on_open_delivery is not None:
@@ -599,10 +635,25 @@ class WeekView(QWidget):
     def _day_column(self, day_index: int, subcolumn_index: int) -> int:
         return (
             1
+            + self.lead_offset
             + self.lead_columns
             + day_index * self.columns_per_day
             + subcolumn_index
         )
+
+    @staticmethod
+    def _conditions_text(partner: Counterparty) -> str:
+        """Условия поставщика для узкой колонки (v0.27.3).
+
+        «П» — предоплата, «Р» — реализация (бессрочный долг), иначе —
+        срок отсрочки в днях.
+        """
+
+        if partner.prepayment:
+            return "П"
+        if partner.realization:
+            return "Р"
+        return str(partner.deferment_days)
 
     def _update_calculated_cells(self) -> None:
         """Пересчитать Долг, «Итого»/«за неделю», ВСЕГО и тулбар без перестройки."""
@@ -639,9 +690,15 @@ class WeekView(QWidget):
                 if self.kind == "supplier":
                     # v0.22.1: порядок столбцов — «Итого», «просрочено»,
                     # «за неделю».
-                    self._set_cell_text(row, 1, _money_text(total))
-                    self._set_cell_text(row, 2, _money_text(late))
-                    self._set_cell_text(row, 3, _money_text(week))
+                    self._set_cell_text(
+                        row, 1 + self.lead_offset, _money_text(total)
+                    )
+                    self._set_cell_text(
+                        row, 2 + self.lead_offset, _money_text(late)
+                    )
+                    self._set_cell_text(
+                        row, 3 + self.lead_offset, _money_text(week)
+                    )
                 else:
                     # Покупатели: «Всего» = Реализация − Оплата (v0.15.0).
                     partner = self._partners[r]
@@ -665,9 +722,15 @@ class WeekView(QWidget):
                     ).values(),
                     ZERO,
                 )
-                self._set_cell_text(TOTAL_ROW, 1, _money_text(total_all))
-                self._set_cell_text(TOTAL_ROW, 2, _money_text(total_late))
-                self._set_cell_text(TOTAL_ROW, 3, _money_text(total_week))
+                self._set_cell_text(
+                    TOTAL_ROW, 1 + self.lead_offset, _money_text(total_all)
+                )
+                self._set_cell_text(
+                    TOTAL_ROW, 2 + self.lead_offset, _money_text(total_late)
+                )
+                self._set_cell_text(
+                    TOTAL_ROW, 3 + self.lead_offset, _money_text(total_week)
+                )
             else:
                 self._set_cell_text(TOTAL_ROW, 1, _money_text(total_customer))
             for i, day in enumerate(days):
@@ -854,7 +917,7 @@ class WeekView(QWidget):
             return day_body_bg(day)
 
         # Строка 0: месяцы (неделя может захватывать 1–2 месяца)
-        lead = self.lead_columns
+        lead = self.lead_columns + self.lead_offset
         put(0, 0, "")
         table.setSpan(0, 0, 1, 1 + lead)
         col = 1 + lead
@@ -871,12 +934,16 @@ class WeekView(QWidget):
         # v0.14.0: «ПРОСРОЧЕН.» и «ЗАДОЛЖ.» — разные ячейки, без
         # объединения: каждая подпись стоит над своей колонкой.
         if self.kind == "supplier":
+            # v0.27.3: узкая колонка условий входит в объединённую шапку
+            # названия: своей подписи у неё нет, смысл — в подзаголовке
+            # «Отср.» строкой ниже.
+            table.setSpan(1, 0, 1, 1 + self.lead_offset)
             # v0.16.0: три итоговые колонки объединены одной шапкой
             # «ЗАДОЛЖЕННОСТЬ», а их смысловые подписи стоят строкой
             # ниже («Итого», «просрочено», «за неделю» — v0.22.1).
-            put(1, 1, "ЗАДОЛЖЕННОСТЬ", bold=True, size=styles.fs(12),
-                center=False)
-            table.setSpan(1, 1, 1, lead)
+            put(1, 1 + self.lead_offset, "ЗАДОЛЖЕННОСТЬ", bold=True,
+                size=styles.fs(12), center=False)
+            table.setSpan(1, 1 + self.lead_offset, 1, self.lead_columns)
         else:
             # v0.15.0: столбца «просрочено» у покупателей нет.
             put(1, 1, "ЗАДОЛЖ.", bold=True, size=styles.fs(12))
@@ -889,11 +956,15 @@ class WeekView(QWidget):
         # Строка 2: подзаголовки; выходные розовые, сегодня здесь без заливки.
         put(2, 0, "")
         if self.kind == "supplier":
+            # v0.27.3: узкая колонка условий — «П»/«Р»/дней отсрочки.
+            put(2, 1, "Отср.", bold=True, size=styles.fs(12))
             # v0.22.1: вместо «на сегодня» — «Итого», оно слева от
             # «просрочено».
-            put(2, 1, "Итого", bold=True, size=styles.fs(12))
-            put(2, 2, "просрочено", bold=True, size=styles.fs(12))
-            put(2, 3, "за неделю", bold=True, size=styles.fs(12))
+            put(2, 1 + self.lead_offset, "Итого", bold=True, size=styles.fs(12))
+            put(2, 2 + self.lead_offset, "просрочено", bold=True,
+                size=styles.fs(12))
+            put(2, 3 + self.lead_offset, "за неделю", bold=True,
+                size=styles.fs(12))
         else:
             # v0.15.0: у покупателей итоговая колонка одна — «Всего».
             put(2, 1, "Всего", bold=True, size=styles.fs(12))
@@ -942,10 +1013,18 @@ class WeekView(QWidget):
         put(TOTAL_ROW, 0, "ВСЕГО", bold=True, center=False,
             size=styles.fs(12))
         total_columns = (
-            ((1, total_all), (2, total_late), (3, total_week))
+            (
+                (1 + self.lead_offset, total_all),
+                (2 + self.lead_offset, total_late),
+                (3 + self.lead_offset, total_week),
+            )
             if self.kind == "supplier"
             else ((1, total_customer_debt),)
         )
+        # v0.27.3: в колонке условий у «ВСЕГО» пусто — суммы условий
+        # не бывает.
+        if self.lead_offset:
+            put(TOTAL_ROW, 1, "", bold=True, size=styles.fs(12))
         for col_idx, amount in total_columns:
             cell = put(TOTAL_ROW, col_idx, _money_text(amount), bold=True,
                        size=styles.fs(12))
@@ -992,8 +1071,23 @@ class WeekView(QWidget):
             # «Итого», «просрочено» / задолженность «за неделю» (calc);
             # у покупателей — одна колонка «Всего» = Реализация − Оплата.
             if self.kind == "supplier":
+                # v0.27.3: условия поставщика — узкая колонка справа от
+                # названия. Подсказка расшифровывает «П» и «Р».
+                conditions = put(
+                    row, 1, self._conditions_text(partner), bold=True,
+                    size=styles.fs(12),
+                )
+                conditions.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
+                conditions.setToolTip(
+                    "Условия: П — предоплата, Р — реализация, "
+                    "число — срок отсрочки в днях"
+                )
                 # v0.22.1: «Итого» стоит слева от «просрочено».
-                lead_amounts = ((1, total), (2, late), (3, week))
+                lead_amounts = (
+                    (1 + self.lead_offset, total),
+                    (2 + self.lead_offset, late),
+                    (3 + self.lead_offset, week),
+                )
             else:
                 lead_amounts = ((1, customer_debts[r]),)
             for col_idx, amount in lead_amounts:
@@ -1094,7 +1188,9 @@ class WeekView(QWidget):
         # а не у фиксированного индекса: тот указывал на итоговую
         # колонку, и шрифт сумм подбирался слишком крупным —
         # «88 888,88» не влезало.
-        self._fit_amount_font(min(widths[1 + self.lead_columns:]))
+        self._fit_amount_font(
+            min(widths[1 + self.lead_offset + self.lead_columns:])
+        )
 
     def _fit_amount_font(self, day_column_width: int) -> None:
         """Подобрать размер шрифта сумм так, чтобы «88 888,88» влезало целиком."""

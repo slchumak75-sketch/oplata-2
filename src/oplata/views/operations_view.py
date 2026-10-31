@@ -245,7 +245,10 @@ class OperationsView(QWidget):
         elif self.counterparty_kind == "customer":
             # v0.23.2: в журнале покупателя колонок «Документ» и
             # «Комментарий» нет (просьба пользователя).
-            headers = ["Тип", "Контрагент", "Дата", "Сумма"]
+            # v0.27.3: убрана и колонка «Контрагент» — журнал открывают
+            # по конкретному покупателю, его имя есть в шапке.
+            headers = ["Тип", "Дата", "Сумма"]
+            self.money_column = 2
         self.table = QTableWidget(0, len(headers))
         # v0.26.5: без фокуса — без рамки на нажатой ячейке.
         self.table.setFocusPolicy(Qt.FocusPolicy.NoFocus)
@@ -291,7 +294,7 @@ class OperationsView(QWidget):
             # скроллинга нет; шапка и значения — по центру (просьба
             # пользователя).
             header.setMinimumSectionSize(70)
-            for column, width in ((0, 110), (1, 180), (2, 120), (3, 120)):
+            for column, width in ((0, 110), (1, 140), (2, 140)):
                 self.table.setColumnWidth(column, width)
             for column in range(len(headers)):
                 header.setSectionResizeMode(column, QHeaderView.ResizeMode.Stretch)
@@ -557,9 +560,9 @@ class OperationsView(QWidget):
                 ]
             elif self.counterparty_kind == "customer":
                 # v0.23.2: без «Документа» и «Комментария».
+                # v0.27.3: без «Контрагента» — имя покупателя в шапке.
                 values = [
                     op.kind,
-                    supplier_names.get(op.counterparty_id, ""),
                     _display_date(op.date),
                     _display_amount(op.amount),
                 ]

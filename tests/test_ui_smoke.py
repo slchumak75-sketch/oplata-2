@@ -196,7 +196,10 @@ def test_week_table_income_and_payment_input(qt_app, store):
     assert bg_name(FIRST_DATA_ROW, _DAY(view, 5, 0)) is None  # рабочая суббота
     # v0.18.0: воскресенье из таблицы убрали — колонок дней шесть.
     assert view.table_days == 6
-    assert table.columnCount() == 1 + view.lead_columns + 6 * view.columns_per_day
+    # v0.27.3: + узкая колонка условий поставщика (lead_offset).
+    assert table.columnCount() == (
+        1 + view.lead_offset + view.lead_columns + 6 * view.columns_per_day
+    )
     assert bg_name(FIRST_DATA_ROW, 3) is None  # обычный понедельник без заливки
     assert view.date_edit.minimumWidth() >= 138  # год не под стрелкой календаря
     assert view.date_edit.calendarPopup()
@@ -263,9 +266,13 @@ def test_delivery_dialog_saves_and_debt_shows_in_week(qt_app, store):
     window.suppliers_view.goto_date(date(2026, 11, 5))
     table = window.suppliers_view.table
     ggg_row = 4 + [s.name for s in store.data.suppliers].index("ггг")
+    table_lead_offset = window.suppliers_view.lead_offset
     assert table.item(ggg_row, _DAY(window.suppliers_view, 3, 1)).text() == "88 888,88"  # Долг чт
-    assert table.item(ggg_row, 3).text() == "88 888,88"  # задолженность за неделю
-    assert table.item(3, 3).text() == "88 888,88"  # ВСЕГО за неделю
+    # v0.27.3: итоговые колонки сдвинуты на узкую колонку условий
+    # («П»/«Р»/отсрочка), поэтому их номера считаем от lead_offset.
+    week_col = 3 + table_lead_offset
+    assert table.item(ggg_row, week_col).text() == "88 888,88"  # за неделю
+    assert table.item(3, week_col).text() == "88 888,88"  # ВСЕГО за неделю
     assert window.suppliers_view.right_value_label.text() == "88 888,88 руб."
 
     # v0.27.2: оплата уменьшает «Долг» — в ячейке дня остаётся только
@@ -274,9 +281,125 @@ def test_delivery_dialog_saves_and_debt_shows_in_week(qt_app, store):
     payment_cell = table.item(ggg_row, _DAY(window.suppliers_view, 3, 2))  # Оплата чт 05.11
     payment_cell.setText("88 888,88")
     assert table.item(ggg_row, _DAY(window.suppliers_view, 3, 1)).text() == ""  # долг погашен
-    assert table.item(ggg_row, 3).text() == ""  # «за неделю» погашено
-    assert table.item(3, 3).text() == ""  # ВСЕГО за неделю
+    assert table.item(ggg_row, week_col).text() == ""  # «за неделю» погашено
+    assert table.item(3, week_col).text() == ""  # ВСЕГО за неделю
     assert window.suppliers_view.right_value_label.text() == "0,00 руб."
+    window.close()
+
+
+def test_operations_journal_shows_name_and_minimizes_previous(qt_app, store):
+    """v0.27.3: имя контрагента в шапке журнала, прошлый журнал свёрнут.
+
+    Несколько журналов легко перепутать, поэтому в шапке стоит имя
+    контрагента, а ранее открытый журнал сворачивается — иначе окна
+    перекрывают друг друга.
+    """
+
+    from PySide6.QtWidgets import QLabel
+
+    from oplata.app import MainWindow
+    from oplata.models import Counterparty
+
+    store.data.suppliers[:] = [
+        Counterparty(name="Первый"),
+        Counterparty(name="Второй"),
+    ]
+    window = MainWindow(store)
+    first_id, second_id = (item.id for item in store.data.suppliers)
+
+    def caption(dialog) -> list[str]:
+        return [label.text() for label in dialog.findChildren(QLabel)]
+
+    window.open_operations_journal("supplier", first_id)
+    qt_app.processEvents()
+    first = window._journal_dialogs[-1]
+    assert "Первый" in caption(first)
+    assert not first.isMinimized()
+
+    # Второй журнал: предыдущий сворачивается, новый — на экране.
+    window.open_operations_journal("supplier", second_id)
+    qt_app.processEvents()
+    second = window._journal_dialogs[-1]
+    assert "Второй" in caption(second)
+    assert not second.isMinimized()
+    assert first.isMinimized()  # v0.27.3: прошлый журнал свёрнут
+    window.close()
+
+
+def test_summary_week_debt_includes_overdue(qt_app, store):
+    """v0.27.3: «Задолженность на неделе» = неделя + просроченная.
+
+    Просроченный долг всё равно платить на этой неделе, поэтому он
+    входит в «задолженность на неделе» (просьба пользователя).
+    """
+
+    from datetime import date
+    from decimal import Decimal
+
+    from PySide6.QtCore import QDate
+
+    from oplata import calc
+    from oplata.app import MainWindow
+    from oplata.models import KIND_INCOME, Counterparty, Operation
+
+    supplier = Counterparty(name="Просрочка")
+    store.data.suppliers.append(supplier)
+    # Срок 20.10 уже прошёл (просрочка), срок 29.10 — внутри недели.
+    for day, amount in (("2026-10-20", "200"), ("2026-10-29", "500")):
+        store.data.operations.append(
+            Operation(
+                kind=KIND_INCOME,
+                counterparty_id=supplier.id,
+                date=day,
+                due_date=day,
+                amount=amount,
+            )
+        )
+
+    window = MainWindow(store)
+    view = window.summary_view
+    view.date_edit.setDate(QDate(2026, 10, 27))
+    view.refresh()
+    qt_app.processEvents()
+
+    totals = calc.debt_totals(store.data, date(2026, 10, 27))
+    assert totals.late == Decimal("200.00")   # просрочено
+    assert totals.week == Decimal("500.00")   # срок внутри недели
+    assert view.value_text("debt_week") == "700,00"   # 500 + 200
+    assert view.value_text("debt_late") == "200,00"   # отдельная строка
+    window.close()
+
+
+def test_supplier_table_shows_conditions_column(qt_app, store):
+    """v0.27.3: узкая колонка условий справа от названия поставщика.
+
+    Число — срок отсрочки в днях, «П» — предоплата, «Р» — реализация.
+    """
+
+    from datetime import date
+
+    from oplata.app import MainWindow
+    from oplata.models import Counterparty
+
+    store.data.suppliers[:] = [
+        Counterparty(name="Обычный", deferment_days=30),
+        Counterparty(name="Предоплата", prepayment=True),
+        Counterparty(name="Реализация", realization=True),
+    ]
+
+    window = MainWindow(store)
+    view = window.suppliers_view
+    view.goto_date(date(2026, 10, 26))
+    table = view.table
+
+    assert table.item(2, 1).text() == "Отср."  # подпись узкой колонки
+    assert table.item(4, 1).text() == "30"     # срок отсрочки
+    assert table.item(5, 1).text() == "П"      # предоплата
+    assert table.item(6, 1).text() == "Р"      # реализация
+    # Итоговые колонки сдвинуты вправо: «Итого» стоит после условий.
+    assert table.item(2, 1 + view.lead_offset).text() == "Итого"
+    # У покупателей колонки условий нет — сдвига тоже.
+    assert window.customers_view.lead_offset == 0
     window.close()
 
 
@@ -316,7 +439,8 @@ def test_early_payment_reduces_debt_in_day_cell(qt_app, store):
 
     # Оплаты ещё нет — в «Долге» вся сумма поставки.
     assert table.item(row, debt_col).text() == "100,00"
-    assert table.item(row, 1).text() == "100,00"      # «Итого»
+    total_col = 1 + window.suppliers_view.lead_offset
+    assert table.item(row, total_col).text() == "100,00"      # «Итого»
 
     # Досрочная оплата: через 10 дней после прихода, задолго до срока.
     store.data.operations.append(
@@ -331,7 +455,7 @@ def test_early_payment_reduces_debt_in_day_cell(qt_app, store):
     table = window.suppliers_view.table
 
     assert table.item(row, debt_col).text() == "30,00"    # остаток долга
-    assert table.item(row, 1).text() == "30,00"           # «Итого» тот же
+    assert table.item(row, total_col).text() == "30,00"       # «Итого» тот же
     assert table.item(3, debt_col).text() == "30,00"      # строка «ВСЕГО»
     window.close()
 
@@ -664,7 +788,8 @@ def test_realization_dialog_saves_without_due_date(qt_app, store):
         store, customer.id, preset_date=date(2026, 10, 27)
     )
     labels = [label.text() for label in dialog.findChildren(QLabel)]
-    assert dialog.windowTitle() == "Реализация"
+    # v0.27.3: в шапке окна — наименование покупателя.
+    assert dialog.windowTitle() == "Реализация — Покупатель Б"
     assert "Дата реализации *" in labels
     assert not any("СРОК ОПЛАТЫ" in text.upper() for text in labels)
     assert not hasattr(dialog, "due_label")
@@ -1385,13 +1510,17 @@ def test_week_table_overdue_and_debt_headers_are_separate(qt_app, store):
     window.show()
     qt_app.processEvents()
     table = window.suppliers_view.table
-    assert table.item(1, 1).text() == "ЗАДОЛЖЕННОСТЬ"
+    offset = window.suppliers_view.lead_offset
+    assert table.item(1, 1 + offset).text() == "ЗАДОЛЖЕННОСТЬ"
     # Ячейки объединены: подписи столбцов стоят строкой ниже.
-    assert table.columnSpan(1, 1) == 3
+    assert table.columnSpan(1, 1 + offset) == 3
+    # v0.27.3: название поставщика занимает и колонку условий.
+    assert table.columnSpan(1, 0) == 1 + offset
     # v0.22.1: «Итого» стоит слева от «просрочено» (вместо «на сегодня»).
-    assert table.item(2, 1).text() == "Итого"
-    assert table.item(2, 2).text() == "просрочено"
-    assert table.item(2, 3).text() == "за неделю"
+    assert table.item(2, 1).text() == "Отср."  # v0.27.3: условия поставщика
+    assert table.item(2, 1 + offset).text() == "Итого"
+    assert table.item(2, 2 + offset).text() == "просрочено"
+    assert table.item(2, 3 + offset).text() == "за неделю"
     window.close()
 
 
@@ -1842,7 +1971,8 @@ def test_supplier_click_opens_operations_journal(qt_app, store, monkeypatch):
 
     Раньше клик открывал окно «Поставка» — по просьбе пользователя
     поставщик теперь ведёт себя так же, как покупатель: клик — журнал
-    операций, двойной клик — окно «Поставка».
+    операций. v0.27.3: двойной клик убран, окно «Поставка» открывает
+    правый клик по строке.
     """
 
     from datetime import date
@@ -1875,8 +2005,18 @@ def test_supplier_click_opens_operations_journal(qt_app, store, monkeypatch):
     assert opened == [("supplier", supplier_id)]
     assert deliveries == []
 
-    # Двойной клик по-прежнему открывает окно «Поставка».
+    # v0.27.3: двойной клик больше ничего не открывает, а окно
+    # «Поставка» — правый клик по строке контрагента.
+    from PySide6.QtCore import QPoint
+
     view._on_item_double_clicked(table.item(row, 0))
+    assert deliveries == []
+    view._on_context_menu(
+        QPoint(
+            table.columnViewportPosition(0) + 5,
+            table.rowViewportPosition(row) + 5,
+        )
+    )
     assert deliveries == [supplier_id]
     window.close()
 
@@ -2145,14 +2285,14 @@ def test_week_buttons_use_same_font_as_today(qt_app, store):
     window.close()
 
 
-def test_payment_card_opens_for_editing_by_double_click(qt_app, store):
-    """v0.25.1: двойной клик по своему виду оплаты открывает карточку,
-    правая кнопка — меню; по служебной строке («Поставщики») — нет.
+def test_payment_card_opens_by_right_click(qt_app, store):
+    """v0.27.3: карточку вида оплаты открывает правый клик.
 
-    v0.26.0: проверка идёт настоящими событиями мыши, а не сигналами
-    таблицы. При AllEditTriggers первый клик открывает в ячейке ввод,
-    поэтому сигнал cellDoubleClicked до обработчика не доходил и
-    карточка на самом деле не открывалась.
+    Двойной клик левой клавишей убран по просьбе пользователя —
+    карточка осталась на правой кнопке (v0.26.3). Проверка идёт
+    настоящими событиями мыши: при AllEditTriggers сигнал
+    cellDoubleClicked до обработчика не доходил, и по нему нельзя
+    судить, открылась карточка или нет.
     """
 
     from PySide6.QtCore import QPoint, Qt
@@ -2188,9 +2328,10 @@ def test_payment_card_opens_for_editing_by_double_click(qt_app, store):
         )
 
     row = block.row_keys.index("other:Аренда")
-    # Клик по названию, по сумме и по дню: везде карточка и меню.
+    # Клик по названию, по сумме и по дню: везде карточка.
     for column in (0, 1, 2):
         opened.clear()
+        # v0.27.3: двойной клик больше не открывает карточку.
         QTest.mouseDClick(
             table.viewport(),
             Qt.MouseButton.LeftButton,
@@ -2198,8 +2339,9 @@ def test_payment_card_opens_for_editing_by_double_click(qt_app, store):
             point(row, column),
         )
         qt_app.processEvents()
-        assert opened == ["other:Аренда"], f"двойной клик, колонка {column}"
+        assert opened == [], f"двойной клик, колонка {column}"
         opened.clear()
+        # v0.26.3: правый клик открывает ту же карточку.
         # v0.26.3: правый клик открывает ту же карточку.
         QTest.mouseClick(
             table.viewport(),
@@ -2228,6 +2370,21 @@ def test_payment_card_opens_for_editing_by_double_click(qt_app, store):
     QTest.qWait(700)
     qt_app.processEvents()
     assert popups == []
+
+    # v0.27.3: журнал открывается только по названию (первый столбец) —
+    # клик по сумме и по дню остаётся вводом, журнал не показывается.
+    for column in (1, 2):
+        popups.clear()
+        QTest.mouseClick(
+            table.viewport(),
+            Qt.MouseButton.LeftButton,
+            Qt.KeyboardModifier.NoModifier,
+            point(row, column),
+        )
+        QTest.qWait(700)
+        qt_app.processEvents()
+        assert popups == [], f"журнал по клику на колонку {column}"
+    popups.clear()
 
     # Один клик по названию — журнал открывается, но с задержкой
     # (v0.26.2): первый клик двойного больше не показывает журнал.
@@ -2797,10 +2954,11 @@ def test_supplier_journal_shows_delivery_columns(qt_app, store):
     from oplata.views.operations_view import OperationsView
 
     cust_view = OperationsView(store, counterparty_kind="customer")
-    assert cust_view.table.columnCount() == 4
+    # v0.27.3: колонка «Контрагент» убрана — осталось три.
+    assert cust_view.table.columnCount() == 3
     assert [
-        cust_view.table.horizontalHeaderItem(col).text() for col in range(4)
-    ] == ["Тип", "Контрагент", "Дата", "Сумма"]
+        cust_view.table.horizontalHeaderItem(col).text() for col in range(3)
+    ] == ["Тип", "Дата", "Сумма"]
     window.close()
 
 
@@ -2841,22 +2999,23 @@ def test_supplier_total_column_shows_whole_debt(qt_app, store, monkeypatch):
     row = 4  # первая строка контрагента
     table = view.table
 
+    offset = view.lead_offset  # v0.27.3: узкая колонка условий
     view.goto_date(date(2026, 10, 26))
-    assert table.item(1, 1).text() == "ЗАДОЛЖЕННОСТЬ"
-    assert table.item(2, 1).text() == "Итого"
-    assert table.item(2, 2).text() == "просрочено"
-    assert table.item(2, 3).text() == "за неделю"
+    assert table.item(1, 1 + offset).text() == "ЗАДОЛЖЕННОСТЬ"
+    assert table.item(2, 1 + offset).text() == "Итого"
+    assert table.item(2, 2 + offset).text() == "просрочено"
+    assert table.item(2, 3 + offset).text() == "за неделю"
     # Итого — 700 + 900 + 150; просрочка — 150 (срок 20.10); за неделю
     # (26.10–01.11) — 700.
-    assert table.item(row, 1).text() == "1 750,00"
-    assert table.item(row, 2).text() == "150,00"
-    assert table.item(row, 3).text() == "700,00"
+    assert table.item(row, 1 + offset).text() == "1 750,00"
+    assert table.item(row, 2 + offset).text() == "150,00"
+    assert table.item(row, 3 + offset).text() == "700,00"
 
     # Следующая неделя: «Итого» то же, «за неделю» — срок 05.11.
     view.goto_date(date(2026, 10, 26) + timedelta(days=7))
-    assert table.item(row, 1).text() == "1 750,00"
-    assert table.item(row, 2).text() == "150,00"
-    assert table.item(row, 3).text() == "900,00"
+    assert table.item(row, 1 + offset).text() == "1 750,00"
+    assert table.item(row, 2 + offset).text() == "150,00"
+    assert table.item(row, 3 + offset).text() == "900,00"
 
     # Наступил следующий день: просрочка выросла (150 + 700), «Итого»
     # не изменилось — это весь долг, а не только просроченный.
@@ -2867,8 +3026,8 @@ def test_supplier_total_column_shows_whole_debt(qt_app, store, monkeypatch):
 
     monkeypatch.setattr(week_view_module, "date", _NextDay)
     view.refresh()
-    assert table.item(row, 1).text() == "1 750,00"
-    assert table.item(row, 2).text() == "850,00"  # 150 + 700 просрочены
+    assert table.item(row, 1 + offset).text() == "1 750,00"
+    assert table.item(row, 2 + offset).text() == "850,00"  # 150 + 700 просрочены
     window.close()
 
 
@@ -2909,18 +3068,19 @@ def test_supplier_payment_reduces_overdue_first_then_week(qt_app, store, monkeyp
     table = view.table
     view.goto_date(date(2026, 10, 26))
 
-    assert table.item(row, 1).text() == "1 200,00"  # Итого (700 + 500)
-    assert table.item(row, 2).text() == "700,00"  # просрочено
-    assert table.item(row, 3).text() == "500,00"  # за неделю
+    offset = view.lead_offset  # v0.27.3: узкая колонка условий
+    assert table.item(row, 1 + offset).text() == "1 200,00"  # Итого (700+500)
+    assert table.item(row, 2 + offset).text() == "700,00"  # просрочено
+    assert table.item(row, 3 + offset).text() == "500,00"  # за неделю
 
     # Оплата 900: сначала гасит просрочку 700, остаток 200 — неделю.
     set_daily_operation(
         store.data, supplier.id, "2026-10-27", "Оплата", Decimal("900")
     )
     view.refresh()
-    assert table.item(row, 1).text() == "300,00"  # Итого: 1 200 − 900
-    assert table.item(row, 2).text() == ""  # просрочка погашена
-    assert table.item(row, 3).text() == "300,00"  # 500 − 200
+    assert table.item(row, 1 + offset).text() == "300,00"  # Итого: 1 200−900
+    assert table.item(row, 2 + offset).text() == ""  # просрочка погашена
+    assert table.item(row, 3 + offset).text() == "300,00"  # 500 − 200
 
     # Недоплата: оплата 100 вместо 900 — остаток просрочки переносится.
     store.data.operations[:] = [
@@ -2930,15 +3090,15 @@ def test_supplier_payment_reduces_overdue_first_then_week(qt_app, store, monkeyp
         store.data, supplier.id, "2026-10-20", "Оплата", Decimal("100")
     )
     view.refresh()
-    assert table.item(row, 1).text() == "1 100,00"  # Итого: 1 200 − 100
-    assert table.item(row, 2).text() == "600,00"  # 700 − 100
-    assert table.item(row, 3).text() == "500,00"  # оплата ушла в просрочку
+    assert table.item(row, 1 + offset).text() == "1 100,00"  # Итого: 1 200 − 100
+    assert table.item(row, 2 + offset).text() == "600,00"  # 700 − 100
+    assert table.item(row, 3 + offset).text() == "500,00"  # оплата ушла в просрочку
     # Следующая неделя (02.11–08.11): просрочка всё та же 600, а долг со
     # сроком 29.10 в эту неделю не попадает («за неделю» пусто).
     view.goto_date(date(2026, 10, 26) + timedelta(days=7))
-    assert table.item(row, 1).text() == "1 100,00"
-    assert table.item(row, 2).text() == "600,00"
-    assert table.item(row, 3).text() == ""
+    assert table.item(row, 1 + offset).text() == "1 100,00"
+    assert table.item(row, 2 + offset).text() == "600,00"
+    assert table.item(row, 3 + offset).text() == ""
     window.close()
 
 
@@ -2969,9 +3129,12 @@ def test_supplier_with_realization_never_shows_overdue(qt_app, store):
     view.refresh()
     # v0.22.1: «Итого» — вся задолженность, «просрочено» у «Реализации»
     # не бывает, срок 05.10 вне недели 26.10–01.11.
-    assert table.item(row, 1).text() == "400,00"
-    assert table.item(row, 2).text() == ""
-    assert table.item(row, 3).text() == ""
+    offset = view.lead_offset  # v0.27.3: узкая колонка условий
+    assert table.item(row, 1 + offset).text() == "400,00"
+    assert table.item(row, 2 + offset).text() == ""
+    assert table.item(row, 3 + offset).text() == ""
+    # v0.27.3: в узкой колонке у «Реализации» стоит «Р».
+    assert table.item(row, 1).text() == "Р"
     window.close()
 
 
@@ -3169,7 +3332,10 @@ def test_amount_font_is_chosen_to_fit_day_column(qt_app, store):
     # Воскресенье из таблицы убрали: дней шесть.
     assert view.table_days == TABLE_DAYS == 6
     assert view.table.columnCount() == (
-        1 + view.lead_columns + TABLE_DAYS * view.columns_per_day
+        1
+        + view.lead_offset
+        + view.lead_columns
+        + TABLE_DAYS * view.columns_per_day
     )
 
     def advance_for(pixel_size: int) -> int:
