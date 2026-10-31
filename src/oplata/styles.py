@@ -72,7 +72,7 @@ TABLE_CELL_RULES = (
     "QTableWidget::item:selected:focus,QTableView::item:selected:focus,"
     "QTableWidget::item:focus,QTableView::item:focus,"
     "QTableWidget::item:hover,QTableView::item:hover{"
-    "background:transparent;border:none;outline:none;"
+    f"background:{PANEL_BG};border:none;outline:none;"
     f"color:{TEXT}}}"
     "QTableWidget QLineEdit,QTableView QLineEdit{"
     "border:none;outline:none;background:#ffffff;"
@@ -96,7 +96,7 @@ WIDE_SCROLLBAR_ON_TABLE = (
     f"gridline-color:{TABLE_GRID};"
     # v0.27.0: выделение строки не заливается цветом — подсветка
     # всей строки после клика выглядела как артефакт.
-    "selection-background-color:transparent;"
+    f"selection-background-color:{PANEL_BG};"
     f"selection-color:{TEXT}}}"
     + WIDE_SCROLLBAR
     + TABLE_CELL_RULES
@@ -212,7 +212,7 @@ QTableWidget {{
     border-radius: 8px;
     gridline-color: {TABLE_GRID};
     /* v0.27.0: без заливки — см. WIDE_SCROLLBAR_ON_TABLE. */
-    selection-background-color: transparent;
+    selection-background-color: {PANEL_BG};
     selection-color: {TEXT};
 }}
 {TABLE_CELL_RULES}

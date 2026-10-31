@@ -2229,6 +2229,33 @@ def test_table_stylesheets_contain_cell_rules(qt_app):
         assert "outline" in sheet, f"{name}: не снят контур фокуса"
 
 
+def test_tables_selection_color_is_white(qt_app, store):
+    """v0.27.1: цвет выделения у таблиц — белый, а не системный синий.
+
+    Qt рисует линии и фон на текущей строке цветом ``QPalette.Highlight``.
+    Замер показал: QSS, заданный на самом виджете (``WIDE_SCROLLBAR_ON_TABLE``),
+    палитру не меняет — цвет оставался системным (``#308cc6``), и на
+    строке появлялись синие штрихи. Поэтому цвет задаётся напрямую.
+    """
+
+    from PySide6.QtGui import QPalette
+    from PySide6.QtWidgets import QAbstractItemView
+
+    from oplata.app import MainWindow
+    from oplata.widgets import disable_selection_color
+
+    window = MainWindow(store)
+    window.show()
+    qt_app.processEvents()
+    disable_selection_color(window)
+    tables = window.findChildren(QAbstractItemView)
+    assert tables, "в окне должны быть таблицы"
+    for table in tables:
+        color = table.palette().color(QPalette.ColorRole.Highlight)
+        assert color.name() == "#ffffff", f"{type(table).__name__}: {color.name()}"
+    window.close()
+
+
 def test_click_does_not_paint_selection_over_row(qt_app, store):
     """v0.27.0: клик по ячейке не меняет вид строки.
 

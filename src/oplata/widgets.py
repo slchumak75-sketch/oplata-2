@@ -5,7 +5,7 @@ from __future__ import annotations
 from decimal import Decimal, InvalidOperation
 
 from PySide6.QtCore import QDate, QEvent, QObject, Qt, QTimer
-from PySide6.QtGui import QColor, QFocusEvent
+from PySide6.QtGui import QColor, QFocusEvent, QPalette
 from PySide6.QtWidgets import (
     QStyledItemDelegate,    QAbstractItemView,
     QDateEdit,
@@ -248,6 +248,27 @@ class NoFocusItemDelegate(QStyledItemDelegate):
         option = QStyleOptionViewItem(option)
         option.state &= ~QStyle.StateFlag.State_HasFocus
         super().paint(painter, option, index)
+
+
+def disable_selection_color(root: "QWidget") -> None:
+    """Сделать цвет выделения невидимым у всех таблиц (v0.27.1).
+
+    Линии и фон на текущей (нажатой) строке Qt рисует цветом
+    ``QPalette.Highlight``. Замер показал: QSS, заданный **на самом
+    виджете**, его палитру не меняет — у таблиц с
+    ``WIDE_SCROLLBAR_ON_TABLE`` цвет выделения остаётся системным
+    (``#308cc6``, на Windows — синий), отсюда синие штрихи-артефакты.
+    Поэтому цвет задаётся напрямую, а не через QSS.
+    """
+
+    white = QColor("#ffffff")
+    text = QColor("#1c2733")
+    for table in root.findChildren(QAbstractItemView):
+        palette = table.palette()
+        palette.setColor(QPalette.ColorRole.Highlight, white)
+        palette.setColor(QPalette.ColorRole.HighlightedText, text)
+        table.setPalette(palette)
+        table.viewport().setPalette(palette)
 
 
 def disable_item_focus(root: "QWidget") -> None:

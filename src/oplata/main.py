@@ -27,7 +27,7 @@ def main(argv: list[str] | None = None) -> int:
     from . import __app_name__, __version__, styles
     from .app import MainWindow
     from .storage import DataStore
-    from .widgets import disable_item_focus
+    from .widgets import disable_item_focus, disable_selection_color
 
     app = QApplication(sys.argv[:1] + [a for a in argv if a != "--self-test"])
     app.setApplicationName(__app_name__)
@@ -43,6 +43,9 @@ def main(argv: list[str] | None = None) -> int:
     # v0.26.5: без фокуса у таблиц Qt не рисует рамку на нажатой
     # ячейке (артефакт после клика). Ввод по клику при этом работает.
     disable_item_focus(window)
+    # v0.27.1: цвет выделения таблиц задаётся напрямую — QSS на самом
+    # виджете его палитру не меняет (синие штрихи на строке).
+    disable_selection_color(window)
     # В заголовке окна видно роль — иначе непонятно, почему часть
     # вкладок и кнопок недоступна (v0.18.0).
     window.setWindowTitle(f"{__app_name__}  v{__version__} · {access.title}")
