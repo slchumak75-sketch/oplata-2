@@ -19,6 +19,7 @@ from datetime import date
 
 from PySide6.QtCore import QTimer, Qt
 from PySide6.QtWidgets import (
+    QApplication,
     QButtonGroup,
     QFileDialog,
     QFrame,
@@ -170,6 +171,17 @@ class MainWindow(QMainWindow):
         self.show_page(
             IDX_RECEIPTS if IDX_RECEIPTS in self.access.pages else self.access.pages[0]
         )
+
+        # v0.28.0: данные лежат в общей папке (ADR-074). Этот компьютер
+        # может быть только просмотром, поэтому изменения, внесённые
+        # на компьютере администратора, подтягиваются без перезапуска.
+        self.sync_interval_ms = 10_000
+        self._data_signature = self.store.signature()
+        self.store.on_saved.append(self._remember_signature)
+        self._sync_timer = QTimer(self)
+        self._sync_timer.setInterval(self.sync_interval_ms)
+        self._sync_timer.timeout.connect(self.pull_external_changes)
+        self._sync_timer.start()
 
     # ------------------------------------------------------------------ шапка
     def _build_header(self) -> QFrame:
@@ -432,6 +444,33 @@ class MainWindow(QMainWindow):
             return
         self._today = today
         self.refresh_all_views()
+
+    def _remember_signature(self) -> None:
+        """Запомнить состояние файла после своей записи (v0.28.0)."""
+
+        self._data_signature = self.store.signature()
+
+    def pull_external_changes(self) -> bool:
+        """Подтянуть изменения, внесённые на другом компьютере.
+
+        v0.28.0: данные лежат в общей папке — файл мог обновить
+        администратор. Возвращает ``True``, если данные перечитаны.
+        Пропуск, пока открыт модальный диалог или окно не активно:
+        перечитывание под руками у пользователя сбросило бы
+        незаконченный ввод.
+        """
+
+        signature = self.store.signature()
+        if signature is None or signature == self._data_signature:
+            return False
+        if QApplication.activeModalWidget() is not None:
+            return False
+        if not self.isActiveWindow():
+            return False
+        self.store.reload()
+        self._data_signature = self.store.signature()
+        self.refresh_all_views()
+        return True
 
     def refresh_all_views(self) -> None:
         """Перерисовать все экраны после смены базы (v0.17.0)."""

@@ -414,6 +414,79 @@ def test_calendar_marks_today_with_frame(qt_app, store):
     edit.deleteLater()
 
 
+def test_external_data_change_is_pulled(qt_app, store):
+    """v0.28.0: изменения из общей папки подтягиваются без перезапуска.
+
+    Схема пользователя: данные лежат в общей папке Google Диска,
+    меняет их компьютер администратора, остальные только смотрят —
+    они должны видеть изменения, не перезапуская программу.
+    """
+
+    import json
+
+    from oplata.app import MainWindow
+
+    window = MainWindow(store)
+    window.show()
+    qt_app.processEvents()
+
+    # Другой компьютер изменил файл данных в общей папке.
+    raw = json.loads(store.path.read_text(encoding="utf-8"))
+    raw["suppliers"][0]["name"] = "Изменено на другом компьютере"
+    store.path.write_text(
+        json.dumps(raw, ensure_ascii=False), encoding="utf-8"
+    )
+
+    assert window.pull_external_changes() is True
+    assert store.data.suppliers[0].name == "Изменено на другом компьютере"
+
+    # Повторно — без изменений, перечитывания нет.
+    assert window.pull_external_changes() is False
+
+    # Своё сохранение не считается чужим изменением.
+    store.data.suppliers[0].name = "Своё изменение"
+    store.save()
+    assert window.pull_external_changes() is False
+    assert store.data.suppliers[0].name == "Своё изменение"
+    window.close()
+
+
+def test_current_user_choice_is_local(qt_app, store, monkeypatch):
+    """v0.28.0: выбор пользователя не лежит в общей папке с данными.
+
+    Иначе выбор «Администратора» на одном компьютере давал бы право
+    записи и на остальных, и схема «пишет только администратор» не
+    работала бы.
+    """
+
+    import json
+
+    from oplata import access
+    from oplata.app import MainWindow
+
+    window = MainWindow(store)
+    qt_app.processEvents()
+
+    assert access.current_user_path().parent == access.local_dir()
+    assert access.current_user_path() != access._legacy_current_user_path()
+
+    # Прежний файл рядом с данными читается, если локального ещё нет —
+    # выбор не сбрасывается при первом запуске после обновления.
+    manager = next(u for u in access.load_users() if u.name == "Руководитель")
+    if access.current_user_path().exists():
+        access.current_user_path().unlink()
+    access._legacy_current_user_path().parent.mkdir(parents=True, exist_ok=True)
+    access._legacy_current_user_path().write_text(
+        json.dumps({"user_id": manager.id}), encoding="utf-8"
+    )
+    assert access.load_current_user() is not None
+    assert access.load_current_user().id == manager.id
+    # Сохранение выбора уходит в локальный каталог, а не в общую папку.
+    access.save_current_user(manager)
+    assert access.current_user_path().exists()
+    window.close()
+
+
 def test_today_button_shows_current_date(qt_app, store):
     """v0.27.4: кнопка «Сегодня» показывает сегодня, а не понедельник.
 

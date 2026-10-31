@@ -128,6 +128,33 @@ class DataStore:
             # TODO(этап данных): показать пользователю предупреждение и бэкап.
             return seed_data()
 
+    def signature(self) -> tuple[int, int] | None:
+        """Подпись файла данных: по ней видно, что файл изменился.
+
+        v0.28.0: нужна компьютерам, которые только смотрят данные, —
+        они должны замечать, что файл в общей папке обновил другой
+        компьютер (ADR-074). Размер и время изменения вместе надёжнее
+        одного времени: у облачных клиентов оно округляется.
+        """
+
+        try:
+            stat = self.path.stat()
+        except OSError:
+            return None
+        return (stat.st_mtime_ns, stat.st_size)
+
+    def reload(self) -> None:
+        """Перечитать файл с диска, не трогая выбранную базу (v0.28.0).
+
+        Экраны держат ссылку на ``store``, поэтому после перечитывания
+        им достаточно перерисоваться — подписчики ``on_saved``
+        уведомляются так же, как при обычном сохранении.
+        """
+
+        self.data = self._load()
+        for callback in list(self.on_saved):
+            callback()
+
     def save(self) -> None:
         self.path.parent.mkdir(parents=True, exist_ok=True)
         text = json.dumps(self.data.to_dict(), ensure_ascii=False, indent=2)

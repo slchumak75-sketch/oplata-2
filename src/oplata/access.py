@@ -24,10 +24,17 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import secrets
 from dataclasses import dataclass, field
+from pathlib import Path
 
-from .storage import BASE_KORELICHI, BASE_MIR, data_dir
+from .storage import (
+    APP_DIR_NAME,
+    BASE_KORELICHI,
+    BASE_MIR,
+    data_dir,
+)
 
 # Индексы вкладок главного окна (должны совпадать с app.NAV_TITLES).
 IDX_RECEIPTS, IDX_SUPPLIERS, IDX_CUSTOMERS, IDX_DATA = range(4)
@@ -48,8 +55,30 @@ def users_path():
     return data_dir() / USERS_FILE_NAME
 
 
+def local_dir() -> Path:
+    """Каталог настроек **этого компьютера** (не синхронизируется).
+
+    v0.28.0: данные лежат в общей папке Google Диска (ADR-074), и
+    ``current-user.json`` рядом с ними был бы общим на все четыре
+    компьютера: выбор «Администратора» на одном давал бы право записи
+    и на остальных. Поэтому выбор пользователя хранится локально, а
+    ``users.json`` со списком пользователей и паролем — по-прежнему в
+    ``data_dir()`` (общий).
+    """
+
+    appdata = os.environ.get("APPDATA")
+    if appdata:  # Windows
+        return Path(appdata) / APP_DIR_NAME
+    return Path.home() / ".local" / "share" / APP_DIR_NAME
+
+
 def current_user_path():
-    """Файл с выбором пользователя на этом компьютере."""
+    """Файл с выбором пользователя на этом компьютере (локальный)."""
+    return local_dir() / CURRENT_USER_FILE_NAME
+
+
+def _legacy_current_user_path():
+    """Прежний путь — рядом с данными. Нужен, чтобы выбор не сбросился."""
     return data_dir() / CURRENT_USER_FILE_NAME
 
 
@@ -222,12 +251,19 @@ def check_password(raw: str) -> bool:
 def load_current_user() -> User | None:
     """Пользователь, выбранный на этом компьютере (None — не выбран)."""
 
-    try:
-        raw = json.loads(current_user_path().read_text(encoding="utf-8"))
-    except (OSError, ValueError, TypeError):
-        return None
-    user_id = raw.get("user_id") if isinstance(raw, dict) else None
-    return find_user(str(user_id)) if user_id else None
+    # v0.28.0: выбор читается из локального каталога; если его там ещё
+    # нет — из прежнего файла рядом с данными, чтобы первый запуск
+    # после обновления не сбрасывал выбор.
+    for path in (current_user_path(), _legacy_current_user_path()):
+        try:
+            raw = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, ValueError, TypeError):
+            continue
+        user_id = raw.get("user_id") if isinstance(raw, dict) else None
+        user = find_user(str(user_id)) if user_id else None
+        if user is not None:
+            return user
+    return None
 
 
 def save_current_user(user: User) -> None:
