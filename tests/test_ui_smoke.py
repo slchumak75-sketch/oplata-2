@@ -168,7 +168,7 @@ def test_week_table_income_and_payment_input(qt_app, store):
     view._rebuild_table(view._partners, view._days, today)
     table = view.table
     # Номера колонок дней считаем от числа итоговых столбцов: их три
-    # («на сегодня», «за неделю», «просрочено», v0.16.0).
+    # («на сегодня»/«Итого», «Неделя», «Просрочено», v0.16.0).
     income = table.item(FIRST_DATA_ROW, _DAY(view, 0, 0))    # пн, Приход
     debt = table.item(FIRST_DATA_ROW, _DAY(view, 0, 1))      # пн, Долг
     payment = table.item(FIRST_DATA_ROW, _DAY(view, 0, 2))   # пн, Оплата
@@ -1706,17 +1706,21 @@ def test_week_table_overdue_and_debt_headers_are_separate(qt_app, store):
     qt_app.processEvents()
     table = window.suppliers_view.table
     offset = window.suppliers_view.lead_offset
-    assert table.item(1, 1 + offset).text() == "ЗАДОЛ-\nЖЕННОСТЬ"
+    # v0.28.3: слово целиком и посередине объединённой ячейки.
+    assert table.item(1, 1 + offset).text() == "Задолженность"
+    assert (
+        table.item(1, 1 + offset).textAlignment() == Qt.AlignmentFlag.AlignCenter
+    )
     # Ячейки объединены: подписи столбцов стоят строкой ниже.
     assert table.columnSpan(1, 1 + offset) == 3
     # v0.27.3: название поставщика занимает и колонку условий.
     assert table.columnSpan(1, 0) == 1 + offset
-    # v0.22.1: «Итого» стоит слева от «просрочено» (вместо «на сегодня»).
+    # v0.22.1: «Итого» стоит слева от «Просрочено» (вместо «на сегодня»).
     # v0.28.2: подпись узкой колонки — в две строки.
     assert table.item(2, 1).text() == "От-\nсрочка"
     assert table.item(2, 1 + offset).text() == "Итого"
-    assert table.item(2, 2 + offset).text() == "просрочено"
-    assert table.item(2, 3 + offset).text() == "за неделю"
+    assert table.item(2, 2 + offset).text() == "Просрочено"
+    assert table.item(2, 3 + offset).text() == "Неделя"
     window.close()
 
 
@@ -3169,7 +3173,7 @@ def test_supplier_total_column_shows_whole_debt(qt_app, store, monkeypatch):
 
     «Итого» не зависит от показанной недели и от сегодняшней даты: это
     весь остаток долга по всем срокам. Просроченное лежит в столбце
-    «просрочено» (срок раньше даты), а «за неделю» — сроки внутри
+    «Просрочено» (срок раньше даты), а «Неделя» — сроки внутри
     показанной недели. Дата в тесте зафиксирована, иначе расчёт
     менялся бы вместе с календарём.
     """
@@ -3203,11 +3207,11 @@ def test_supplier_total_column_shows_whole_debt(qt_app, store, monkeypatch):
 
     offset = view.lead_offset  # v0.27.3: узкая колонка условий
     view.goto_date(date(2026, 10, 26))
-    # v0.28.2: заголовок в две строки.
-    assert table.item(1, 1 + offset).text() == "ЗАДОЛ-\nЖЕННОСТЬ"
+    # v0.28.3: шапка — «Задолженность» целиком; подписи тоже полные.
+    assert table.item(1, 1 + offset).text() == "Задолженность"
     assert table.item(2, 1 + offset).text() == "Итого"
-    assert table.item(2, 2 + offset).text() == "просрочено"
-    assert table.item(2, 3 + offset).text() == "за неделю"
+    assert table.item(2, 2 + offset).text() == "Просрочено"
+    assert table.item(2, 3 + offset).text() == "Неделя"
     # Итого — 700 + 900 + 150; просрочка — 150 (срок 20.10); за неделю
     # (26.10–01.11) — 700.
     assert table.item(row, 1 + offset).text() == "1 750,00"
@@ -3914,3 +3918,56 @@ def test_date_edit_arrow_image_is_in_bundle(qt_app):
 
     assert styles.DATE_ARROW_FILE.parent.name == "assets"
     assert styles.DATE_ARROW_FILE.is_file()
+
+def test_debt_headers_are_written_in_full(qt_app, store):
+    """v0.28.3: подписи итоговых колонок — целиком, без переноса.
+
+    «Задолженность» стоит посередине объединённой ячейки, а
+    «Просрочено» и «Неделя» написаны полностью: раньше колонка была
+    слишком узкой, и слово обрезалось.
+    """
+
+    from PySide6.QtGui import QFont, QFontMetrics
+
+    from oplata import styles
+    from oplata.app import MainWindow
+
+    window = MainWindow(store)
+    window.show()
+    qt_app.processEvents()
+    view = window.suppliers_view
+    offset = view.lead_offset
+
+    debt_header = view.table.item(1, 1 + offset)
+    assert debt_header.text() == "Задолженность"
+    assert "\\n" not in debt_header.text(), "шапку снова разорвали на две строки"
+    assert debt_header.textAlignment() == Qt.AlignmentFlag.AlignCenter
+
+    assert view.table.item(2, 2 + offset).text() == "Просрочено"
+    assert view.table.item(2, 3 + offset).text() == "Неделя"
+
+    # Метрики шрифта в headless-среде без системных шрифтов могут быть
+    # недоступны — тогда проверку ширины пропускаем (как в
+    # test_amount_font_fits_day_columns).
+    probe = QFont()
+    probe.setPixelSize(8)
+    probe.setBold(True)
+    if QFontMetrics(probe).horizontalAdvance("88 888,88") > 52:
+        window.close()
+        return
+
+    font = QFont()
+    font.setPixelSize(styles.fs(12))
+    font.setBold(True)
+    metrics = QFontMetrics(font)
+    for column, text in (
+        (2 + offset, "Просрочено"),
+        (3 + offset, "Неделя"),
+        (1 + offset, "Итого"),
+    ):
+        advance = metrics.horizontalAdvance(text)
+        assert advance <= view.min_widths[column] - 8, (
+            f"подпись «{text}» ({advance} px) обрежется в колонке "
+            f"{view.min_widths[column]} px"
+        )
+    window.close()
