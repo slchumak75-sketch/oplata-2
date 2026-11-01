@@ -928,13 +928,17 @@ def test_customer_sale_table_and_direct_input(qt_app, store):
     view._rebuild_table(view._partners, view._days[: view.table_days], today)
     table = view.table
 
-    # v0.15.0: у покупателей нет столбца «просрочено» — 1 имя + 1 итог
-    # («Всего»). v0.18.0: дней в таблице шесть, без воскресенья.
-    assert table.columnCount() == 14
-    assert table.item(1, 1).text() == "ЗАДОЛЖ."
+    # v0.29.0: 1 имя + 3 итога («Всего», «Выписано», «В работе») +
+    # 6 дней * (Реализация, метка, Оплата) = 22. v0.18.0: дней в
+    # таблице шесть, без воскресенья.
+    assert table.columnCount() == 22
+    assert table.item(1, 1).text() == "Задолженность"
     assert table.item(2, 1).text() == "Всего"
-    assert table.item(2, 2).text() == "Реализация"
-    assert table.item(2, 3).text() == "Оплата"
+    assert table.item(2, 2).text() == "Выписано"
+    assert table.item(2, 3).text() == "В работе"
+    assert table.item(2, _DAY(view, 0, 0)).text() == "Реализация"
+    assert table.item(2, _DAY(view, 0, 1)).text() == ""
+    assert table.item(2, _DAY(view, 0, 2)).text() == "Оплата"
     assert all(
         table.item(2, col) is None or table.item(2, col).text() != "Долг"
         for col in range(table.columnCount())
@@ -945,14 +949,14 @@ def test_customer_sale_table_and_direct_input(qt_app, store):
         return None if brush.style() == Qt.BrushStyle.NoBrush else brush.color().name()
 
     # Только верхнее поле «27 вт» салатовое; ниже этот день не красим.
-    assert bg_name(1, 2 + 1 * 2) == styles.WEEK_TABLE_TODAY_GREEN
-    assert bg_name(2, 2 + 1 * 2) is None
-    assert bg_name(TOTAL_ROW, 2 + 1 * 2) is None
-    assert bg_name(FIRST_DATA_ROW, 2 + 1 * 2) is None
+    assert bg_name(1, _DAY(view, 1, 0)) == styles.WEEK_TABLE_TODAY_GREEN
+    assert bg_name(2, _DAY(view, 1, 0)) is None
+    assert bg_name(TOTAL_ROW, _DAY(view, 1, 0)) is None
+    assert bg_name(FIRST_DATA_ROW, _DAY(view, 1, 0)) is None
     # Суббота как обычный выходной остаётся розовой и в теле таблицы.
-    assert bg_name(FIRST_DATA_ROW, 3 + 5 * 2) == styles.WEEK_TABLE_WEEKEND_PINK
+    assert bg_name(FIRST_DATA_ROW, _DAY(view, 5, 0)) == styles.WEEK_TABLE_WEEKEND_PINK
 
-    sale = table.item(FIRST_DATA_ROW, 2)
+    sale = table.item(FIRST_DATA_ROW, _DAY(view, 0, 0))
     sale.setText("500")
     (op,) = store.data.operations
     assert (op.counterparty_id, op.kind, op.date, op.amount, op.due_date) == (
@@ -1175,8 +1179,9 @@ def test_receipts_customers_popup_opens_right_and_sums(qt_app, store):
     window.customers_view.goto_date(date(2026, 10, 27))
     table = window.customers_view.table
     names = [c.name for c in store.data.customers]
-    assert table.item(4 + names.index(first.name), 2 + 1 * 2 + 1).text() == "3 000,00"
-    assert table.item(4 + names.index(second.name), 2 + 1 * 2 + 1).text() == "1 250,50"
+    payment = _DAY(window.customers_view, 1, 2)   # v0.29.0: «Оплата» — 3-я
+    assert table.item(4 + names.index(first.name), payment).text() == "3 000,00"
+    assert table.item(4 + names.index(second.name), payment).text() == "1 250,50"
     window.close()
 
 
@@ -1399,7 +1404,8 @@ def test_supplier_payments_sync_both_ways(qt_app, store):
     window.customers_view.goto_date(date(2026, 10, 27))
     customers_table = window.customers_view.table
     buyer_row = 4 + [c.name for c in store.data.customers].index("Покупатель Е")
-    customers_table.item(buyer_row, 2 + 1 * 2 + 1).setText("1 750")
+    # v0.29.0: «Оплата» — третья колонка дня (Реализация, метка, Оплата).
+    customers_table.item(buyer_row, _DAY(window.customers_view, 1, 2)).setText("1 750")
     assert view.incoming.amount_text("customers") == "1 750,00"
     window.close()
 
@@ -2128,7 +2134,7 @@ def test_summary_refreshes_right_after_typing_amount(qt_app, store):
 
 
 def test_week_customer_debt_column_is_sales_minus_payments(qt_app, store):
-    """У покупателей столбец «ЗАДОЛЖ.»/«Всего» = Реализация − Оплата."""
+    """У покупателей «Всего» = Реализация − Оплата (v0.29.0: три колонки)."""
     from datetime import date
     from decimal import Decimal
 
@@ -2151,10 +2157,12 @@ def test_week_customer_debt_column_is_sales_minus_payments(qt_app, store):
     view.goto_date(date(2026, 10, 27))
     table = view.table
 
-    assert table.item(1, 1).text() == "ЗАДОЛЖ."
+    assert table.item(1, 1).text() == "Задолженность"
     assert table.item(2, 1).text() == "Всего"
-    # Столбца «просрочено» у покупателей нет: вторая колонка — день.
-    assert table.item(2, 2).text() == "Реализация"
+    assert table.item(2, 2).text() == "Выписано"
+    assert table.item(2, 3).text() == "В работе"
+    # Столбца «просрочено» у покупателей нет: дальше идут дни.
+    assert table.item(2, _DAY(view, 0, 0)).text() == "Реализация"
     assert table.item(4, 1).text() == "3 000,00"
     assert table.item(3, 1).text() == "3 000,00"  # строка «ВСЕГО»
     window.close()
@@ -3971,3 +3979,233 @@ def test_debt_headers_are_written_in_full(qt_app, store):
             f"{view.min_widths[column]} px"
         )
     window.close()
+
+
+def test_customer_invoice_mark_toggles_by_click(qt_app, store):
+    """v0.29.0: узкая колонка метки — красная при вводе, клик переключает.
+
+    Ввод реализации зажигает красную метку («в работе»); клик по ней
+    делает метку зелёной («выписано»), повторный клик — снова красной.
+    Очистка суммы убирает метку совсем.
+    """
+
+    from datetime import date
+
+    from oplata import styles
+    from oplata.app import MainWindow
+    from oplata.models import Counterparty
+    from oplata.views.week_view import FIRST_DATA_ROW
+
+    buyer = Counterparty(name="Покупатель М")
+    store.data.customers.append(buyer)
+    window = MainWindow(store)
+    window.show()
+    qt_app.processEvents()
+    view = window.customers_view
+    view.goto_date(date(2026, 10, 26))
+    table = view.table
+    row = FIRST_DATA_ROW
+    day = view._days[0]
+    sale_column = _DAY(view, 0, 0)
+    mark_column = _DAY(view, 0, 1)
+
+    def mark_color():
+        brush = table.item(row, mark_column).background()
+        return brush.color().name()
+
+    # Без реализации метки нет — ячейка пустая, как обычная ячейка дня.
+    assert view._mark_color(buyer.id, day) is None
+
+    table.item(row, sale_column).setText("1 000")
+    assert view._mark_color(buyer.id, day) == styles.MARK_IN_WORK
+    assert mark_color() == styles.MARK_IN_WORK
+    assert store.data.operations[-1].invoiced is False
+
+    view._on_item_clicked(table.item(row, mark_column))
+    assert view._mark_color(buyer.id, day) == styles.MARK_INVOICED
+    assert mark_color() == styles.MARK_INVOICED
+    assert store.data.operations[-1].invoiced is True
+
+    view._on_item_clicked(table.item(row, mark_column))  # реверс
+    assert view._mark_color(buyer.id, day) == styles.MARK_IN_WORK
+    assert store.data.operations[-1].invoiced is False
+
+    table.item(row, sale_column).setText("")
+    assert view._mark_color(buyer.id, day) is None
+    assert mark_color() == "#ffffff"
+    window.close()
+
+
+def test_customer_totals_split_invoiced_and_work(qt_app, store):
+    """v0.29.0: «Всего» = «Выписано» + «В работе».
+
+    «Выписано» — реализация с зелёной меткой минус оплаты; «В работе» —
+    реализация с красной меткой, оплаты из неё не вычитаются.
+    """
+
+    from datetime import date
+    from decimal import Decimal
+
+    from oplata.app import MainWindow
+    from oplata.models import (
+        Counterparty,
+        add_customer_receipt,
+        add_realization,
+    )
+    from oplata.views.week_view import FIRST_DATA_ROW, TOTAL_ROW
+
+    buyer = Counterparty(name="Покупатель Н")
+    store.data.customers.append(buyer)
+    store.save()
+    # Реализация 500 (новая — красная) и 1 000 (помечена выписанной).
+    add_realization(store.data, buyer.id, "2026-10-26", Decimal("500"))
+    add_realization(store.data, buyer.id, "2026-10-27", Decimal("1000"))
+    add_customer_receipt(store.data, buyer.id, "2026-10-28", Decimal("300"))
+    for op in store.data.operations:
+        if op.date == "2026-10-27":
+            op.invoiced = True
+    store.save()
+
+    window = MainWindow(store)
+    window.show()
+    qt_app.processEvents()
+    view = window.customers_view
+    view.goto_date(date(2026, 10, 26))
+    table = view.table
+    row = FIRST_DATA_ROW
+
+    # Выписано: 1 000 − 300 = 700. В работе: 500. Всего: 1 200.
+    assert table.item(row, 1).text() == "1 200,00"
+    assert table.item(row, 2).text() == "700,00"
+    assert table.item(row, 3).text() == "500,00"
+    assert table.item(TOTAL_ROW, 2).text() == "700,00"
+    assert table.item(TOTAL_ROW, 3).text() == "500,00"
+
+    # Переключаем метку 27.10 на красную: вся реализация в работе.
+    view._on_item_clicked(table.item(row, _DAY(view, 1, 1)))
+    assert table.item(row, 2).text() == "-300,00"
+    assert table.item(row, 3).text() == "1 500,00"
+    assert table.item(row, 1).text() == "1 200,00"
+    window.close()
+
+
+def test_old_sales_without_mark_are_invoiced(qt_app, store):
+    """v0.29.0: старая реализация (без отметки) считается выписанной."""
+
+    import json
+    from datetime import date
+
+    from oplata.app import MainWindow
+    from oplata.models import Counterparty
+    from oplata.storage import DataStore
+    from oplata.views.week_view import FIRST_DATA_ROW
+
+    buyer = Counterparty(name="Покупатель О")
+    store.data.customers.append(buyer)
+    buyer_id = buyer.id
+    store.save()
+
+    # Сохраняем данные так, как они выглядели до v0.29.0: поля
+    # «invoiced» в операциях нет вовсе.
+    raw = json.loads(store.path.read_text(encoding="utf-8"))
+    raw["operations"] = [
+        {
+            "kind": "Реализация",
+            "counterparty_id": buyer_id,
+            "date": "2026-10-27",
+            "amount": "800.00",
+            "document": "",
+            "comment": "",
+            "due_date": "",
+            "id": "old-sale-1",
+        }
+    ]
+    store.path.write_text(json.dumps(raw, ensure_ascii=False), encoding="utf-8")
+
+    reloaded = DataStore(store.path)
+    (old_sale,) = reloaded.data.operations
+    assert old_sale.invoiced is True, "старая реализация должна быть выписанной"
+
+    window = MainWindow(reloaded)
+    window.show()
+    qt_app.processEvents()
+    view = window.customers_view
+    view.goto_date(date(2026, 10, 26))
+    table = view.table
+    row = FIRST_DATA_ROW
+    assert table.item(row, 2).text() == "800,00"   # «Выписано»
+    assert table.item(row, 3).text() == ""         # «В работе» — пусто
+    assert table.item(row, 1).text() == "800,00"   # «Всего» не изменилось
+    window.close()
+
+
+def test_customer_debt_header_is_written_in_full(qt_app, store):
+    """v0.29.0: в шапке покупателей «Задолженность», а не «ЗАДОЛЖ.»."""
+
+    from PySide6.QtGui import QFont, QFontMetrics
+
+    from oplata import styles
+    from oplata.app import MainWindow
+
+    window = MainWindow(store)
+    window.show()
+    qt_app.processEvents()
+    view = window.customers_view
+
+    header = view.table.item(1, 1)
+    assert header.text() == "Задолженность"
+    assert header.textAlignment() == Qt.AlignmentFlag.AlignCenter
+    assert view.table.columnSpan(1, 1) == 3
+    assert view.table.item(2, 1).text() == "Всего"
+    assert view.table.item(2, 2).text() == "Выписано"
+    assert view.table.item(2, 3).text() == "В работе"
+
+    probe = QFont()
+    probe.setPixelSize(8)
+    probe.setBold(True)
+    if QFontMetrics(probe).horizontalAdvance("88 888,88") > 52:
+        window.close()
+        return
+
+    font = QFont()
+    font.setPixelSize(styles.fs(12))
+    font.setBold(True)
+    metrics = QFontMetrics(font)
+    for column, text in ((1, "Всего"), (2, "Выписано"), (3, "В работе")):
+        advance = metrics.horizontalAdvance(text)
+        assert advance <= view.min_widths[column] - 8, (
+            f"подпись «{text}» ({advance} px) обрежется в колонке "
+            f"{view.min_widths[column]} px"
+        )
+    window.close()
+
+
+def test_excel_round_trip_keeps_invoice_mark(store, tmp_path):
+    """v0.29.0: отметка «выписано» переживает выгрузку в Excel и обратно."""
+
+    pytest.importorskip("openpyxl")
+
+    from decimal import Decimal
+
+    from oplata.excelio import export_bases, import_bases
+    from oplata.models import Counterparty, add_realization
+    from oplata.storage import BASE_MIR
+
+    buyer = Counterparty(name="Покупатель П")
+    store.data.customers.append(buyer)
+    add_realization(store.data, buyer.id, "2026-10-26", Decimal("100"))
+    add_realization(store.data, buyer.id, "2026-10-27", Decimal("200"))
+    for op in store.data.operations:
+        if op.date == "2026-10-27":
+            op.invoiced = True
+    store.save()
+
+    path = export_bases({BASE_MIR: store.data}, tmp_path / "oplata.xlsx")
+    (imported,) = import_bases(path).values()
+
+    marks = {
+        op.date: op.invoiced
+        for op in imported.operations
+        if op.counterparty_id == buyer.id
+    }
+    assert marks == {"2026-10-26": False, "2026-10-27": True}

@@ -63,6 +63,12 @@ class Operation:
     document: str = ""
     comment: str = ""
     due_date: str = ""      # ISO срок оплаты (только для «Прихода»-поставки)
+    # v0.29.0: отметка «выписано» у реализации покупателя. Зелёная метка
+    # в таблице — True (документы выписаны), красная — False (ещё
+    # в работе). У «Прихода» и «Оплаты» поле не используется. Новая
+    # операция по умолчанию «в работе»: по правилу пользователя метка
+    # загорается красной при вводе реализации.
+    invoiced: bool = False
     id: str = field(default_factory=new_id)
 
     @classmethod
@@ -75,6 +81,10 @@ class Operation:
             document=str(data.get("document", "")),
             comment=str(data.get("comment", "")),
             due_date=str(data.get("due_date", "")),
+            # Ранее сохранённые операции этого поля не имеют: считаем их
+            # выписанными (так выбрал пользователь), иначе вся старая
+            # реализация уехала бы в «В работе».
+            invoiced=bool(data.get("invoiced", True)),
             id=str(data.get("id") or new_id()),
         )
 

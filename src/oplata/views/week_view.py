@@ -64,6 +64,8 @@ from ..models import (
     KIND_PAYMENT,
     KIND_SALE,
     Counterparty,
+    Operation,
+    operation_amount,
     set_daily_operation,
 )
 from ..storage import DataStore
@@ -84,8 +86,11 @@ FIRST_DATA_ROW = 4
 # 7 дней * (Реализация/Оплата), дневного столбца «Долг» у них нет.
 SUPPLIER_SUBHEADERS = ("Приход", "Долг", "Оплата")
 SUPPLIER_SUBHEADER_KINDS = ("income", "debt", "payment")
-CUSTOMER_SUBHEADERS = ("Реализация", "Оплата")
-CUSTOMER_SUBHEADER_KINDS = ("sale", "payment")
+# v0.29.0: между «Реализацией» и «Оплатой» — узкая колонка метки
+# «выписано»: красная — в работе, зелёная — выписано. Клик по ней
+# переключает цвет (реверсивное поле); текста в колонке нет.
+CUSTOMER_SUBHEADERS = ("Реализация", "", "Оплата")
+CUSTOMER_SUBHEADER_KINDS = ("sale", "mark", "payment")
 # Имена ниже оставлены для тестов/совместимости и описывают поставщика.
 COLS = 3 + 7 * len(SUPPLIER_SUBHEADERS)
 SUBHEADERS = SUPPLIER_SUBHEADERS
@@ -99,6 +104,8 @@ DAY_SEPARATOR_COLOR = "#5b6b84"  # толстые линии между дням
 SEPARATOR_AFTER_COLS = {2, 5, 8, 11, 14, 17, 20}  # поставщики, после каждого дня кроме Вс
 MAX_AMOUNT_TEXT = "88 888,88"  # под это число подгоняется шрифт сумм (запрос пользователя)
 META_ROLE = Qt.ItemDataRole.UserRole        # "id|дата|kind" редактируемых ячеек
+# v0.29.0: "id|дата" узкой колонки метки «выписано».
+MARK_ROLE = Qt.ItemDataRole.UserRole + 1
 # Веса и минимумы ширин колонок поставщика для растягивания на всю ширину.
 BASE_WIDTHS = [180, 96, 96] + [60] * 21
 MIN_WIDTHS = [146, 80, 80] + [52] * 21
@@ -191,12 +198,19 @@ class WeekView(QWidget):
             self.subheaders = CUSTOMER_SUBHEADERS
             self.subheader_kinds = CUSTOMER_SUBHEADER_KINDS
         self.columns_per_day = len(self.subheaders)
-        # v0.15.0: у поставщиков две итоговые колонки — «ПРОСРОЧЕН.» и
-        # «ЗАДОЛЖ.»; у покупателей столбца «просрочено» нет, остаётся
-        # одна колонка — «ЗАДОЛЖ.» (подзаголовок «Всего»).
-        # v0.16.0: у поставщиков три итоговых столбца — «просрочено»
-        # (срок оплаты уже прошёл), «на сегодня» и «за неделю».
-        self.lead_columns = 3 if kind == "supplier" else 1
+        # v0.29.0: номер узкой колонки метки внутри дня (только у
+        # покупателей); у поставщиков её нет.
+        self.mark_index = (
+            self.subheader_kinds.index("mark")
+            if "mark" in self.subheader_kinds
+            else None
+        )
+        # v0.16.0: у поставщиков три итоговых столбца — «Итого»
+        # (вся задолженность), «Просрочено» и «Неделя».
+        # v0.29.0: у покупателей тоже три — «Всего», «Выписано»
+        # (реализация с зелёной меткой минус оплаты) и «В работе»
+        # (реализация с красной меткой). Раньше была одна «ЗАДОЛЖ.».
+        self.lead_columns = 3
         # v0.27.3: у поставщиков справа от названия — узкая колонка
         # условий: «П» — предоплата, «Р» — реализация, иначе срок
         # отсрочки в днях (просьба пользователя). Итоговые колонки
@@ -226,17 +240,30 @@ class WeekView(QWidget):
         # v0.28.3: итоговым колонкам добавлено место — подпись
         # «Просрочено» целиком занимает ~112 px (жирный шрифт
         # fs(12) = 16 px), а при 90 px слово обрезалось.
+        # v0.29.0: узкой колонке метки — своя ширина, она не должна
+        # участвовать в подгонке шрифта сумм (иначе шрифт считался бы
+        # по 30 px и числа стали бы нечитаемыми).
+        day_base: list[int] = []
+        day_min: list[int] = []
+        for _ in range(self.table_days):
+            for subcolumn in range(self.columns_per_day):
+                if subcolumn == self.mark_index:
+                    day_base.append(34)
+                    day_min.append(30)
+                else:
+                    day_base.append(92)
+                    day_min.append(72)
         self.base_widths = (
             [200]
             + ([46] if self.lead_offset else [])
             + [132] * self.lead_columns
-            + [92] * (self.table_days * self.columns_per_day)
+            + day_base
         )
         self.min_widths = (
             [170]
             + ([40] if self.lead_offset else [])
             + [124] * self.lead_columns
-            + [72] * (self.table_days * self.columns_per_day)
+            + day_min
         )
         self.week_start = week_monday(date.today())
         self._partners: list[Counterparty] = []
@@ -454,6 +481,13 @@ class WeekView(QWidget):
     def _on_item_clicked(self, item: QTableWidgetItem) -> None:
         if self.read_only:  # v0.18.0: без права ввода окна ввода не открываем
             return
+        # v0.29.0: клик по узкой колонке метки переключает цвет
+        # (красная «в работе» <-> зелёная «выписано»).
+        mark = item.data(MARK_ROLE)
+        if mark:
+            partner_id, date_iso = str(mark).split("|", 1)
+            self._toggle_invoice_mark(partner_id, date.fromisoformat(date_iso))
+            return
         if item.column() != 0 or item.row() < FIRST_DATA_ROW:
             return
         counterparty_id = item.data(Qt.ItemDataRole.UserRole)
@@ -549,6 +583,12 @@ class WeekView(QWidget):
         set_daily_operation(
             self.store.data, counterparty_id, date_iso, op_kind, amount, due_iso
         )
+        # v0.29.0: ввод реализации — метка «выписано» сбрасывается:
+        # новая сумма ещё в работе (красная), цвет ставит пользователь.
+        if self.kind == "customer" and op_kind == KIND_SALE:
+            self._set_invoice_mark(
+                counterparty_id, date.fromisoformat(date_iso), False
+            )
         self.store.save()
         # Показать отформатированное значение и пересчитать Долг/итоги,
         # не перестраивая таблицу целиком.
@@ -666,6 +706,126 @@ class WeekView(QWidget):
             return "Р"
         return str(partner.deferment_days)
 
+    # ------------------------------------- метка «выписано» (v0.29.0)
+    def _mark_operations(self, partner_id: str, day: date) -> list[Operation]:
+        """Реализации покупателя за день — к ним относится метка."""
+
+        date_iso = day.isoformat()
+        return [
+            op
+            for op in self.store.data.operations
+            if op.counterparty_id == partner_id
+            and op.date == date_iso
+            and op.kind == KIND_SALE
+        ]
+
+    def _mark_color(self, partner_id: str, day: date) -> str | None:
+        """Цвет метки: зелёный — выписано, красный — в работе.
+
+        ``None`` — реализации за этот день нет, метку не показываем.
+        Если за день несколько реализаций, зелёная метка только когда
+        выписаны все.
+        """
+
+        operations = self._mark_operations(partner_id, day)
+        if not operations:
+            return None
+        total = sum((operation_amount(op) for op in operations), ZERO)
+        if total == 0:
+            return None
+        if all(op.invoiced for op in operations):
+            return styles.MARK_INVOICED
+        return styles.MARK_IN_WORK
+
+    def _day_mark_bg(self, day: date) -> str | None:
+        """Фон ячейки дня под меткой (розовые выходные, как в таблице)."""
+
+        if day == date.today():
+            return None
+        if calc.is_day_off(day, self.store.data.day_overrides):
+            return styles.WEEK_TABLE_WEEKEND_PINK
+        return None
+
+    def _paint_mark_cell(
+        self,
+        item: QTableWidgetItem,
+        partner_id: str,
+        day: date,
+    ) -> None:
+        """Залить ячейку метки и положить в неё данные для клика."""
+
+        color = self._mark_color(partner_id, day)
+        background = QColor(color or self._day_mark_bg(day) or "#ffffff")
+        item.setBackground(background)
+        item.setData(MARK_ROLE, f"{partner_id}|{day.isoformat()}")
+        item.setToolTip(
+            ""
+            if color is None
+            else "Зелёная — документы выписаны; красная — в работе. "
+            "Клик переключает цвет"
+        )
+
+    def _put_mark_cell(
+        self,
+        row: int,
+        column: int,
+        partner_id: str,
+        day: date,
+    ) -> QTableWidgetItem:
+        """Создать ячейку узкой колонки метки."""
+
+        item = QTableWidgetItem("")
+        item.setFlags(
+            Qt.ItemFlag.ItemIsEnabled | Qt.ItemFlag.ItemIsSelectable
+        )
+        font = QFont()
+        font.setPixelSize(styles.fs(12))
+        item.setFont(font)
+        self.table.setItem(row, column, item)
+        self._paint_mark_cell(item, partner_id, day)
+        return item
+
+    def _set_invoice_mark(
+        self, partner_id: str, day: date, invoiced: bool
+    ) -> bool:
+        """Поставить метку «выписано» на реализации дня. True — было изменение."""
+
+        operations = self._mark_operations(partner_id, day)
+        if not operations:
+            return False
+        changed = False
+        for op in operations:
+            if op.invoiced != invoiced:
+                op.invoiced = invoiced
+                changed = True
+        return changed
+
+    def _toggle_invoice_mark(self, partner_id: str, day: date) -> None:
+        """Клик по метке: красная <-> зелёная (реверсивное поле)."""
+
+        invoiced = self._mark_color(partner_id, day) != styles.MARK_INVOICED
+        if not self._set_invoice_mark(partner_id, day, invoiced):
+            return
+        self.store.save()
+        self._update_calculated_cells()
+        if self.on_data_changed is not None:
+            self.on_data_changed()
+
+    def _refresh_marks(self) -> None:
+        """Перекрасить все метки (после ввода суммы или переключения)."""
+
+        if self.mark_index is None:
+            return
+        days = self._days[: self.table_days]
+        for r, partner in enumerate(self._partners):
+            row = FIRST_DATA_ROW + r
+            for i, day in enumerate(days):
+                item = self.table.item(
+                    row, self._day_column(i, self.mark_index)
+                )
+                if item is not None:
+                    self._paint_mark_cell(item, partner.id, day)
+
     def _update_calculated_cells(self) -> None:
         """Пересчитать Долг, «Итого»/«за неделю», ВСЕГО и тулбар без перестройки."""
         today = date.today()
@@ -679,6 +839,8 @@ class WeekView(QWidget):
         total_week = ZERO
         total_late = ZERO
         total_customer = ZERO
+        total_customer_invoiced = ZERO
+        total_customer_work = ZERO
         # v0.18.0: колонки дней в таблице — без воскресенья, расчёты
         # при этом идут по полной неделе (self._days / self._week_end).
         days = self._days[: self.table_days]
@@ -711,13 +873,19 @@ class WeekView(QWidget):
                         row, 3 + self.lead_offset, _money_text(week)
                     )
                 else:
-                    # Покупатели: «Всего» = Реализация − Оплата (v0.15.0).
+                    # Покупатели (v0.29.0): «Всего» = «Выписано» +
+                    # «В работе»; «Выписано» — реализация с зелёной
+                    # меткой минус оплаты, «В работе» — с красной.
                     partner = self._partners[r]
-                    debt = calc.customer_debt_amount(
+                    invoiced, work, debt = calc.customer_debt_split(
                         self.store.data, partner, days[0], self._week_end
                     )
                     total_customer += debt
+                    total_customer_invoiced += invoiced
+                    total_customer_work += work
                     self._set_cell_text(row, 1, _money_text(debt))
+                    self._set_cell_text(row, 2, _money_text(invoiced))
+                    self._set_cell_text(row, 3, _money_text(work))
                 if "debt" in self.subheader_kinds:
                     debt_index = self.subheader_kinds.index("debt")
                     for i, day in enumerate(days):
@@ -744,8 +912,16 @@ class WeekView(QWidget):
                 )
             else:
                 self._set_cell_text(TOTAL_ROW, 1, _money_text(total_customer))
+                self._set_cell_text(
+                    TOTAL_ROW, 2, _money_text(total_customer_invoiced)
+                )
+                self._set_cell_text(
+                    TOTAL_ROW, 3, _money_text(total_customer_work)
+                )
             for i, day in enumerate(days):
                 for j, kind_name in enumerate(self.subheader_kinds):
+                    if kind_name == "mark":
+                        continue  # метка не суммируется
                     if kind_name == "debt":
                         amount = sum(
                             (m.get(day, ZERO) for m in remaining_maps), ZERO
@@ -758,6 +934,9 @@ class WeekView(QWidget):
                     self._set_cell_text(TOTAL_ROW, self._day_column(i, j), text)
         finally:
             self._rebuilding = False
+        # v0.29.0: метки перекрашиваем и здесь — сумма реализации могла
+        # появиться или исчезнуть, а с ней и метка.
+        self._refresh_marks()
         if self.kind == "supplier":
             self.right_value_label.setText(fmt_money(total_week))
         # v0.23.1: строка «ВСЕГО» закреплена — обновляем и её копию.
@@ -944,22 +1123,20 @@ class WeekView(QWidget):
             bold=True, size=styles.fs(12))
         # v0.14.0: «ПРОСРОЧЕН.» и «ЗАДОЛЖ.» — разные ячейки, без
         # объединения: каждая подпись стоит над своей колонкой.
-        if self.kind == "supplier":
-            # v0.27.3: узкая колонка условий входит в объединённую шапку
-            # названия: своей подписи у неё нет, смысл — в подзаголовке
-            # «Отср.» строкой ниже.
+        # v0.27.3: узкая колонка условий (только у поставщиков) входит
+        # в объединённую шапку названия: своей подписи у неё нет, смысл
+        # — в подзаголовке «Отсрочка» строкой ниже. У покупателей
+        # lead_offset = 0, объединение не нужно (Qt на него ругается).
+        if self.lead_offset:
             table.setSpan(1, 0, 1, 1 + self.lead_offset)
-            # v0.16.0: три итоговые колонки объединены одной шапкой, а
-            # их смысловые подписи стоят строкой ниже («Итого»,
-            # «Просрочено», «Неделя» — v0.22.1, переименованы в
-            # v0.28.3). v0.28.3: шапка — слово «Задолженность» целиком,
-            # посередине объединённой ячейки (просьба пользователя).
-            put(1, 1 + self.lead_offset, "Задолженность", bold=True,
-                size=styles.fs(12), center=True)
-            table.setSpan(1, 1 + self.lead_offset, 1, self.lead_columns)
-        else:
-            # v0.15.0: столбца «просрочено» у покупателей нет.
-            put(1, 1, "ЗАДОЛЖ.", bold=True, size=styles.fs(12))
+        # v0.16.0: три итоговые колонки объединены одной шапкой, а их
+        # смысловые подписи стоят строкой ниже. v0.28.3: шапка — слово
+        # «Задолженность» целиком, посередине объединённой ячейки
+        # (просьба пользователя). v0.29.0: то же самое у покупателей —
+        # раньше там было сокращение «ЗАДОЛЖ.».
+        put(1, 1 + self.lead_offset, "Задолженность", bold=True,
+            size=styles.fs(12), center=True)
+        table.setSpan(1, 1 + self.lead_offset, 1, self.lead_columns)
         for i, day in enumerate(days):
             c = self._day_column(i, 0)
             put(1, c, f"{day.day}  {WEEKDAYS_RU_SHORT[day.weekday()]}",
@@ -983,12 +1160,22 @@ class WeekView(QWidget):
             put(2, 3 + self.lead_offset, "Неделя", bold=True,
                 size=styles.fs(12))
         else:
-            # v0.15.0: у покупателей итоговая колонка одна — «Всего».
+            # v0.29.0: «Всего» = «Выписано» + «В работе»; порядок — по
+            # просьбе пользователя (итог левее слагаемых).
             put(2, 1, "Всего", bold=True, size=styles.fs(12))
+            put(2, 2, "Выписано", bold=True, size=styles.fs(12))
+            put(2, 3, "В работе", bold=True, size=styles.fs(12))
         for i, day in enumerate(days):
             for j, sub in enumerate(self.subheaders):
-                put(2, self._day_column(i, j), sub,
-                    bg=day_body_bg(day), bold=True, size=styles.fs(12))
+                cell = put(2, self._day_column(i, j), sub,
+                           bg=day_body_bg(day), bold=True, size=styles.fs(12))
+                if self.subheader_kinds[j] == "mark":
+                    cell.setToolTip(
+                        "Метка «выписано»: красная — реализация в работе, "
+                        "зелёная — документы выписаны. Клик переключает "
+                        "цвет. Метка появляется, когда в «Реализации» "
+                        "есть сумма"
+                    )
 
         operations = self.store.data.operations
         partner_ids = [p.id for p in partners]
@@ -1016,17 +1203,22 @@ class WeekView(QWidget):
         # Покупатели: задолженность = Реализация − Оплата за неделю
         # (v0.15.0). Считается до строки «ВСЕГО», поэтому собирается
         # заранее, а не по ходу вывода строк контрагентов.
-        customer_debts: list[Decimal] = []
+        # v0.29.0: (Выписано, В работе, Всего) по каждому покупателю.
+        customer_splits: list[tuple[Decimal, Decimal, Decimal]] = []
         if self.kind != "supplier":
             # v0.26.0: плашка «Данных» удалена — считаем только
             # операции недели (Реализация − Оплата).
-            customer_debts = [
-                calc.customer_debt_amount(
+            customer_splits = [
+                calc.customer_debt_split(
                     self.store.data, partner, days[0], self._week_end
                 )
                 for partner in partners
             ]
-            total_customer_debt = sum(customer_debts, ZERO)
+            total_customer_debt = sum((split[2] for split in customer_splits), ZERO)
+            total_customer_invoiced = sum(
+                (split[0] for split in customer_splits), ZERO
+            )
+            total_customer_work = sum((split[1] for split in customer_splits), ZERO)
         put(TOTAL_ROW, 0, "ВСЕГО", bold=True, center=False,
             size=styles.fs(12))
         total_columns = (
@@ -1036,7 +1228,11 @@ class WeekView(QWidget):
                 (3 + self.lead_offset, total_week),
             )
             if self.kind == "supplier"
-            else ((1, total_customer_debt),)
+            else (
+                (1, total_customer_debt),
+                (2, total_customer_invoiced),
+                (3, total_customer_work),
+            )
         )
         # v0.27.3: в колонке условий у «ВСЕГО» пусто — суммы условий
         # не бывает.
@@ -1050,6 +1246,11 @@ class WeekView(QWidget):
             )
         for i, day in enumerate(days):
             for j, kind_name in enumerate(self.subheader_kinds):
+                if kind_name == "mark":
+                    # v0.29.0: в строке «ВСЕГО» метки не суммируются.
+                    put(TOTAL_ROW, self._day_column(i, j), "",
+                        bg=day_body_bg(day), bold=True, size=styles.fs(12))
+                    continue
                 if kind_name == "debt":
                     # v0.27.2: «Долг» в днях — остаток после оплат
                     # (досрочная оплата уменьшает долг на своём сроке).
@@ -1108,7 +1309,9 @@ class WeekView(QWidget):
                     (3 + self.lead_offset, week),
                 )
             else:
-                lead_amounts = ((1, customer_debts[r]),)
+                # v0.29.0: «Всего» = «Выписано» + «В работе».
+                invoiced, work, debt = customer_splits[r]
+                lead_amounts = ((1, debt), (2, invoiced), (3, work))
             for col_idx, amount in lead_amounts:
                 cell = put(row, col_idx, _money_text(amount),
                            size=styles.fs(12))
@@ -1119,6 +1322,10 @@ class WeekView(QWidget):
                 for j, kind_name in enumerate(self.subheader_kinds):
                     col_idx = self._day_column(i, j)
                     meta = f"{partner.id}|{day.isoformat()}|{kind_name}"
+                    if kind_name == "mark":
+                        # v0.29.0: узкая колонка метки «выписано».
+                        self._put_mark_cell(row, col_idx, partner.id, day)
+                        continue
                     if kind_name == "debt":
                         cell = money_cell(
                             row, col_idx, _money_text(due_map.get(day, ZERO)),
@@ -1207,9 +1414,15 @@ class WeekView(QWidget):
         # а не у фиксированного индекса: тот указывал на итоговую
         # колонку, и шрифт сумм подбирался слишком крупным —
         # «88 888,88» не влезало.
-        self._fit_amount_font(
-            min(widths[1 + self.lead_offset + self.lead_columns:])
-        )
+        # v0.29.0: узкую колонку метки не учитываем — иначе шрифт
+        # подбирался бы по 30 px и числа стали бы нечитаемыми.
+        money_columns = [
+            self._day_column(day_index, subcolumn)
+            for day_index in range(self.table_days)
+            for subcolumn in range(self.columns_per_day)
+            if subcolumn != self.mark_index
+        ]
+        self._fit_amount_font(min(widths[column] for column in money_columns))
 
     def _fit_amount_font(self, day_column_width: int) -> None:
         """Подобрать размер шрифта сумм так, чтобы «88 888,88» влезало целиком."""

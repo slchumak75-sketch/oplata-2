@@ -110,6 +110,20 @@ def _parse_yes(value: object) -> bool:
     return str(value or "").strip().lower() in {"да", "1", "true", "yes", "+"}
 
 
+def _bool_or_true(value: object) -> bool:
+    """Как ``_parse_yes``, но пустая ячейка — True.
+
+    v0.29.0: отметка «выписано» у реализации. В файлах, сохранённых до
+    её появления, колонки нет вовсе, а вся введённая раньше реализация
+    по правилу пользователя считается выписанной.
+    """
+
+    text = str(value or "").strip().lower()
+    if not text:
+        return True
+    return text in {"да", "1", "true", "yes", "+"}
+
+
 def _int(value: object) -> int:
     try:
         return int(float(str(value or "0").replace(",", ".")))
@@ -176,6 +190,9 @@ def _base_rows(data: AppData) -> dict[str, tuple[list[str], list[list[object]]]]
                 "Комментарий",
                 "Срок оплаты",
                 "Идентификатор",
+                # v0.29.0: отметка «выписано» у реализации покупателя
+                # (зелёная метка в недельной таблице).
+                "Выписано",
             ],
             [
                 [
@@ -187,6 +204,7 @@ def _base_rows(data: AppData) -> dict[str, tuple[list[str], list[list[object]]]]
                     item.comment,
                     item.due_date,
                     item.id,
+                    _yes(item.invoiced),
                 ]
                 for item in data.operations
             ],
@@ -427,6 +445,9 @@ def _collect_bases(book, result: dict[str, AppData]) -> None:
                     comment=_text(get(5)),
                     due_date=_text(get(6)),
                     id=_text(get(7)),
+                    # v0.29.0: пустая ячейка в старых файлах — реализация
+                    # считается выписанной, как и в JSON без поля.
+                    invoiced=_bool_or_true(get(8)),
                 )
             )
 

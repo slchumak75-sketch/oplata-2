@@ -625,6 +625,52 @@ def customer_debt_amount(
     return sale - payment
 
 
+def customer_debt_split(
+    data: AppData,
+    customer: Counterparty,
+    start: date | None = None,
+    end: date | None = None,
+) -> tuple[Decimal, Decimal, Decimal]:
+    """Задолженность покупателя в разбивке: ``(Выписано, В работе, Всего)``.
+
+    v0.29.0, правило пользователя:
+
+    * **«Выписано»** — реализации, у которых в узкой колонке стоит
+      зелёная метка (``invoiced``), **минус произведенные оплаты**;
+    * **«В работе»** — реализации с красной меткой (оплаты не
+      вычитаются);
+    * **«Всего»** = «Выписано» + «В работе».
+
+    Из «Выписано» вычитаются оплаты за тот же период, что и реализация
+    (без границ — все): так «Всего» остаётся прежней задолженностью
+    «Реализация − Оплата».
+    """
+
+    invoiced_sale = ZERO
+    work_sale = ZERO
+    payment = ZERO
+    for op in data.operations:
+        if op.counterparty_id != customer.id:
+            continue
+        if start is not None or end is not None:
+            day = _iso_day(op.date)
+            if day is None:
+                continue
+            if start is not None and day < start:
+                continue
+            if end is not None and day > end:
+                continue
+        if op.kind == KIND_SALE:
+            if op.invoiced:
+                invoiced_sale += operation_amount(op)
+            else:
+                work_sale += operation_amount(op)
+        elif op.kind == KIND_PAYMENT:
+            payment += operation_amount(op)
+    invoiced_total = invoiced_sale - payment
+    return invoiced_total, work_sale, invoiced_total + work_sale
+
+
 def customer_debt_totals(
     data: AppData, on_date: date, include_archived: bool = False
 ) -> CustomerDebtTotals:
