@@ -582,7 +582,7 @@ def test_supplier_table_shows_conditions_column(qt_app, store):
     view.goto_date(date(2026, 10, 26))
     table = view.table
 
-    assert table.item(2, 1).text() == "Отср."  # подпись узкой колонки
+    assert table.item(2, 1).text() == "От-\nсрочка"  # v0.28.2: в две строки
     assert table.item(4, 1).text() == "30"     # срок отсрочки
     assert table.item(5, 1).text() == "П"      # предоплата
     assert table.item(6, 1).text() == "Р"      # реализация
@@ -1701,13 +1701,14 @@ def test_week_table_overdue_and_debt_headers_are_separate(qt_app, store):
     qt_app.processEvents()
     table = window.suppliers_view.table
     offset = window.suppliers_view.lead_offset
-    assert table.item(1, 1 + offset).text() == "ЗАДОЛЖЕННОСТЬ"
+    assert table.item(1, 1 + offset).text() == "ЗАДОЛ-\nЖЕННОСТЬ"
     # Ячейки объединены: подписи столбцов стоят строкой ниже.
     assert table.columnSpan(1, 1 + offset) == 3
     # v0.27.3: название поставщика занимает и колонку условий.
     assert table.columnSpan(1, 0) == 1 + offset
     # v0.22.1: «Итого» стоит слева от «просрочено» (вместо «на сегодня»).
-    assert table.item(2, 1).text() == "Отср."  # v0.27.3: условия поставщика
+    # v0.28.2: подпись узкой колонки — в две строки.
+    assert table.item(2, 1).text() == "От-\nсрочка"
     assert table.item(2, 1 + offset).text() == "Итого"
     assert table.item(2, 2 + offset).text() == "просрочено"
     assert table.item(2, 3 + offset).text() == "за неделю"
@@ -3197,7 +3198,8 @@ def test_supplier_total_column_shows_whole_debt(qt_app, store, monkeypatch):
 
     offset = view.lead_offset  # v0.27.3: узкая колонка условий
     view.goto_date(date(2026, 10, 26))
-    assert table.item(1, 1 + offset).text() == "ЗАДОЛЖЕННОСТЬ"
+    # v0.28.2: заголовок в две строки.
+    assert table.item(1, 1 + offset).text() == "ЗАДОЛ-\nЖЕННОСТЬ"
     assert table.item(2, 1 + offset).text() == "Итого"
     assert table.item(2, 2 + offset).text() == "просрочено"
     assert table.item(2, 3 + offset).text() == "за неделю"

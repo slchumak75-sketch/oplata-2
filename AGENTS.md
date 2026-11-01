@@ -116,6 +116,7 @@ QT_QPA_PLATFORM=offscreen .venv/bin/python -m pytest -q   # тесты (Linux/CI
 .venv/bin/python run.py --self-test                        # открыться и закрыться (код 0)
 QT_QPA_PLATFORM=offscreen .venv/bin/python scripts/make_screenshots.py  # переснять скриншоты docs/
 .venv/bin/python scripts/write_version_info.py             # Windows-метаданные EXE
+.venv/bin/python scripts/build_icon.py                     # пересобрать иконку из icons/ (нужен Pillow)
 .venv/bin/pyinstaller --noconfirm --clean oplata.spec      # -> dist/Oplata/Oplata.exe (на Windows; режим folder по умолчанию)
 ```
 
@@ -145,6 +146,7 @@ libfontconfig1`) — в CI они ставятся шагом workflow.
 | Окно «Реализация» (покупатель, без срока) | `src/oplata/dialogs/realization_dialog.py` |
 | Окно операции (ручной ввод/правка оплаты) | `src/oplata/dialogs/operation_dialog.py` (политика срока — ADR-009) |
 | Сборка exe / CI | `oplata.spec`, `.github/workflows/build-windows.yml`, `docs/BUILD.md` |
+| Иконка программы (EXE и окно) | `assets/oplata.ico`, `assets/oplata.png`, путь ищет `src/oplata/resources.py`; пересборка — `scripts/build_icon.py` (ADR-078) |
 
 ## Соглашения
 

@@ -949,7 +949,10 @@ class WeekView(QWidget):
             # v0.16.0: три итоговые колонки объединены одной шапкой
             # «ЗАДОЛЖЕННОСТЬ», а их смысловые подписи стоят строкой
             # ниже («Итого», «просрочено», «за неделю» — v0.22.1).
-            put(1, 1 + self.lead_offset, "ЗАДОЛЖЕННОСТЬ", bold=True,
+            # v0.28.2: заголовок в две строки — так три итоговые
+            # колонки («Итого», «просрочено», «за неделю») у́же,
+            # и их подписи не приходится сжимать.
+            put(1, 1 + self.lead_offset, "ЗАДОЛ-\nЖЕННОСТЬ", bold=True,
                 size=styles.fs(12), center=False)
             table.setSpan(1, 1 + self.lead_offset, 1, self.lead_columns)
         else:
@@ -965,7 +968,9 @@ class WeekView(QWidget):
         put(2, 0, "")
         if self.kind == "supplier":
             # v0.27.3: узкая колонка условий — «П»/«Р»/дней отсрочки.
-            put(2, 1, "Отср.", bold=True, size=styles.fs(12))
+            # v0.28.2: подпись узкой колонки — в две строки, обычным
+            # начертанием (просьба пользователя).
+            put(2, 1, "От-\nсрочка", size=styles.fs(12))
             # v0.22.1: вместо «на сегодня» — «Итого», оно слева от
             # «просрочено».
             put(2, 1 + self.lead_offset, "Итого", bold=True, size=styles.fs(12))
@@ -1081,8 +1086,10 @@ class WeekView(QWidget):
             if self.kind == "supplier":
                 # v0.27.3: условия поставщика — узкая колонка справа от
                 # названия. Подсказка расшифровывает «П» и «Р».
+                # v0.28.2: значения «П»/«Р»/дней — без жирного
+                # начертания (просьба пользователя).
                 conditions = put(
-                    row, 1, self._conditions_text(partner), bold=True,
+                    row, 1, self._conditions_text(partner),
                     size=styles.fs(12),
                 )
                 conditions.setTextAlignment(Qt.AlignmentFlag.AlignCenter)

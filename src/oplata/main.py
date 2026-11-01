@@ -22,16 +22,22 @@ def main(argv: list[str] | None = None) -> int:
     argv = list(sys.argv[1:] if argv is None else argv)
 
     from PySide6.QtCore import QTimer
+    from PySide6.QtGui import QIcon
     from PySide6.QtWidgets import QApplication
 
     from . import __app_name__, __version__, styles
     from .app import MainWindow
+    from .resources import icon_path
     from .storage import DataStore
     from .widgets import disable_item_focus, disable_selection_color
 
     app = QApplication(sys.argv[:1] + [a for a in argv if a != "--self-test"])
     app.setApplicationName(__app_name__)
     app.setOrganizationName("Stroymarket")
+    # v0.28.2: своя иконка в заголовке окна и на панели задач.
+    # Если файла нет (например, ресурсы не положили в сборку), программа
+    # просто работает со стандартной иконкой Qt — падать не должна.
+    app.setWindowIcon(QIcon(str(icon_path())))
     # v0.26.4: стиль без рамки фокуса на ячейках таблиц (артефакт
     # после клика — две вертикальные линии на нажатой ячейке).
     app.setStyle(styles.NoFocusFrameStyle())

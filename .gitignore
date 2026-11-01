@@ -27,3 +27,11 @@ desktop.ini
 
 # Превью-скриншоты для обсуждения с пользователем (не в репозитории)
 preview-*.png
+
+# Иконка: в репозитории только исходники (icons/br-symbol.png,
+# icons/oplata-coin-base.png) и результат (assets/oplata.*).
+# Варианты на выбор и мастер 1024×1024 собираются скриптом
+# scripts/build_icon.py — их хранить не нужно.
+icons/v[1-9]*
+icons/options-sheet.png
+icons/oplata-source.png

@@ -228,8 +228,9 @@ def make_date_edit(day) -> QDateEdit:
     edit.setCalendarPopup(True)
     # v0.27.5: текущая дата в календаре обведена рамкой.
     edit.setCalendarWidget(TodayFrameCalendar(edit))
-    # Дата целиком + зона стрелки календаря справа (без наложения на год).
-    edit.setMinimumWidth(138)
+    # Дата целиком + зона стрелки календаря справа (без наложения на
+    # год). v0.28.2: стрелка вдвое шире — минимум увеличен со 138.
+    edit.setMinimumWidth(158)
     edit.setDate(QDate(day.year, day.month, day.day))
     return edit
 

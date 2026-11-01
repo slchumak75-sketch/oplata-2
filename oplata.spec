@@ -34,11 +34,19 @@ VERSION_RESOURCE = (
     else None
 )
 
+# v0.28.2: иконка приложения. Вшивается в EXE (её видно в проводнике и
+# на панели задач); PNG копируется в сборку — оттуда её берёт
+# oplata.resources.icon_path() для заголовка окна.
+ICON_FILE = ROOT / "assets" / "oplata.ico"
+ICON_PNG = ROOT / "assets" / "oplata.png"
+ICON_RESOURCE = str(ICON_FILE) if ICON_FILE.is_file() else None
+ICON_DATAS = [(str(ICON_PNG), "assets")] if ICON_PNG.is_file() else []
+
 a = Analysis(
     [str(ROOT / "run.py")],
     pathex=[str(ROOT / "src")],
     binaries=[],
-    datas=[],
+    datas=ICON_DATAS,
     # v0.20.0: openpyxl импортируется лениво (внутри функции), поэтому
     # PyInstaller-у его называем явно — иначе выгрузка в Excel в
     # собранной программе упала бы с «No module named openpyxl».
@@ -65,7 +73,7 @@ EXE_OPTIONS = dict(
     codesign_identity=None,
     entitlements_file=None,
     version=VERSION_RESOURCE,
-    # TODO: иконка приложения (icon="assets/oplata.ico") — см. ROADMAP.
+    icon=ICON_RESOURCE,
 )
 
 if PACKAGE_MODE == "single":

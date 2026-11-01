@@ -193,8 +193,24 @@ QLineEdit:focus, QComboBox:focus, QDateEdit:focus, QSpinBox:focus {{
 }}
 QDateEdit {{
     /* Место справа зарезервировано под кнопку календаря: стрелка не
-       должна накладываться на последние цифры года. */
-    padding-right: 28px;
+       должна накладываться на последние цифры года.
+       v0.28.2: кнопка вдвое шире (36 px вместо 18), поэтому запас
+       под неё увеличен с 28 до 44 px. */
+    padding-right: 44px;
+}}
+QDateEdit::drop-down {{
+    /* v0.28.2: стрелка справа от даты вдвое шире (просьба
+       пользователя) — по узкой кнопке неудобно попадать. */
+    subcontrol-origin: padding;
+    subcontrol-position: center right;
+    width: 36px;
+    border-left: 1px solid {BORDER};
+    border-top-right-radius: 8px;
+    border-bottom-right-radius: 8px;
+}}
+QDateEdit::down-arrow {{
+    width: 16px;
+    height: 16px;
 }}
 QPushButton {{
     background: #ffffff;
