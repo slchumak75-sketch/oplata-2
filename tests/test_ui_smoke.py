@@ -201,10 +201,14 @@ def test_week_table_income_and_payment_input(qt_app, store):
         1 + view.lead_offset + view.lead_columns + 6 * view.columns_per_day
     )
     assert bg_name(FIRST_DATA_ROW, 3) is None  # обычный понедельник без заливки
-    assert view.date_edit.minimumWidth() >= 138  # год не под стрелкой календаря
+    # v0.28.2: кнопка календаря вдвое шире — минимум вырос со 138.
+    assert view.date_edit.minimumWidth() >= 158
     assert view.date_edit.calendarPopup()
-    # Кастомный drop-down в QSS скрывал нативную стрелку на Windows.
-    assert "QDateEdit::drop-down" not in styles.APP_STYLESHEET
+    # v0.28.2: кнопка шире, но стрелка на месте — свою стрелку задаём
+    # картинкой (нативную Qt прячет, если в QSS есть ::drop-down,
+    # см. ADR-015 и test_date_edit_arrow_image_is_shipped).
+    assert "QDateEdit::drop-down" in styles.APP_STYLESHEET
+    assert "QDateEdit::down-arrow" in styles.APP_STYLESHEET
 
     monday = view._days[0]
     income.setText("300")  # программная правка = тот же сигнал, что от Enter
@@ -1011,7 +1015,8 @@ def test_receipts_table_direct_input_and_totals(qt_app, store):
 
     # Заголовок блока и строка даты идут в одну строчку.
     assert incoming.date_edit.calendarPopup()
-    assert incoming.date_edit.minimumWidth() >= 138
+    # v0.28.2: кнопка календаря вдвое шире — минимум вырос со 138.
+    assert incoming.date_edit.minimumWidth() >= 158
     assert incoming.today_btn.text() == "Сегодня"
     assert incoming.prev_btn.text() == "←" and incoming.next_btn.text() == "→"
     assert incoming.date_edit.y() <= incoming.today_btn.y() + 4
@@ -3874,3 +3879,38 @@ def test_users_table_current_column_applies_user(qt_app, store):
     assert not window.nav_buttons[1].isVisible()  # вкладка «Поставщики»
     window.close()
 
+
+def test_date_edit_arrow_image_is_shipped(qt_app):
+    """v0.28.2: широкая кнопка календаря не должна убирать стрелку.
+
+    Как только в QSS появляется правило для ``QDateEdit::drop-down``,
+    Qt перестаёт рисовать нативную стрелку — именно она и пропадала на
+    Windows в v0.8.0 (ADR-015). Поэтому стрелку задаём своей
+    картинкой: правило и файл должны существовать вместе.
+    """
+
+    import re
+    from pathlib import Path
+
+    from oplata import styles
+
+    qss = styles.APP_STYLESHEET
+    assert "QDateEdit::drop-down" in qss
+
+    match = re.search(
+        r"QDateEdit::down-arrow\s*\{.*?image:\s*url\(\"([^\"]+)\"\)",
+        qss,
+        re.DOTALL,
+    )
+    assert match, "в QSS нет картинки стрелки — поле даты останется без стрелки"
+    assert Path(match.group(1)).is_file(), "файл стрелки не найден"
+    assert str(styles.DATE_ARROW_FILE).endswith("arrow-down.png")
+
+
+def test_date_edit_arrow_image_is_in_bundle(qt_app):
+    """v0.28.2: стрелка лежит в ресурсах, которые попадают в сборку."""
+
+    from oplata import styles
+
+    assert styles.DATE_ARROW_FILE.parent.name == "assets"
+    assert styles.DATE_ARROW_FILE.is_file()

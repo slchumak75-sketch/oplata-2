@@ -5,6 +5,8 @@
 
 from PySide6.QtWidgets import QAbstractItemView, QProxyStyle, QStyle
 
+from .resources import assets_dir
+
 NAVY = "#0f2a5c"        # тёмно-синяя шапка (база МИР)
 MAROON = "#8e1b3f"      # вишнёвая шапка (база КОРЕЛИЧИ, v0.17.0)
 NAVY_TEXT = "#ffffff"
@@ -27,6 +29,13 @@ WEEK_TABLE_MARKED_RED = "#ff0000"    # даты, отмеченные в кар�
 WEEK_TABLE_WEEKEND_PINK = "#ffe1e8"  # розовые колонки выходных/праздников
 WEEK_TABLE_TODAY_GREEN = "#ccf5a3"   # салатовая верхняя ячейка текущей даты
 TABLE_GRID = "#e3e8f0"      # линии сетки таблиц
+
+# v0.28.2: стрелка выпадающего календаря для всех полей даты — своя
+# картинка (см. правило QDateEdit::down-arrow ниже). Путь считается на
+# ходу: из исходников и из собранной программы (sys._MEIPASS) он
+# разный, а в QSS нужен готовый путь до файла.
+DATE_ARROW_FILE = assets_dir() / "arrow-down.png"
+DATE_ARROW_URL = DATE_ARROW_FILE.as_posix()
 SELECTION_BG = "#dbeafe"    # фон выделенной строки
 
 # Запрос пользователя v0.12.0: шрифты интерфейса на 30% больше.
@@ -209,8 +218,14 @@ QDateEdit::drop-down {{
     border-bottom-right-radius: 8px;
 }}
 QDateEdit::down-arrow {{
-    width: 16px;
-    height: 16px;
+    /* v0.28.2: стрелку рисуем сами. Как только в QSS появляется
+       правило для ::drop-down, Qt перестаёт рисовать нативную стрелку
+       — именно поэтому её и убрали в v0.8.0 (ADR-015). Теперь кнопка
+       вдвое шире, а стрелка — своей картинкой и вдвое крупнее
+       нативной, чтобы она не пропала. */
+    image: url("{DATE_ARROW_URL}");
+    width: 20px;
+    height: 12px;
 }}
 QPushButton {{
     background: #ffffff;

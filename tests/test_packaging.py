@@ -137,16 +137,27 @@ def test_app_icon_files_are_shipped():
 
 
 def test_spec_embeds_icon_into_exe():
-    """v0.28.2: PyInstaller вшивает иконку в EXE и кладёт PNG в сборку."""
+    """v0.28.2: PyInstaller вшивает иконку в EXE и кладёт ресурсы в сборку."""
 
     spec = (ROOT / "oplata.spec").read_text(encoding="utf-8")
 
-    assert 'ICON_FILE = ROOT / "assets" / "oplata.ico"' in spec
+    assert 'ICON_FILE = ASSETS_DIR / "oplata.ico"' in spec
     assert "ICON_RESOURCE = str(ICON_FILE) if ICON_FILE.is_file() else None" in spec
     assert "icon=ICON_RESOURCE," in spec, "иконка не передана в EXE()"
-    # PNG уходит в сборку: из неё main.py ставит иконку окна.
-    assert "datas=ICON_DATAS," in spec
-    assert 'ICON_DATAS = [(str(ICON_PNG), "assets")]' in spec
+    # assets/ уходит в сборку целиком: оттуда main.py берёт иконку
+    # окна, а styles.py — картинку стрелки календаря.
+    assert "datas=ASSET_DATAS," in spec
+    assert 'for path in sorted(ASSETS_DIR.glob("*"))' in spec
+
+
+def test_all_asset_files_are_shipped():
+    """v0.28.2: ничего из assets/ не должно потеряться по дороге в сборку."""
+
+    shipped = sorted(
+        path.name for path in (ROOT / "assets").glob("*") if path.is_file()
+    )
+
+    assert shipped == ["arrow-down.png", "oplata.ico", "oplata.png"]
 
 
 def test_window_icon_is_applied_at_startup():
