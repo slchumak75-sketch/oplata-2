@@ -55,7 +55,12 @@ class RealizationDialog(QDialog):
         self.saved_date: date | None = None
         self.changed = False
 
-        self.setWindowTitle("Реализация")
+        # v0.27.3: в шапке — наименование покупателя (просьба
+        # пользователя) — так же, как в окне «Поставка».
+        title = "Реализация"
+        if self.customer is not None:
+            title = f"{title} — {self.customer.name}"
+        self.setWindowTitle(title)
         self.setModal(True)
         self.setMinimumWidth(560)
 

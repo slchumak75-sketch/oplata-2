@@ -14,6 +14,23 @@ import pytest
 
 
 @pytest.fixture(autouse=True)
+def isolated_data_dir(tmp_path, monkeypatch):
+    """Каждый тест работает в своём каталоге данных (v0.18.0).
+
+    Иначе тесты, которые переключают базу или правят пользователей,
+    пишут ``state.json``/``users.json`` в настоящий каталог данных
+    машины и влияют друг на друга.
+    """
+
+    from oplata import access as access_module
+    from oplata import storage
+
+    monkeypatch.setattr(storage, "data_dir", lambda: tmp_path)
+    monkeypatch.setattr(access_module, "data_dir", lambda: tmp_path)
+    yield
+
+
+@pytest.fixture(autouse=True)
 def _collect_after_test():
     yield
     gc.collect()

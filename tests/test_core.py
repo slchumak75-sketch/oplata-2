@@ -155,9 +155,9 @@ def test_daily_operation_input_roundtrip():
     assert daily_operation_total(data.operations, supplier.id, iso, KIND_INCOME) == Decimal("1000.00")
     assert calc.week_cell_value(supplier.id, day, "income", data.operations) == "1 000,00"
     assert calc.week_cell_value(supplier.id, day, "payment", data.operations) == "250,50"
-    # Долг: у «ааа» отсрочка 0, срок = день поставки. Сумма остаётся в
-    # «Долге» полностью (1000), хотя рядом есть оплата 250,50: по
-    # требованию пользователя оплата пока долг не уменьшает (архив).
+    # Долг: у «ааа» отсрочка 0, срок = день поставки. Здесь считается
+    # архивный график (без оплат) — таблица «Поставщики» показывает
+    # не его, а остаток после оплат (v0.27.2).
     assert calc.week_cell_value(supplier.id, day, "debt", data.operations, data) == "1 000,00"
     # ВСЕГО по колонке
     ids = [s.id for s in data.suppliers]

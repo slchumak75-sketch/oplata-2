@@ -10,6 +10,24 @@
 поставщикам/покупателям. Интерфейс повторяет макеты пользователя
 (`docs/mockups/*.png`, описание — `docs/SPEC.md`).
 
+## 🔒 Данные пользователя: обработки делаем только на пустой базе
+
+Требование пользователя от 29.10.2026 — выполнять обязательно:
+
+- **Реальные данные учёта не покидают компьютер пользователя.** Не
+  выкладывать их в чат, логи, коммиты, issue и обсуждения. В сообщениях
+  и документации — только выдуманные примеры («Тестовый поставщик»,
+  «Новый вид оплаты»).
+- **Отладку, прогоны и проверки делать на пустой базе.** Тесты работают
+  в своём временном каталоге (фикстура `isolated_data_dir` в
+  `tests/conftest.py`), ручные проверки — на демо-данных.
+- **Файлы данных и выгрузки в репозиторий не попадают:**
+  `data*.json`, `state.json`, `users.json`, `current-user.json`,
+  `*.xlsx` — в `.gitignore`. Скриншоты для обсуждения (`preview-*.png`)
+  тоже не коммитим.
+- Кнопки «Выгрузить базу»/«Загрузить базу» запускает сам пользователь
+  на своём компьютере; агент к файлу выгрузки не прикасается.
+
 ## ⛔ Главное правило: формулы — только те, что дал пользователь
 
 Сначала была «только оболочка», 27.10.2026 пользователь начал давать
@@ -98,6 +116,7 @@ QT_QPA_PLATFORM=offscreen .venv/bin/python -m pytest -q   # тесты (Linux/CI
 .venv/bin/python run.py --self-test                        # открыться и закрыться (код 0)
 QT_QPA_PLATFORM=offscreen .venv/bin/python scripts/make_screenshots.py  # переснять скриншоты docs/
 .venv/bin/python scripts/write_version_info.py             # Windows-метаданные EXE
+.venv/bin/python scripts/build_icon.py                     # пересобрать иконку из icons/ (нужен Pillow)
 .venv/bin/pyinstaller --noconfirm --clean oplata.spec      # -> dist/Oplata/Oplata.exe (на Windows; режим folder по умолчанию)
 ```
 
@@ -127,6 +146,7 @@ libfontconfig1`) — в CI они ставятся шагом workflow.
 | Окно «Реализация» (покупатель, без срока) | `src/oplata/dialogs/realization_dialog.py` |
 | Окно операции (ручной ввод/правка оплаты) | `src/oplata/dialogs/operation_dialog.py` (политика срока — ADR-009) |
 | Сборка exe / CI | `oplata.spec`, `.github/workflows/build-windows.yml`, `docs/BUILD.md` |
+| Иконка программы (EXE и окно) | `assets/oplata.ico`, `assets/oplata.png`, путь ищет `src/oplata/resources.py`; пересборка — `scripts/build_icon.py` (ADR-078) |
 
 ## Соглашения
 
