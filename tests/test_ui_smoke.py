@@ -4209,3 +4209,97 @@ def test_excel_round_trip_keeps_invoice_mark(store, tmp_path):
         if op.counterparty_id == buyer.id
     }
     assert marks == {"2026-10-26": False, "2026-10-27": True}
+
+
+def test_customer_totals_are_cumulative_across_weeks(qt_app, store):
+    """v0.29.1: итоги покупателя считаются за всё время, а не за неделю.
+
+    Раньше колонки «Всего»/«Выписано»/«В работе» считались только в
+    границах отображаемой недели, и при переходе на следующую неделю
+    долг «пропадал» — колонки становились пустыми. Теперь долг
+    накапливается, как «Итого» у поставщиков и как задолженность
+    покупателей в «Сводке».
+    """
+
+    from datetime import date
+    from decimal import Decimal
+
+    from oplata.app import MainWindow
+    from oplata.models import (
+        Counterparty,
+        add_customer_receipt,
+        add_realization,
+    )
+    from oplata.views.week_view import FIRST_DATA_ROW, TOTAL_ROW
+
+    buyer = Counterparty(name="Покупатель Р")
+    store.data.customers.append(buyer)
+    # Неделя 26.10–01.11: реализация 1 000 (выписана) и оплата 200.
+    add_realization(store.data, buyer.id, "2026-10-27", Decimal("1000"))
+    add_customer_receipt(store.data, buyer.id, "2026-10-29", Decimal("200"))
+    for op in store.data.operations:
+        op.invoiced = True
+    # Неделя 02.11–08.11: реализация 5 000 (ещё в работе).
+    add_realization(store.data, buyer.id, "2026-11-03", Decimal("5000"))
+    store.save()
+
+    window = MainWindow(store)
+    window.show()
+    qt_app.processEvents()
+    view = window.customers_view
+    table = view.table
+    row = FIRST_DATA_ROW
+
+    for monday, label in (
+        (date(2026, 10, 26), "неделя с первой реализацией"),
+        (date(2026, 11, 2), "неделя со второй реализацией"),
+        (date(2026, 11, 9), "неделя без операций"),
+    ):
+        view.goto_date(monday)
+        qt_app.processEvents()
+        # Выписано: 1 000 − 200 = 800. В работе: 5 000. Всего: 5 800.
+        assert table.item(row, 1).text() == "5 800,00", label
+        assert table.item(row, 2).text() == "800,00", label
+        assert table.item(row, 3).text() == "5 000,00", label
+        assert table.item(TOTAL_ROW, 1).text() == "5 800,00", label
+
+    # Ввод на новой неделе сразу виден в итогах (накопительно).
+    view.goto_date(date(2026, 11, 9))
+    table.item(row, _DAY(view, 0, 0)).setText("250")
+    assert table.item(row, 1).text() == "6 050,00"
+    assert table.item(row, 3).text() == "5 250,00"
+    window.close()
+
+
+def test_hover_rule_keeps_cell_background():
+    """v0.29.1: при наведении ячейка не теряет свой фон.
+
+    Раньше правило ``::item:hover`` заливало ячейку фоном панели, и под
+    курсором гасла метка «выписано» (красная/зелёная), розовые
+    выходные и салатовая текущая дата. Смотрим именно правило: в
+    headless-среде наведение не смоделировать — ``underMouse()`` у
+    таблицы остаётся False даже после QTest.mouseMove.
+    """
+
+    import re
+
+    from oplata import styles
+
+    rules = styles.TABLE_CELL_RULES
+
+    hover = re.search(r"::item:hover[^{]*\{([^}]*)\}", rules)
+    assert hover is not None, "правило для :hover пропало из стилей"
+    assert "background" not in hover.group(1), (
+        "у :hover снова задан фон — метка погаснет под курсором: "
+        f"{hover.group(1)}"
+    )
+    assert "outline:none" in hover.group(1), "рамка фокуса вернётся при наведении"
+
+    # Защита от артефакта v0.26.8 остаётся: у выделенной и нажатой
+    # ячейки по-прежнему свой фон.
+    for selector in (":selected", ":focus"):
+        match = re.search(r"::item" + selector + r"[^{]*\{([^}]*)\}", rules)
+        assert match is not None, f"правило для {selector} пропало"
+        assert "background:" in match.group(0), (
+            f"у {selector} больше нет своего фона — вернётся синий артефакт"
+        )

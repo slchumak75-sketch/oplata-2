@@ -88,10 +88,16 @@ TABLE_CELL_RULES = (
     # перекрыл бы его.
     "QTableWidget::item:selected,QTableView::item:selected,"
     "QTableWidget::item:selected:focus,QTableView::item:selected:focus,"
-    "QTableWidget::item:focus,QTableView::item:focus,"
-    "QTableWidget::item:hover,QTableView::item:hover{"
+    "QTableWidget::item:focus,QTableView::item:focus{"
     f"background:{PANEL_BG};border:none;outline:none;"
     f"color:{TEXT}}}"
+    # v0.29.1: при наведении рамку и контур гасим так же, а фон — НЕ
+    # задаём. Раньше здесь было background:PANEL_BG, и под курсором
+    # ячейка теряла свой цвет: метка «выписано» (красная/зелёная),
+    # розовые выходные и салатовая текущая дата становились серыми.
+    # Из-за этого окраска метки исчезала ещё до нажатия на неё.
+    "QTableWidget::item:hover,QTableView::item:hover{"
+    f"border:none;outline:none;color:{TEXT}}}"
     "QTableWidget QLineEdit,QTableView QLineEdit{"
     "border:none;outline:none;background:#ffffff;"
     f"color:{TEXT};"
