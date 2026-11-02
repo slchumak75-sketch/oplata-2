@@ -876,9 +876,13 @@ class WeekView(QWidget):
                     # Покупатели (v0.29.0): «Всего» = «Выписано» +
                     # «В работе»; «Выписано» — реализация с зелёной
                     # меткой минус оплаты, «В работе» — с красной.
+                    # v0.29.1: считаем за всё время (без границ недели),
+                    # иначе при переходе на другую неделю долг
+                    # «терялся» — как «Итого» у поставщиков и как
+                    # задолженность покупателей в «Сводке».
                     partner = self._partners[r]
                     invoiced, work, debt = calc.customer_debt_split(
-                        self.store.data, partner, days[0], self._week_end
+                        self.store.data, partner
                     )
                     total_customer += debt
                     total_customer_invoiced += invoiced
@@ -1206,12 +1210,12 @@ class WeekView(QWidget):
         # v0.29.0: (Выписано, В работе, Всего) по каждому покупателю.
         customer_splits: list[tuple[Decimal, Decimal, Decimal]] = []
         if self.kind != "supplier":
-            # v0.26.0: плашка «Данных» удалена — считаем только
-            # операции недели (Реализация − Оплата).
+            # v0.26.0: плашка «Данных» удалена — считаем только операции.
+            # v0.29.1: итоги покупателя — за всё время, без границ
+            # недели: долг накапливается и виден на любой неделе
+            # (границы были причиной «пустых» колонок при переходе).
             customer_splits = [
-                calc.customer_debt_split(
-                    self.store.data, partner, days[0], self._week_end
-                )
+                calc.customer_debt_split(self.store.data, partner)
                 for partner in partners
             ]
             total_customer_debt = sum((split[2] for split in customer_splits), ZERO)
