@@ -18,6 +18,7 @@ from pathlib import Path
 from datetime import date
 
 from PySide6.QtCore import QTimer, Qt
+from PySide6.QtGui import QCloseEvent
 from PySide6.QtWidgets import (
     QApplication,
     QButtonGroup,
@@ -41,7 +42,6 @@ from .dialogs.operations_journal_dialog import OperationsJournalDialog
 from .dialogs.realization_dialog import RealizationDialog
 from .excelio import (
     ExcelError,
-    default_export_name,
     describe_bases,
     export_bases,
     import_bases,
@@ -51,9 +51,13 @@ from .storage import (
     BASE_KORELICHI,
     BASE_MIR,
     BASE_TITLES,
+    LOCAL_BASE_DIR_NAME,
     OTHER_BASE,
     DataStore,
     data_path_for,
+    latest_local_base_file,
+    local_base_dir,
+    local_base_file,
 )
 from .views.data_view import DataView
 from .views.receipts_view import ReceiptsView
@@ -85,6 +89,12 @@ class MainWindow(QMainWindow):
         # Открытые окна журналов операций держим, чтобы они не закрывались
         # сборщиком мусора (окна немодальные).
         self._journal_dialogs: list[OperationsJournalDialog] = []
+        # v0.30.0: при выходе обе базы сами выгружаются в «Оплата база».
+        # Флаг выключает автовыгрузку в smoke-прогоне собранного exe
+        # (--self-test), а ``_exit_export_done`` не даёт выгрузить дважды:
+        # и по закрытию окна, и по aboutToQuit.
+        self.autosave_on_exit = True
+        self._exit_export_done = False
         self.setWindowTitle(f"{__app_name__}  v{__version__}")
         self.resize(1440, 860)
         self.setMinimumSize(1100, 640)
@@ -322,14 +332,32 @@ class MainWindow(QMainWindow):
         holder.data = data
         holder.save()
 
-    def export_bases_to_excel(self) -> None:
-        """Кнопка «Выгрузить базы»: обе базы в один файл Excel (v0.20.0)."""
+    def _collect_bases(self) -> dict[str, AppData]:
+        """Обе базы (МИР и КОРЕЛИЧИ) для выгрузки (v0.30.0)."""
 
         bases = {self.store.base_key: self.store.data}
         other = OTHER_BASE[self.store.base_key]
         bases[other] = self._read_base(other)
+        return bases
 
-        default_path = str(Path.home() / default_export_name())
+    def export_bases_to_excel(self) -> None:
+        """Кнопка «Выгрузить базы»: обе базы в один файл Excel (v0.20.0).
+
+        v0.30.0: диалог открывается в папке «Оплата база» рядом с
+        программой и подставляет имя «Оплата <сегодня>.xlsx» (ADR-082).
+        """
+
+        bases = self._collect_bases()
+
+        # Папку создаём заранее: если её не было, диалог всё равно
+        # откроется в нужном месте. Не создалась (например, программа в
+        # Program Files без прав на запись) — не беда, путь останется
+        # прежним, пользователь выберет другой каталог сам.
+        try:
+            local_base_dir().mkdir(parents=True, exist_ok=True)
+        except OSError:
+            pass
+        default_path = str(local_base_file())
         path, _selected = QFileDialog.getSaveFileName(
             self,
             "Выгрузить базы в Excel",
@@ -351,17 +379,77 @@ class MainWindow(QMainWindow):
             "Базы МИР и КОРЕЛИЧИ выгружены в файл:\n" + path,
         )
 
+    def autosave_bases_to_excel(self) -> Path | None:
+        """Молча выгрузить обе базы в «Оплата база» (v0.30.0).
+
+        Вызывается при закрытии окна и по ``aboutToQuit``: у пользователя
+        всегда лежит свежая копия обеих баз рядом с программой, даже если
+        он ни разу не нажимал «Выгрузить базы». Ошибку (например, файл
+        уже открыт в Excel) показываем предупреждением, но выход не
+        блокируем: закрыть программу важнее.
+
+        Возвращает путь к файлу или ``None``, если выгрузки не было.
+        """
+
+        # Один раз за выход: и по закрытию окна, и по aboutToQuit (Qt
+        # шлёт оба сигнала), поэтому второй вызов ничего не делает.
+        if self._exit_export_done or not self.autosave_on_exit:
+            return None
+        self._exit_export_done = True
+
+        bases = self._collect_bases()
+        path = local_base_file()
+        try:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            export_bases(bases, path)
+        except (ExcelError, OSError) as exc:
+            QMessageBox.warning(
+                self,
+                "Выгрузка баз",
+                "Не удалось сохранить выгрузку в папку "
+                f"«{LOCAL_BASE_DIR_NAME}»:\n{exc}\n\n"
+                "Программа закрывается. При желании выгрузите базы "
+                "кнопкой «Выгрузить базы» вручную.",
+            )
+            return None
+        return path
+
+    def closeEvent(self, event: QCloseEvent) -> None:  # noqa: N802
+        """Закрытие окна: молча выгружаем обе базы (v0.30.0, ADR-082)."""
+
+        self.autosave_bases_to_excel()
+        super().closeEvent(event)
+
+    def _import_start_path(self) -> str:
+        """Откуда открывать диалог загрузки выгрузки (v0.30.0).
+
+        Папка «Оплата база» и самый свежий файл в ней. Если ни папки, ни
+        файла нет, Qt открыла бы несуществующий каталог — в этом случае
+        отдаём домашний каталог, как было раньше.
+        """
+
+        candidate = latest_local_base_file() or local_base_dir()
+        try:
+            exists = Path(candidate).exists()
+        except OSError:
+            exists = False
+        return str(candidate if exists else Path.home())
+
     def import_bases_from_excel(self) -> None:
         """Кнопка «Загрузить базы»: обе базы из файла Excel (v0.20.0).
 
         Файл заменяет данные целиком, поэтому перед заменой спрашиваем
         подтверждение: отменить загрузку будет нечем.
+
+        v0.30.0: диалог открывается в папке «Оплата база» и сразу
+        подставляет самую свежую выгрузку (ADR-082) — вручную искать
+        файл по всему компьютеру больше не нужно.
         """
 
         path, _selected = QFileDialog.getOpenFileName(
             self,
             "Загрузить базы из Excel",
-            str(Path.home()),
+            self._import_start_path(),
             "Книга Excel (*.xlsx)",
         )
         if not path:
