@@ -1304,8 +1304,10 @@ def test_other_payment_rows_add_sum_and_remove(qt_app, store, monkeypatch):
     patch_other_payment_card(monkeypatch, ["Новый вид оплаты", "Второй вид"])
     window = MainWindow(store)
     view = window.receipts_view
-    day_column = _DAY_COL(view.outgoing, date(2026, 10, 27))
+    # Сначала выставляем дату: колонки дней в блоке перестраиваются под
+    # неделю выбранной даты, а при запуске в блоке стоит текущая неделя.
     view.outgoing.set_date(date(2026, 10, 27))
+    day_column = _DAY_COL(view.outgoing, date(2026, 10, 27))
     assert view.outgoing.row_keys == ["suppliers"]  # пока только поставщики
 
     view.add_other_row()
@@ -4303,3 +4305,208 @@ def test_hover_rule_keeps_cell_background():
         assert "background:" in match.group(0), (
             f"у {selector} больше нет своего фона — вернётся синий артефакт"
         )
+
+
+def test_local_base_paths_sit_next_to_program(tmp_path, monkeypatch):
+    """v0.30.0: выгрузки живут в «Оплата база» рядом с программой (ADR-082)."""
+
+    from datetime import date
+    from pathlib import Path
+
+    from oplata import storage
+
+    monkeypatch.setenv("OPLATA_PROGRAM_DIR", str(tmp_path / "program"))
+
+    assert storage.program_dir() == tmp_path / "program"
+    assert storage.local_base_dir() == tmp_path / "program" / "Оплата база"
+    # Имя файла — «Оплата <сегодня>.xlsx»: в один день файл перезаписывается.
+    assert storage.local_base_file(date(2026, 11, 2)).name == "Оплата 02.11.2026.xlsx"
+    assert storage.local_base_file().name == (
+        f"Оплата {date.today().strftime('%d.%m.%Y')}.xlsx"
+    )
+    # Дату из имени вынимаем только у своих файлов.
+    assert storage.local_base_file_day(Path("Оплата 02.11.2026.xlsx")) == date(
+        2026, 11, 2
+    )
+    assert storage.local_base_file_day(Path("отчёт за ноябрь.xlsx")) is None
+    assert storage.local_base_file_day(Path("Оплата 31.02.2026.xlsx")) is None
+
+    # Папки нет — самой свежей выгрузки тоже нет.
+    assert storage.latest_local_base_file() is None
+
+    folder = storage.local_base_dir()
+    folder.mkdir(parents=True)
+    (folder / "Оплата 01.11.2026.xlsx").write_bytes(b"1")
+    newest = folder / "Оплата 03.11.2026.xlsx"
+    newest.write_bytes(b"1")
+    (folder / "отчёт за ноябрь.xlsx").write_bytes(b"1")
+    assert storage.latest_local_base_file() == newest
+
+
+def test_export_dialog_offers_local_base_folder(qt_app, store, monkeypatch):
+    """v0.30.0: «Выгрузить базы» открывается сразу в «Оплата база»."""
+
+    from datetime import date
+
+    from pathlib import Path
+
+    from oplata import storage
+    from oplata.app import MainWindow
+
+    captured: dict[str, str] = {}
+
+    def fake_save(*args, **kwargs):
+        captured["dir"] = args[2]
+        return ("", "")
+
+    monkeypatch.setattr(QFileDialog, "getSaveFileName", staticmethod(fake_save))
+
+    window = MainWindow(store)
+    window.export_bases_to_excel()
+
+    expected = storage.local_base_file()
+    assert Path(captured["dir"]) == expected
+    assert expected.name == f"Оплата {date.today().strftime('%d.%m.%Y')}.xlsx"
+    assert expected.parent.is_dir(), "папка «Оплата база» не создана заранее"
+    window.close()
+
+
+def test_import_dialog_opens_latest_export(qt_app, store, monkeypatch):
+    """v0.30.0: «Загрузить базы» подставляет самую свежую выгрузку."""
+
+    from pathlib import Path
+
+    from oplata import storage
+    from oplata.app import MainWindow
+
+    folder = storage.local_base_dir()
+    folder.mkdir(parents=True)
+    (folder / "Оплата 01.11.2026.xlsx").write_bytes(b"1")
+    newest = folder / "Оплата 05.11.2026.xlsx"
+    newest.write_bytes(b"1")
+
+    captured: dict[str, str] = {}
+
+    def fake_open(*args, **kwargs):
+        captured["dir"] = args[2]
+        return ("", "")
+
+    monkeypatch.setattr(QFileDialog, "getOpenFileName", staticmethod(fake_open))
+
+    window = MainWindow(store)
+    window.import_bases_from_excel()
+    assert Path(captured["dir"]) == newest
+
+    # Пустая папка — открываем саму папку; нет и папки — домашний каталог,
+    # иначе Qt показала бы несуществующий путь.
+    for file in folder.iterdir():
+        file.unlink()
+    assert Path(window._import_start_path()) == folder
+    monkeypatch.setenv("OPLATA_PROGRAM_DIR", str(folder / "нет такой папки"))
+    assert Path(window._import_start_path()) == Path.home()
+    window.close()
+
+
+def test_closing_window_autosaves_both_bases(qt_app, store, monkeypatch):
+    """v0.30.0: при закрытии окна обе базы сами выгружаются в «Оплата база»."""
+
+    pytest.importorskip("openpyxl")
+    from datetime import date
+
+    from openpyxl import load_workbook
+
+    from oplata import storage
+    from oplata.app import MainWindow
+    from oplata.models import Counterparty
+
+    messages: list[str] = []
+    monkeypatch.setattr(
+        QMessageBox,
+        "warning",
+        staticmethod(lambda *args, **kwargs: messages.append(str(args[-1]))),
+    )
+    monkeypatch.setattr(
+        QMessageBox,
+        "information",
+        staticmethod(lambda *args, **kwargs: messages.append(str(args[-1]))),
+    )
+
+    window = MainWindow(store)
+    store.data.suppliers = [Counterparty(name="Тестовый поставщик")]
+    store.save()
+    window.show()
+    qt_app.processEvents()
+
+    window.close()
+    qt_app.processEvents()
+
+    path = storage.local_base_file()
+    assert path.is_file(), "при закрытии окна выгрузка не появилась"
+    assert path.name == f"Оплата {date.today().strftime('%d.%m.%Y')}.xlsx"
+    names = load_workbook(path).sheetnames
+    assert any(name.startswith("МИР.") for name in names)
+    assert any(name.startswith("КОРЕЛИЧИ.") for name in names)
+
+    book = load_workbook(path)
+    written = [
+        str(row[0])
+        for title in names
+        if title.startswith("МИР.")
+        for row in book[title].iter_rows(values_only=True)
+        if row and row[0] is not None
+    ]
+    assert "Тестовый поставщик" in written, "в выгрузку не попали данные базы"
+    assert not messages, f"при выходе программа не должна ничего спрашивать: {messages}"
+
+
+def test_autosave_failure_warns_without_blocking_exit(qt_app, store, monkeypatch):
+    """v0.30.0: неудачная выгрузка при выходе — предупреждение, а не запрет."""
+
+    from oplata import app as app_module
+    from oplata.app import MainWindow
+    from oplata.excelio import ExcelError
+
+    def broken_export(bases, path):
+        raise ExcelError("файл открыт в Excel")
+
+    monkeypatch.setattr(app_module, "export_bases", broken_export)
+
+    messages: list[str] = []
+    monkeypatch.setattr(
+        QMessageBox,
+        "warning",
+        staticmethod(lambda *args, **kwargs: messages.append(str(args[-1]))),
+    )
+
+    window = MainWindow(store)
+    window.show()
+    qt_app.processEvents()
+
+    assert window.close() is True, "окно не закрылось — выгрузка заблокировала выход"
+    assert len(messages) == 1, f"предупреждение должно быть одно: {messages}"
+    assert "Оплата база" in messages[0]
+    assert not window.isVisible()
+
+
+def test_autosave_runs_once_per_exit(qt_app, store, monkeypatch):
+    """v0.30.0: и по закрытию окна, и по aboutToQuit выгружаем один раз."""
+
+    from oplata import app as app_module
+    from oplata.app import MainWindow
+
+    calls: list[str] = []
+    monkeypatch.setattr(
+        app_module, "export_bases", lambda bases, path: calls.append(str(path))
+    )
+
+    window = MainWindow(store)
+    window.close()
+    # aboutToQuit приходит уже после закрытия окна — второй раз не пишем.
+    window.autosave_bases_to_excel()
+    assert len(calls) == 1, f"выгрузка повторилась: {calls}"
+
+    # В smoke-прогоне собранного exe (--self-test) выгрузка отключена.
+    fresh = MainWindow(store)
+    fresh.autosave_on_exit = False
+    fresh.close()
+    assert len(calls) == 1, "выгрузка всё равно состоялась при autosave_on_exit=False"

@@ -14,7 +14,10 @@ from __future__ import annotations
 
 import json
 import os
+import re
+import sys
 from collections.abc import Callable
+from datetime import date
 from pathlib import Path
 
 from .models import AppData, seed_data
@@ -22,6 +25,18 @@ from .models import AppData, seed_data
 APP_DIR_NAME = "OplataStroymarket"
 DATA_FILE_NAME = "data.json"
 STATE_FILE_NAME = "state.json"
+
+# v0.30.0: папка «Оплата база» лежит рядом с программой (ADR-082). В ней
+# — выгрузки обеих баз в Excel: своя копия на каждом компьютере, чтобы
+# данные были под рукой и их можно было перенести флешкой. Считаем путь
+# от самой программы, а не от данных: данные могут жить в общей папке на
+# Google Диске, а выгрузка — локальная.
+LOCAL_BASE_DIR_NAME = "Оплата база"
+LOCAL_BASE_NAME_TEMPLATE = "Оплата {day}.xlsx"
+# Переопределение для тестов: без него выгрузки падали бы в репозиторий.
+PROGRAM_DIR_ENV = "OPLATA_PROGRAM_DIR"
+# «Оплата 02.11.2026.xlsx» — по дате в имени ищем самую свежую выгрузку.
+LOCAL_BASE_NAME_RE = re.compile(r"^Оплата (\d{2})\.(\d{2})\.(\d{4})\.xlsx$")
 
 # v0.17.0: две не связанные между собой базы — МИР и КОРЕЛИЧИ. У каждой
 # свой файл данных: поставщики, покупатели, операции, поступления,
@@ -58,6 +73,97 @@ def default_data_path() -> Path:
 
 def state_path() -> Path:
     return data_dir() / STATE_FILE_NAME
+
+
+def program_dir() -> Path:
+    """Каталог самой программы (v0.30.0, ADR-082).
+
+    Рядом с ним лежит папка «Оплата база» с выгрузками:
+
+    * сборка папкой (``…\\Oplata\\Oplata.exe``) — каталог на уровень
+      выше, то есть рядом с папкой ``Oplata``;
+    * один EXE — каталог, где лежит сам файл;
+    * запуск из исходников и тесты — переменная ``OPLATA_PROGRAM_DIR``,
+      а без неё корень репозитория (на два уровня выше этого файла).
+    """
+
+    override = os.environ.get(PROGRAM_DIR_ENV)
+    if override:
+        return Path(override)
+    if getattr(sys, "frozen", False):  # сборка PyInstaller
+        exe = Path(sys.executable).resolve()
+        # У сборки папкой sys._MEIPASS — каталог рядом с exe, у одного
+        # файла — временный каталог распаковки. По этому признаку и
+        # отличаем: для сборки папкой поднимаемся на уровень выше.
+        raw_meipass = str(getattr(sys, "_MEIPASS", "") or "")
+        if raw_meipass and Path(raw_meipass).resolve() == exe.parent:
+            return exe.parent.parent
+        return exe.parent
+    return Path(__file__).resolve().parents[2]
+
+
+def local_base_dir() -> Path:
+    """Каталог «Оплата база» рядом с программой (v0.30.0)."""
+
+    return program_dir() / LOCAL_BASE_DIR_NAME
+
+
+def local_base_file(day: date | None = None) -> Path:
+    """Путь выгрузки на дату: «Оплата 02.11.2026.xlsx» (v0.30.0).
+
+    В один день имя одно и то же — файл перезаписывается, поэтому в
+    папке лежит ровно одна выгрузка за день.
+    """
+
+    target = day or date.today()
+    return local_base_dir() / LOCAL_BASE_NAME_TEMPLATE.format(
+        day=target.strftime("%d.%m.%Y")
+    )
+
+
+def local_base_file_day(path: Path) -> date | None:
+    """Дата из имени выгрузки; у посторонних файлов — ``None`` (v0.30.0)."""
+
+    match = LOCAL_BASE_NAME_RE.match(path.name)
+    if match is None:
+        return None
+    day, month, year = (int(part) for part in match.groups())
+    try:
+        return date(year, month, day)
+    except ValueError:  # 31.02.2026 и прочие несуществующие даты
+        return None
+
+
+def latest_local_base_file() -> Path | None:
+    """Самый свежий файл выгрузки в «Оплата база» (v0.30.0).
+
+    Свежесть — по дате в имени, при равных датах — по времени
+    изменения. Посторонние файлы (без даты в имени) не считаются:
+    диалог загрузки не должен подставлять первый попавшийся xlsx.
+    """
+
+    try:
+        entries = list(local_base_dir().iterdir())
+    except OSError:  # папки ещё нет
+        return None
+
+    dated: list[tuple[date, float, Path]] = []
+    for path in entries:
+        if path.suffix.lower() != ".xlsx" or not path.is_file():
+            continue
+        day = local_base_file_day(path)
+        if day is None:
+            continue
+        try:
+            modified = path.stat().st_mtime
+        except OSError:
+            modified = 0.0
+        dated.append((day, modified, path))
+
+    if not dated:
+        return None
+    dated.sort(key=lambda item: (item[0], item[1]))
+    return dated[-1][2]
 
 
 def load_active_base() -> str:

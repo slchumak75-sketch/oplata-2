@@ -55,6 +55,12 @@ def main(argv: list[str] | None = None) -> int:
     # В заголовке окна видно роль — иначе непонятно, почему часть
     # вкладок и кнопок недоступна (v0.18.0).
     window.setWindowTitle(f"{__app_name__}  v{__version__} · {access.title}")
+    # v0.30.0: перед выходом обе базы сами выгружаются в «Оплата база»
+    # рядом с программой (ADR-082). В smoke-прогоне (--self-test) окно
+    # закрывается сразу — выгрузку отключаем, чтобы exe не писал файлы
+    # в каталог сборки.
+    window.autosave_on_exit = "--self-test" not in argv
+    app.aboutToQuit.connect(window.autosave_bases_to_excel)
     # Программа открывается развёрнутой на весь экран, чтобы недельные
     # таблицы сразу были во всю ширину (запрос пользователя, v0.2.0).
     window.showMaximized()

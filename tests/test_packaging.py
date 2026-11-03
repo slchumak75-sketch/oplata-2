@@ -67,14 +67,28 @@ def test_google_drive_launcher_is_shipped():
 
     raw = launcher.read_bytes()
     assert b"\r\n" in raw, "bat-файл должен быть с переводами строк CRLF"
-    text = raw.decode("cp866")  # русский текст для cmd.exe — в кодировке 866
+    # v0.30.0: файл переведён в UTF-8 (консоль переключается chcp 65001) —
+    # иначе русские буквы не доезжают до PowerShell, который делает ярлык.
+    text = raw.decode("utf-8")
 
+    assert "chcp 65001" in text, "без UTF-8 в консоли ярлык получится кракозяброй"
     assert "OPLATA_DATA_DIR" in text
     assert "Oplata.exe" in text
     # путь можно задать вручную: строка закомментирована в начале файла
     assert 'rem set "OPLATA_DATA_DIR=' in text
     # папка ищется сама — по стандартным расположениям Диска
     assert "Google" in text and "USERPROFILE" in text
+
+    # v0.30.0: bat сам создаёт ярлык «Оплаты» с иконкой из Oplata.exe —
+    # рядом с программой и на рабочем столе.
+    assert "call :make_shortcut" in text, "ярлык больше не создаётся при запуске"
+    assert ":make_shortcut" in text
+    assert "WScript.Shell" in text, "ярлык делается через COM-объект WScript.Shell"
+    assert "IconLocation" in text, "у ярлыка должна быть иконка программы"
+    assert "Оплаты.lnk" in text
+    assert "%USERPROFILE%\\Desktop\\" in text
+    # PowerShell может быть недоступен — запуск программы важнее ярлыка.
+    assert "exit /b 0" in text
 
     # Файл копируется в оба пакета (папка и один exe).
     workflow = (
@@ -189,3 +203,16 @@ def test_resources_find_icon_in_frozen_bundle(monkeypatch, tmp_path):
 
     monkeypatch.setattr(resources.sys, "frozen", False, raising=False)
     assert resources.icon_path() == ROOT / "assets" / "oplata.png"
+
+
+def test_exit_autosave_is_wired_into_startup():
+    """v0.30.0: выход из программы выгружает базы, но не в smoke-прогоне."""
+
+    main_source = (ROOT / "src" / "oplata" / "main.py").read_text(encoding="utf-8")
+
+    assert (
+        "aboutToQuit.connect(window.autosave_bases_to_excel)" in main_source
+    ), "при выходе из программы выгрузка не делается"
+    assert 'window.autosave_on_exit = "--self-test" not in argv' in main_source, (
+        "в smoke-прогоне (--self-test) выгрузка должна быть отключена"
+    )

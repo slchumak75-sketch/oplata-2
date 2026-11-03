@@ -27,6 +27,9 @@ def isolated_data_dir(tmp_path, monkeypatch):
 
     monkeypatch.setattr(storage, "data_dir", lambda: tmp_path)
     monkeypatch.setattr(access_module, "data_dir", lambda: tmp_path)
+    # v0.30.0: выгрузки при закрытии окна (автовыгрузка) не должны
+    # попадать в настоящий каталог программы — им тоже нужен tmp.
+    monkeypatch.setenv("OPLATA_PROGRAM_DIR", str(tmp_path / "program"))
     yield
 
 
@@ -70,6 +73,11 @@ def _close_leftover_windows() -> None:
         return
     for widget in list(app.topLevelWidgets()):
         try:
+            # v0.30.0: окна закрываются уже без фикстур теста, поэтому
+            # автовыгрузку в «Оплата база» на выходе отключаем — иначе
+            # файлы уплыли бы в настоящий каталог программы.
+            if hasattr(widget, "autosave_on_exit"):
+                widget.autosave_on_exit = False
             widget.close()
             widget.deleteLater()
         except RuntimeError:  # C++-объект уже удалён
