@@ -44,11 +44,13 @@ from .models import (
     KIND_INCOME,
     KIND_PAYMENT,
     KIND_SALE,
+    OUTGOING,
     Operation,
     cash_receipt_amount,
     daily_operation_total,
     operation_amount,
     other_payment_amount,
+    other_payment_names,
     year_start_amount,
     year_start_customer_debt,
 )
@@ -954,3 +956,125 @@ def week_column_total(
             counterparty_id, day, column_kind, operations, data
         )
     return fmt_money_plain(total) if total != 0 else ""
+
+
+# ---------------------------------------------------------------------------
+# Сводка оплат: помесячно, поквартально и за год (v0.31.0)
+# ---------------------------------------------------------------------------
+
+# Строка «Поставщики» — все оплаты из операций (как в блоке «Оплата» на
+# вкладке «Поступление и оплаты» и как в «Средствах»: отдельного
+# деления на поставщиков и покупателей в оплатах программа не ведёт).
+SUPPLIERS_PAYMENTS_TITLE = "Поставщики"
+MONTH_TITLES = (
+    "янв",
+    "фев",
+    "мар",
+    "апр",
+    "май",
+    "июн",
+    "июл",
+    "авг",
+    "сен",
+    "окт",
+    "ноя",
+    "дек",
+)
+QUARTER_TITLES = ("I кв.", "II кв.", "III кв.", "IV кв.")
+QUARTER_MONTHS = ((1, 2, 3), (4, 5, 6), (7, 8, 9), (10, 11, 12))
+
+
+@dataclass(frozen=True)
+class PaymentsSummaryRow:
+    """Строка «Сводки оплат»: вид оплаты и суммы по месяцам года."""
+
+    name: str
+    months: tuple[Decimal, ...]  # 12 месяцев, январь — первый
+    quarters: tuple[Decimal, ...]  # 4 квартала
+    total: Decimal
+
+
+@dataclass(frozen=True)
+class PaymentsSummary:
+    """Оплаты одного года по видам (v0.31.0)."""
+
+    year: int
+    rows: tuple[PaymentsSummaryRow, ...]
+    total: PaymentsSummaryRow
+
+
+def _payments_row(name: str, months: Sequence[Decimal]) -> PaymentsSummaryRow:
+    """Собрать строку: по месяцам, по кварталам и всего за год."""
+
+    quarters = tuple(
+        sum((months[index - 1] for index in quarter), ZERO)
+        for quarter in QUARTER_MONTHS
+    )
+    return PaymentsSummaryRow(
+        name=name,
+        months=tuple(months),
+        quarters=quarters,
+        total=sum(months, ZERO),
+    )
+
+
+def payments_summary(data: AppData, year: int) -> PaymentsSummary:
+    """Оплаты года ``year`` по видам: месяцы, кварталы, итог (v0.31.0).
+
+    Считаем **исходящие** оплаты активной базы — ровно то, что попадает
+    в блок «Оплата» и в строки «Оплаты» «Сводки»:
+
+    * операции вида «Оплата» — строка «Поставщики»;
+    * прочие виды оплат (``direction`` = ``OUTGOING``) — по строке на
+      каждый вид, в порядке появления (как в блоке «Оплата»).
+
+    Вид показывается, даже если в этом году оплат по нему не было:
+    таблица не должна «прыгать» при смене года.
+    """
+
+    amounts: dict[str, list[Decimal]] = {}
+
+    def bucket(name: str) -> list[Decimal]:
+        row = amounts.get(name)
+        if row is None:
+            row = [ZERO] * 12
+            amounts[name] = row
+        return row
+
+    for op in data.operations:
+        if op.kind != KIND_PAYMENT:
+            continue
+        day = _iso_day(op.date)
+        if day is None or day.year != year:
+            continue
+        row = bucket(SUPPLIERS_PAYMENTS_TITLE)
+        row[day.month - 1] += operation_amount(op)
+
+    for payment in data.other_payments:
+        if getattr(payment, "direction", OUTGOING) == INCOMING:
+            continue
+        day = _iso_day(payment.date)
+        if day is None or day.year != year:
+            continue
+        row = bucket(payment.name or "Прочий вид")
+        row[day.month - 1] += other_payment_amount(payment)
+
+    names = [SUPPLIERS_PAYMENTS_TITLE]
+    for name in other_payment_names(data):
+        if name not in names:
+            names.append(name)
+    # Виды, которых нет в списке (например, удалённые строки), всё равно
+    # видны: данные важнее настройки.
+    for name in amounts:
+        if name not in names:
+            names.append(name)
+
+    rows = tuple(_payments_row(name, amounts.get(name, [ZERO] * 12)) for name in names)
+
+    totals = [ZERO] * 12
+    for row in rows:
+        for index, amount in enumerate(row.months):
+            totals[index] += amount
+    return PaymentsSummary(
+        year=year, rows=rows, total=_payments_row("Всего", totals)
+    )

@@ -2412,20 +2412,32 @@ def test_journals_are_same_width_and_centered(qt_app, store):
 
 
 def test_summary_panel_font_is_larger_others_unchanged(qt_app, store):
-    """v0.23.6: шрифт увеличен только в панели «Сводка»."""
+    """v0.23.6: шрифт увеличен только в панели «Сводка».
+
+    v0.31.0: панель уменьшена на 20% по просьбе пользователя — кегли
+    считаются от ``SUMMARY_FONT_SCALE`` (1,5 → 1,2), а остальная
+    программа по-прежнему при обычном шрифте.
+    """
 
     from oplata import styles
     from oplata.app import MainWindow
 
     window = MainWindow(store)
     summary = window.summary_view
-    # Кегли блоков «Сводки» — на 50% крупнее обычных.
+    # Кегли блоков «Сводки» — крупнее обычных.
     assert summary.panel.toggle.font().pixelSize() == styles.fs_summary(15)
     caption = next(iter(summary._captions.values()))
     value = next(iter(summary._values.values()))
     assert caption.font().pixelSize() == styles.fs_summary(12)
     assert value.font().pixelSize() == styles.fs_summary(12)
-    assert styles.fs_summary(12) == int(round(12 * styles.FONT_SCALE * 1.5))
+    assert styles.SUMMARY_FONT_SCALE == 1.2
+    assert styles.fs_summary(12) == int(
+        round(12 * styles.FONT_SCALE * styles.SUMMARY_FONT_SCALE)
+    )
+    # Панель осталась крупнее остальной программы, но не слишком.
+    assert styles.fs_summary(12) > styles.fs(12)
+    assert styles.fs_summary(15) == 23
+    assert styles.fs_summary(12) == 19
 
     # Остальная программа осталась при обычном шрифте (общее +50% из
     # v0.23.2 отменено).
@@ -4510,3 +4522,116 @@ def test_autosave_runs_once_per_exit(qt_app, store, monkeypatch):
     fresh.autosave_on_exit = False
     fresh.close()
     assert len(calls) == 1, "выгрузка всё равно состоялась при autosave_on_exit=False"
+
+
+def test_payments_summary_button_opens_monthly_table(qt_app, store, monkeypatch):
+    """v0.31.0: кнопка «Сводка оплат» под плашкой — таблица по месяцам."""
+
+    from datetime import date
+    from decimal import Decimal
+
+    from oplata.app import MainWindow
+    from oplata.models import OUTGOING, OtherPayment, add_supplier_payment
+
+    supplier = store.data.suppliers[0]
+    add_supplier_payment(store.data, supplier.id, "2026-01-15", Decimal("1000"))
+    add_supplier_payment(store.data, supplier.id, "2026-02-05", Decimal("500.50"))
+    store.data.other_payments.append(
+        OtherPayment(
+            date="2026-01-20", name="Аренда", amount="3000.00", direction=OUTGOING
+        )
+    )
+
+    window = MainWindow(store)
+    window.show()
+    qt_app.processEvents()
+
+    button = window.summary_view.payments_summary_button
+    assert button.text() == "Сводка оплат"
+    assert button.isVisible()
+    # Кнопка стоит в самом низу панели — ниже плашки «Сводка».
+    assert button.pos().y() > window.summary_view.panel.pos().y()
+
+    opened: list[object] = []
+    monkeypatch.setattr(
+        "oplata.views.payments_summary_view.PaymentsSummaryDialog.exec",
+        lambda self, *args, **kwargs: opened.append(self) or True,
+    )
+    button.click()
+
+    assert len(opened) == 1, "кнопка не открыла окно сводки оплат"
+    dialog = opened[0]
+    table = dialog.table
+    headers = [
+        table.horizontalHeaderItem(column).text()
+        for column in range(table.columnCount())
+    ]
+    # Вид оплаты + 12 месяцев + 4 квартала + итог за год.
+    assert headers[0] == "Вид оплаты"
+    assert headers[1:13] == [
+        "янв",
+        "фев",
+        "мар",
+        "апр",
+        "май",
+        "июн",
+        "июл",
+        "авг",
+        "сен",
+        "окт",
+        "ноя",
+        "дек",
+    ]
+    assert headers[13:17] == ["I кв.", "II кв.", "III кв.", "IV кв."]
+    assert headers[17] == "Всего за год"
+
+    # Строки: «Поставщики», «Аренда», «Всего».
+    assert table.rowCount() == 3
+    assert table.item(0, 0).text() == "Поставщики"
+    assert table.item(0, 1).text() == "1 000,00"   # январь
+    assert table.item(0, 2).text() == "500,50"     # февраль
+    assert table.item(0, 3).text() == ""           # март: пусто вместо нуля
+    assert table.item(0, 13).text() == "1 500,50"  # I квартал
+    assert table.item(0, 17).text() == "1 500,50"  # всего за год
+    assert table.item(1, 0).text() == "Аренда"
+    assert table.item(1, 1).text() == "3 000,00"
+
+    # Итог — последняя строка, жирная.
+    last = table.rowCount() - 1
+    assert table.item(last, 0).text() == "Всего"
+    assert table.item(last, 1).text() == "4 000,00"
+    assert table.item(last, 1).font().bold()
+    assert table.item(0, 1).font().bold() is False
+
+    dialog.close()
+    window.close()
+
+
+def test_payments_summary_dialog_switches_year(qt_app, store):
+    """v0.31.0: в окне сводки оплат год переключается."""
+
+    from datetime import date
+    from decimal import Decimal
+
+    from oplata.models import add_supplier_payment
+    from oplata.views.payments_summary_view import PaymentsSummaryDialog
+
+    supplier = store.data.suppliers[0]
+    add_supplier_payment(store.data, supplier.id, "2026-03-10", Decimal("1200"))
+
+    dialog = PaymentsSummaryDialog(store, date(2026, 11, 3))
+    assert dialog.current_year() == 2026
+    # В подписи виден год и база: таблица считается по активной базе.
+    assert dialog.period_label.text().startswith("Оплаты за 2026 год")
+    assert "МИР" in dialog.period_label.text()
+    assert dialog.table.item(0, 3).text() == "1 200,00"  # март
+
+    # В году без оплат ячейки пустые, но виды оплат остаются на месте.
+    dialog.set_year(2027)
+    assert dialog.period_label.text().startswith("Оплаты за 2027 год")
+    assert dialog.table.item(0, 3).text() == ""
+    assert dialog.table.item(0, 17).text() == ""
+
+    dialog.go_this_year()
+    assert dialog.current_year() == date.today().year
+    dialog.close()

@@ -336,3 +336,109 @@ def test_receipts_helpers_write_expected_operations():
     # Срока оплаты у оплат нет — календарь их не сдвигает.
     assert calc.operation_due_date(data.operations[0], customer, {}) is None
     assert calc.operation_due_date(data.operations[1], supplier, {}) is None
+
+
+def test_payments_summary_sums_months_quarters_and_year():
+    """v0.31.0: «Сводка оплат» — по видам, месяцам, кварталам и году.
+
+    Считаются только исходящие оплаты: операции вида «Оплата» (строка
+    «Поставщики») и прочие виды оплат блока «Оплата». Приход и
+    прочие поступления в таблицу не попадают, чужой год — тоже.
+    """
+
+    from oplata.models import INCOMING, OUTGOING, OtherPayment
+
+    data = AppData()
+    supplier = Counterparty(name="Поставщик")
+    data.suppliers = [supplier]
+    data.operations = [
+        Operation(
+            kind=KIND_PAYMENT,
+            counterparty_id=supplier.id,
+            date="2026-01-15",
+            amount="1000.00",
+        ),
+        Operation(
+            kind=KIND_PAYMENT,
+            counterparty_id=supplier.id,
+            date="2026-02-05",
+            amount="500.50",
+        ),
+        # Приход (поставка) в оплаты не входит.
+        Operation(
+            kind=KIND_INCOME,
+            counterparty_id=supplier.id,
+            date="2026-03-01",
+            amount="9000.00",
+        ),
+        # Оплата прошлого года.
+        Operation(
+            kind=KIND_PAYMENT,
+            counterparty_id=supplier.id,
+            date="2025-12-31",
+            amount="777.00",
+        ),
+    ]
+    data.other_payments = [
+        OtherPayment(
+            date="2026-01-20", name="Аренда", amount="3000.00", direction=OUTGOING
+        ),
+        OtherPayment(
+            date="2026-03-20", name="Аренда", amount="3000.00", direction=OUTGOING
+        ),
+        OtherPayment(
+            date="2026-05-20", name="Зарплата", amount="1500.00", direction=OUTGOING
+        ),
+        # Прочее поступление — тоже не оплата.
+        OtherPayment(
+            date="2026-05-21", name="Возврат", amount="900.00", direction=INCOMING
+        ),
+    ]
+
+    summary = calc.payments_summary(data, 2026)
+    assert [row.name for row in summary.rows] == [
+        "Поставщики",
+        "Аренда",
+        "Зарплата",
+    ]
+
+    suppliers_row = summary.rows[0]
+    assert suppliers_row.months[0] == Decimal("1000.00")   # январь
+    assert suppliers_row.months[1] == Decimal("500.50")    # февраль
+    assert suppliers_row.months[2] == Decimal("0")         # март
+    assert suppliers_row.quarters == (
+        Decimal("1500.50"),
+        Decimal("0"),
+        Decimal("0"),
+        Decimal("0"),
+    )
+    assert suppliers_row.total == Decimal("1500.50")
+
+    rent_row = summary.rows[1]
+    assert rent_row.months[0] == Decimal("3000")
+    assert rent_row.months[2] == Decimal("3000")
+    assert rent_row.total == Decimal("6000")
+
+    # Итог: январь 4 000, февраль 500,50, март 3 000, май 1 500.
+    assert summary.total.months[:5] == (
+        Decimal("4000.00"),
+        Decimal("500.50"),
+        Decimal("3000.00"),
+        Decimal("0"),
+        Decimal("1500.00"),
+    )
+    # II квартал — только майская зарплата (апрель и июнь пустые).
+    assert summary.total.quarters[0] == Decimal("7500.50")
+    assert summary.total.quarters[1] == Decimal("1500.00")
+    assert summary.total.quarters[2] == Decimal("0")
+    assert summary.total.total == Decimal("9000.50")
+
+    # Чужой год считается отдельно; вид оплаты виден и без оплат года.
+    assert calc.payments_summary(data, 2025).total.total == Decimal("777.00")
+    future = calc.payments_summary(data, 2030)
+    assert [row.name for row in future.rows] == [
+        "Поставщики",
+        "Аренда",
+        "Зарплата",
+    ]
+    assert future.total.total == Decimal("0")

@@ -168,6 +168,17 @@ class SummaryView(QWidget):
         root.addWidget(self.panel)
         root.addStretch(1)
 
+        # v0.31.0: «Сводка оплат» — под плашкой «Сводка», в самом низу
+        # панели (просьба пользователя). Растяжка выше прижимает кнопку
+        # к нижнему краю, сколько бы строк ни было в плашке.
+        self.payments_summary_button = QPushButton("Сводка оплат")
+        self.payments_summary_button.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.payments_summary_button.setToolTip(
+            "Оплаты помесячно, поквартально и за год по активной базе"
+        )
+        self.payments_summary_button.clicked.connect(self._open_payments_summary)
+        root.addWidget(self.payments_summary_button)
+
         self.refresh()
 
     # ------------------------------------------------------------------ вид
@@ -241,6 +252,14 @@ class SummaryView(QWidget):
         from .funds_view import FundsMovementDialog
 
         dialog = FundsMovementDialog(self.store, self.current_date(), self)
+        dialog.exec()
+
+    def _open_payments_summary(self) -> None:
+        """Открыть «Сводку оплат» за год, выбранный в «Сводке» (v0.31.0)."""
+
+        from .payments_summary_view import PaymentsSummaryDialog
+
+        dialog = PaymentsSummaryDialog(self.store, self.current_date(), self)
         dialog.exec()
 
     # ----------------------------------------------------------------- дата
