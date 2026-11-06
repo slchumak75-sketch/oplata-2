@@ -4525,13 +4525,22 @@ def test_autosave_runs_once_per_exit(qt_app, store, monkeypatch):
 
 
 def test_payments_summary_button_opens_monthly_table(qt_app, store, monkeypatch):
-    """v0.31.0: кнопка «Сводка оплат» под плашкой — таблица по месяцам."""
+    """v0.31.0/v0.32.0: кнопки сводок вверху панели — таблица по месяцам."""
 
     from datetime import date
     from decimal import Decimal
 
+    from PySide6.QtWidgets import QHeaderView
+
     from oplata.app import MainWindow
-    from oplata.models import OUTGOING, OtherPayment, add_supplier_payment
+    from oplata.models import (
+        KIND_PAYMENT,
+        OUTGOING,
+        Counterparty,
+        Operation,
+        OtherPayment,
+        add_supplier_payment,
+    )
 
     supplier = store.data.suppliers[0]
     add_supplier_payment(store.data, supplier.id, "2026-01-15", Decimal("1000"))
@@ -4541,23 +4550,42 @@ def test_payments_summary_button_opens_monthly_table(qt_app, store, monkeypatch)
             date="2026-01-20", name="Аренда", amount="3000.00", direction=OUTGOING
         )
     )
+    # v0.32.0: оплата покупателя — это поступление, в оплаты не идёт.
+    # В демо-данных покупателей нет, добавляем своего.
+    customer = Counterparty(name="Покупатель тест")
+    store.data.customers.append(customer)
+    store.data.operations.append(
+        Operation(
+            kind=KIND_PAYMENT,
+            counterparty_id=customer.id,
+            date="2026-02-09",
+            amount="700.00",
+        )
+    )
 
     window = MainWindow(store)
     window.show()
     qt_app.processEvents()
 
-    button = window.summary_view.payments_summary_button
-    assert button.text() == "Сводка оплат"
-    assert button.isVisible()
-    # Кнопка стоит в самом низу панели — ниже плашки «Сводка».
-    assert button.pos().y() > window.summary_view.panel.pos().y()
+    summary = window.summary_view
+    assert summary.incoming_summary_button.text() == "Сводка поступлений"
+    assert summary.payments_summary_button.text() == "Сводка оплат"
+    # v0.32.0: кнопки одна над другой в самом верху панели: сверху
+    # «Сводка поступлений», под ней «Сводка оплат», обе выше плашки.
+    assert summary.incoming_summary_button.isVisible()
+    assert summary.payments_summary_button.isVisible()
+    assert (
+        summary.incoming_summary_button.pos().y()
+        < summary.payments_summary_button.pos().y()
+    )
+    assert summary.payments_summary_button.pos().y() < summary.panel.pos().y()
 
     opened: list[object] = []
     monkeypatch.setattr(
         "oplata.views.payments_summary_view.PaymentsSummaryDialog.exec",
         lambda self, *args, **kwargs: opened.append(self) or True,
     )
-    button.click()
+    summary.payments_summary_button.click()
 
     assert len(opened) == 1, "кнопка не открыла окно сводки оплат"
     dialog = opened[0]
@@ -4596,12 +4624,27 @@ def test_payments_summary_button_opens_monthly_table(qt_app, store, monkeypatch)
     assert table.item(1, 0).text() == "Аренда"
     assert table.item(1, 1).text() == "3 000,00"
 
-    # Итог — последняя строка, жирная.
+    # Итог — последняя строка, жирная. Оплата покупателя (700,00 в
+    # феврале) в оплаты не попала: февраль — только 500,50.
     last = table.rowCount() - 1
     assert table.item(last, 0).text() == "Всего"
     assert table.item(last, 1).text() == "4 000,00"
+    assert table.item(last, 2).text() == "500,50"
     assert table.item(last, 1).font().bold()
     assert table.item(0, 1).font().bold() is False
+    assert [table.item(row, 0).text() for row in range(table.rowCount())] == [
+        "Поставщики",
+        "Аренда",
+        "Всего",
+    ]
+
+    # v0.32.0: окно на весь экран; колонка вида — узкая по содержимому,
+    # а все числовые колонки делят остаток ширины поровну.
+    assert dialog.windowState() & Qt.WindowState.WindowMaximized
+    header = table.horizontalHeader()
+    assert header.sectionResizeMode(0) == QHeaderView.ResizeMode.ResizeToContents
+    for column in range(1, table.columnCount()):
+        assert header.sectionResizeMode(column) == QHeaderView.ResizeMode.Stretch
 
     dialog.close()
     window.close()
@@ -4635,3 +4678,101 @@ def test_payments_summary_dialog_switches_year(qt_app, store):
     dialog.go_this_year()
     assert dialog.current_year() == date.today().year
     dialog.close()
+
+
+def test_incoming_summary_button_opens_monthly_table(qt_app, store, monkeypatch):
+    """v0.32.0: «Сводка поступлений» — те же месяцы, кварталы и год."""
+
+    from datetime import date
+    from decimal import Decimal
+
+    from oplata.app import MainWindow
+    from oplata.models import (
+        CARD_SOURCE,
+        CASH_SOURCE,
+        INCOMING,
+        KIND_PAYMENT,
+        CashReceipt,
+        Counterparty,
+        Operation,
+        OtherPayment,
+        add_supplier_payment,
+    )
+
+    supplier = store.data.suppliers[0]
+    customer = Counterparty(name="Покупатель тест")
+    store.data.customers.append(customer)
+    add_supplier_payment(store.data, supplier.id, "2026-01-15", Decimal("1000"))
+    store.data.operations.append(
+        Operation(
+            kind=KIND_PAYMENT,
+            counterparty_id=customer.id,
+            date="2026-02-05",
+            amount="700.00",
+        )
+    )
+    store.data.cash_receipts = [
+        CashReceipt(
+            date="2026-01-10", source=CASH_SOURCE, amount="5000.00", comment=""
+        ),
+        CashReceipt(
+            date="2026-03-10", source=CARD_SOURCE, amount="2500.00", comment=""
+        ),
+    ]
+    store.data.other_payments.append(
+        OtherPayment(
+            date="2026-04-20", name="Возврат", amount="900.00", direction=INCOMING
+        )
+    )
+
+    window = MainWindow(store)
+    window.show()
+    qt_app.processEvents()
+
+    opened: list[object] = []
+    monkeypatch.setattr(
+        "oplata.views.incoming_summary_view.IncomingSummaryDialog.exec",
+        lambda self, *args, **kwargs: opened.append(self) or True,
+    )
+    window.summary_view.incoming_summary_button.click()
+
+    assert len(opened) == 1, "кнопка не открыла окно сводки поступлений"
+    dialog = opened[0]
+    table = dialog.table
+    assert dialog.windowTitle().startswith("Сводка поступлений")
+    assert dialog.period_label.text().startswith("Поступления за 2026 год")
+    assert table.horizontalHeaderItem(0).text() == "Вид поступления"
+    assert table.horizontalHeaderItem(17).text() == "Всего за год"
+
+    # Строки повторяют блок «Поступление»: наличные, карты, покупатели,
+    # «Прочие поступления», добавленные виды, «Всего».
+    names = [table.item(row, 0).text() for row in range(table.rowCount())]
+    assert names == [
+        "Поступление наличными",
+        "Поступление по картам",
+        "Покупатели",
+        "Прочие поступления",
+        "Возврат",
+        "Всего",
+    ]
+    assert table.item(0, 1).text() == "5 000,00"   # наличные в январе
+    assert table.item(1, 3).text() == "2 500,00"   # карты в марте
+    assert table.item(2, 2).text() == "700,00"     # покупатель в феврале
+    assert table.item(4, 4).text() == "900,00"     # возврат в апреле
+
+    last = table.rowCount() - 1
+    assert table.item(last, 1).text() == "5 000,00"   # январь
+    assert table.item(last, 2).text() == "700,00"     # февраль
+    assert table.item(last, 13).text() == "8 200,00"  # I квартал
+    assert table.item(last, 17).text() == "9 100,00"  # всего за год
+
+    # Оплата поставщику (1 000 в январе) в поступления не попала.
+    assert "Поставщики" not in names
+
+    # Год переключается: в пустом году ячейки пустые.
+    dialog.set_year(2027)
+    assert dialog.table.item(0, 1).text() == ""
+    assert dialog.table.item(last, 17).text() == ""
+
+    dialog.close()
+    window.close()

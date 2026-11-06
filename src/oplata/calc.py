@@ -959,13 +959,21 @@ def week_column_total(
 
 
 # ---------------------------------------------------------------------------
-# Сводка оплат: помесячно, поквартально и за год (v0.31.0)
+# Сводки оплат и поступлений: помесячно, поквартально и за год (v0.31.0,
+# поступления — v0.32.0)
 # ---------------------------------------------------------------------------
 
-# Строка «Поставщики» — все оплаты из операций (как в блоке «Оплата» на
-# вкладке «Поступление и оплаты» и как в «Средствах»: отдельного
-# деления на поставщиков и покупателей в оплатах программа не ведёт).
+# Строка «Поставщики» — оплаты поставщикам. v0.32.0: операции вида
+# «Оплата» делятся по контрагенту — оплата покупателю (деньги пришли
+# от покупателя) уходит в «Сводку поступлений», строка «Покупатели»,
+# чтобы одна и та же сумма не попадала в обе сводки.
 SUPPLIERS_PAYMENTS_TITLE = "Поставщики"
+# Строки «Сводки поступлений» — те же подписи, что в блоке
+# «Поступление» (views/receipts_view.py): названия не должны разъезжаться.
+CASH_INCOME_TITLE = "Поступление наличными"
+CARD_INCOME_TITLE = "Поступление по картам"
+CUSTOMERS_INCOME_TITLE = "Покупатели"
+OTHER_INCOME_TITLE = "Прочие поступления"
 MONTH_TITLES = (
     "янв",
     "фев",
@@ -1018,13 +1026,51 @@ def _payments_row(name: str, months: Sequence[Decimal]) -> PaymentsSummaryRow:
     )
 
 
+def _year_buckets() -> tuple[dict[str, list[Decimal]], list[str]]:
+    """Заготовка таблицы: 12 нулей на вид и порядок строк."""
+
+    return {}, []
+
+
+def _add_to_bucket(
+    amounts: dict[str, list[Decimal]],
+    names: list[str],
+    name: str,
+    month: int,
+    amount: Decimal,
+) -> None:
+    row = amounts.get(name)
+    if row is None:
+        row = [ZERO] * 12
+        amounts[name] = row
+        names.append(name)
+    row[month - 1] += amount
+
+
+def _summary_from_buckets(
+    year: int,
+    amounts: dict[str, list[Decimal]],
+    names: list[str],
+) -> PaymentsSummary:
+    """Собрать сводку: строки — в порядке ``names``, последняя — «Всего»."""
+
+    rows = tuple(_payments_row(name, amounts.get(name, [ZERO] * 12)) for name in names)
+    totals = [ZERO] * 12
+    for row in rows:
+        for index, amount in enumerate(row.months):
+            totals[index] += amount
+    return PaymentsSummary(year=year, rows=rows, total=_payments_row("Всего", totals))
+
+
 def payments_summary(data: AppData, year: int) -> PaymentsSummary:
     """Оплаты года ``year`` по видам: месяцы, кварталы, итог (v0.31.0).
 
     Считаем **исходящие** оплаты активной базы — ровно то, что попадает
-    в блок «Оплата» и в строки «Оплаты» «Сводки»:
+    в блок «Оплата»:
 
-    * операции вида «Оплата» — строка «Поставщики»;
+    * операции вида «Оплата» **по поставщикам** — строка «Поставщики»
+      (v0.32.0: оплата покупателя — это поступление, в оплаты она не
+      идёт, иначе одна сумма попадала бы в обе сводки);
     * прочие виды оплат (``direction`` = ``OUTGOING``) — по строке на
       каждый вид, в порядке появления (как в блоке «Оплата»).
 
@@ -1032,23 +1078,20 @@ def payments_summary(data: AppData, year: int) -> PaymentsSummary:
     таблица не должна «прыгать» при смене года.
     """
 
-    amounts: dict[str, list[Decimal]] = {}
-
-    def bucket(name: str) -> list[Decimal]:
-        row = amounts.get(name)
-        if row is None:
-            row = [ZERO] * 12
-            amounts[name] = row
-        return row
+    amounts, names = _year_buckets()
+    customer_ids = {item.id for item in data.customers}
 
     for op in data.operations:
         if op.kind != KIND_PAYMENT:
             continue
+        if op.counterparty_id in customer_ids:
+            continue
         day = _iso_day(op.date)
         if day is None or day.year != year:
             continue
-        row = bucket(SUPPLIERS_PAYMENTS_TITLE)
-        row[day.month - 1] += operation_amount(op)
+        _add_to_bucket(
+            amounts, names, SUPPLIERS_PAYMENTS_TITLE, day.month, operation_amount(op)
+        )
 
     for payment in data.other_payments:
         if getattr(payment, "direction", OUTGOING) == INCOMING:
@@ -1056,25 +1099,93 @@ def payments_summary(data: AppData, year: int) -> PaymentsSummary:
         day = _iso_day(payment.date)
         if day is None or day.year != year:
             continue
-        row = bucket(payment.name or "Прочий вид")
-        row[day.month - 1] += other_payment_amount(payment)
+        _add_to_bucket(
+            amounts,
+            names,
+            payment.name or "Прочий вид",
+            day.month,
+            other_payment_amount(payment),
+        )
 
-    names = [SUPPLIERS_PAYMENTS_TITLE]
+    # Порядок строк: «Поставщики», затем виды в порядке настройки
+    # блока «Оплата». Вид виден и без оплат года — таблица не «прыгает».
+    order = [SUPPLIERS_PAYMENTS_TITLE]
     for name in other_payment_names(data):
-        if name not in names:
-            names.append(name)
-    # Виды, которых нет в списке (например, удалённые строки), всё равно
-    # видны: данные важнее настройки.
-    for name in amounts:
-        if name not in names:
-            names.append(name)
+        if name not in order:
+            order.append(name)
+    for name in names:  # виды, которых нет в настройке (данные важнее)
+        if name not in order:
+            order.append(name)
+    return _summary_from_buckets(year, amounts, order)
 
-    rows = tuple(_payments_row(name, amounts.get(name, [ZERO] * 12)) for name in names)
 
-    totals = [ZERO] * 12
-    for row in rows:
-        for index, amount in enumerate(row.months):
-            totals[index] += amount
-    return PaymentsSummary(
-        year=year, rows=rows, total=_payments_row("Всего", totals)
-    )
+def incoming_summary(data: AppData, year: int) -> PaymentsSummary:
+    """Поступления года ``year`` по видам (v0.32.0).
+
+    Зеркало ``payments_summary`` и блока «Поступление»:
+
+    * касса — «Поступление наличными» и «Поступление по картам»;
+    * операции вида «Оплата» **по покупателям** — строка «Покупатели»
+      (деньги, пришедшие от покупателя);
+    * прочие поступления (``direction`` = ``INCOMING``) — постоянная
+      строка «Прочие поступления» и по строке на каждый добавленный
+      вид, в порядке появления.
+    """
+
+    amounts, names = _year_buckets()
+    supplier_ids = {item.id for item in data.suppliers}
+
+    for receipt in data.cash_receipts:
+        day = _iso_day(receipt.date)
+        if day is None or day.year != year:
+            continue
+        title = (
+            CASH_INCOME_TITLE if receipt.source == CASH_SOURCE else CARD_INCOME_TITLE
+        )
+        _add_to_bucket(
+            amounts, names, title, day.month, cash_receipt_amount(receipt)
+        )
+
+    for op in data.operations:
+        if op.kind != KIND_PAYMENT:
+            continue
+        # Оплата поставщику — деньги ушли, это не поступление.
+        if op.counterparty_id in supplier_ids or not op.counterparty_id:
+            continue
+        day = _iso_day(op.date)
+        if day is None or day.year != year:
+            continue
+        _add_to_bucket(
+            amounts, names, CUSTOMERS_INCOME_TITLE, day.month, operation_amount(op)
+        )
+
+    for payment in data.other_payments:
+        if getattr(payment, "direction", OUTGOING) != INCOMING:
+            continue
+        day = _iso_day(payment.date)
+        if day is None or day.year != year:
+            continue
+        _add_to_bucket(
+            amounts,
+            names,
+            payment.name or OTHER_INCOME_TITLE,
+            day.month,
+            other_payment_amount(payment),
+        )
+
+    # Порядок строк — как в блоке «Поступление»: наличные, карты,
+    # покупатели, «Прочие поступления», дальше добавленные виды. Все
+    # четыре строки видны и без данных за год.
+    order = [
+        CASH_INCOME_TITLE,
+        CARD_INCOME_TITLE,
+        CUSTOMERS_INCOME_TITLE,
+        OTHER_INCOME_TITLE,
+    ]
+    for name in other_payment_names(data, INCOMING):
+        if name not in order:
+            order.append(name)
+    for name in names:  # виды, которых нет в настройке (данные важнее)
+        if name not in order:
+            order.append(name)
+    return _summary_from_buckets(year, amounts, order)
