@@ -193,6 +193,7 @@ Google Диск подключён к одному аккаунту и зани�
 |---|---|---|
 | Сводка | [01-summary.png](docs/mockups/01-summary.png) | [summary.png](docs/screenshots/summary.png) — плашка справа, три блока построчно |
 | Журнал движения средств | запрос пользователя (v0.23.0) | [funds-movement.png](docs/screenshots/funds-movement.png) — кнопка в шапке «Сводки», за один день (v0.23.1) |
+| Сводка оплат | запрос пользователя (v0.31.0) | кнопка **«Сводка оплат»** под плашкой «Сводка» в самом низу: оплаты по видам — 12 месяцев, кварталы и итог за год; год выбирается в окне |
 | Поставщики | макет из 1-го сообщения (см. SPEC §2) | [suppliers.png](docs/screenshots/suppliers.png) |
 | Покупатели | [03-customers-week.png](docs/mockups/03-customers-week.png) | [customers.png](docs/screenshots/customers.png) |
 | Поступление и оплаты | запрос пользователя (два блока друг под другом) | [receipts.png](docs/screenshots/receipts.png) |
