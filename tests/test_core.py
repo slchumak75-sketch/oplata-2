@@ -593,3 +593,104 @@ def test_fmt_vat_rate_shows_percent_only_for_set_rates():
     assert fmt_vat_rate("20.00") == "20 %"
     assert fmt_vat_rate("10,5") == "10.5 %"
     assert fmt_vat_rate("0") == "0 %"
+
+
+def test_net_of_vat_divides_by_rate_and_keeps_zero_rate():
+    """v0.34.0: сумма без НДС — 240 при 20 % даёт 200, ставка 0 — без изменений."""
+
+    from oplata.calc import net_of_vat
+
+    assert net_of_vat(Decimal("240"), "20") == Decimal("200.00")
+    assert net_of_vat(Decimal("240"), "20.0") == Decimal("200.00")
+    assert net_of_vat(Decimal("120"), "20,5") == Decimal("99.59")
+    # Ставка 0 и пустая (вид без НДС) — сумма не меняется.
+    assert net_of_vat(Decimal("240"), "0") == Decimal("240")
+    assert net_of_vat(Decimal("240"), "") == Decimal("240")
+    assert net_of_vat(Decimal("240"), "  ") == Decimal("240")
+    # Ноль показывать незачем: пустая ячейка таблицы.
+    assert net_of_vat(Decimal("0"), "20") == Decimal("0.00")
+
+
+def test_row_without_vat_recalculates_months_quarters_and_total():
+    """v0.34.0: строка сводки без НДС — по месяцам, кварталам и итогу."""
+
+    from oplata.calc import PaymentsSummaryRow, row_without_vat
+
+    row = PaymentsSummaryRow(
+        name="Аренда",
+        months=(
+            Decimal("240"),
+            Decimal("0"),
+            Decimal("0"),
+            Decimal("0"),
+            Decimal("0"),
+            Decimal("0"),
+            Decimal("0"),
+            Decimal("0"),
+            Decimal("0"),
+            Decimal("0"),
+            Decimal("360"),
+            Decimal("0"),
+        ),
+        quarters=(Decimal("240"), Decimal("0"), Decimal("0"), Decimal("360")),
+        total=Decimal("600"),
+        vat_rate="20",
+    )
+    net = row_without_vat(row)
+    assert net.months[0] == Decimal("200.00")
+    assert net.months[10] == Decimal("300.00")
+    assert net.quarters[0] == Decimal("200.00")
+    assert net.total == Decimal("500.00")
+
+    # Вид без НДС: строка осталась прежней (тот же объект).
+    plain = row_without_vat(
+        PaymentsSummaryRow(
+            name="Услуги",
+            months=(Decimal("100"),) + (Decimal("0"),) * 11,
+            quarters=(Decimal("100"), Decimal("0"), Decimal("0"), Decimal("0")),
+            total=Decimal("100"),
+            vat_rate="",
+        )
+    )
+    assert plain.total == Decimal("100")
+
+
+def test_payments_summary_rows_keep_vat_rate_of_the_kind():
+    """v0.34.0: строка сводки знает ставку НДС своего вида."""
+
+    data = AppData()
+    supplier = Counterparty(name="Поставщик")
+    data.suppliers = [supplier]
+    data.operations = [
+        Operation(
+            kind=KIND_PAYMENT,
+            counterparty_id=supplier.id,
+            date="2026-01-15",
+            amount="1200.00",
+        )
+    ]
+    from oplata.models import OUTGOING, OtherPayment
+
+    data.other_payments = [
+        OtherPayment(
+            date="2026-01-20",
+            name="Аренда",
+            amount="240.00",
+            direction=OUTGOING,
+            vat_rate="20",
+        ),
+        OtherPayment(
+            date="2026-02-20",
+            name="Услуги",
+            amount="100.00",
+            direction=OUTGOING,
+            vat_rate="0",
+        ),
+    ]
+
+    summary = calc.payments_summary(data, 2026)
+    rates = {row.name: row.vat_rate for row in summary.rows}
+    assert rates == {"Поставщики": "", "Аренда": "20", "Услуги": "0"}
+    # Ставка не влияет на обычный расчёт: в сводке суммы как ввели.
+    assert summary.rows[1].total == Decimal("240.00")
+    assert summary.total.total == Decimal("1540.00")

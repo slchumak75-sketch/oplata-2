@@ -8,10 +8,19 @@
 Раскладка колонок (просьба пользователя v0.32.0):
 
 * колонка «Вид» — **узкая**, ровно по названию, без растяжки;
-* все числовые колонки (12 месяцев, 4 квартала, «Всего за год»)
-  делят оставшуюся ширину **поровну**;
+* в «Сводке оплат» вторая колонка — **«НДС»** (ставка вида,
+  v0.34.0), тоже узкая, по содержимому;
+* все числовые колонки (12 месяцев, 4 квартала, «Год») делят
+  оставшуюся ширину **поровну**; v0.34.0: последняя колонка
+  называется «Год», раньше — «Всего за год»;
 * минимальная ширина числовой колонки — 92 px: на узком экране
   появляется горизонтальная прокрутка, а не обрезанные цифры.
+
+v0.34.0: в «Сводке оплат» рядом с «Текущий год» стоит кнопка
+**«Без НДС»** — переключатель показа сумм за минусом НДС: зелёная
+кнопка — оплаты с НДС (как сейчас), красная — суммы без НДС
+(240 при ставке 20 % показываются как 200; ставка 0 или пустая —
+сумма не меняется).
 """
 
 from __future__ import annotations
@@ -33,7 +42,7 @@ from PySide6.QtWidgets import (
 )
 
 from .. import calc, styles
-from ..dates import fmt_money_plain
+from ..dates import fmt_money_plain, fmt_vat_rate
 from ..storage import BASE_TITLES, DataStore
 
 _MONEY_ALIGN = Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter
@@ -43,6 +52,16 @@ MIN_NUMBER_COLUMN = 92
 # будущего — чтобы год можно было и нажать, и вписать руками.
 MIN_YEAR = 2000
 MAX_YEAR = 2100
+# v0.34.0: последняя колонка — итог за год; раньше она называлась
+# «Всего за год», пользователь просил сократить до «Год».
+YEAR_COLUMN_TITLE = "Год"
+# Кнопка-переключатель «Без НДС»: зелёная — суммы с НДС (как ввели),
+# красная — суммы за минусом НДС.
+_VAT_BUTTON_BASE = (
+    "color:#fff;border:none;border-radius:8px;padding:7px 16px;font-weight:700"
+)
+_VAT_WITH = f"QPushButton{{background:{styles.GREEN};{_VAT_BUTTON_BASE}}}"
+_VAT_WITHOUT = f"QPushButton{{background:{styles.RED};{_VAT_BUTTON_BASE}}}"
 
 
 class MonthSummaryDialog(QDialog):
@@ -53,6 +72,9 @@ class MonthSummaryDialog(QDialog):
     TITLE = ""
     PERIOD_WORD = ""
     KIND_COLUMN_TITLE = ""
+    # v0.34.0: колонка «НДС» и кнопка «Без НДС» — только в «Сводке
+    # оплат»: у поступлений ставки НДС нет.
+    SHOW_VAT = False
 
     def __init__(
         self,
@@ -95,6 +117,19 @@ class MonthSummaryDialog(QDialog):
         this_year = QPushButton("Текущий год")
         this_year.clicked.connect(self.go_this_year)
         bar.addWidget(this_year)
+        if self.SHOW_VAT:
+            # v0.34.0: «Без НДС» — переключатель: зелёная (с НДС,
+            # как ввели) / красная (суммы за минусом НДС).
+            self.without_vat_button = QPushButton("Без НДС")
+            self.without_vat_button.setCheckable(True)
+            self.without_vat_button.setCursor(Qt.CursorShape.PointingHandCursor)
+            self.without_vat_button.setToolTip(
+                "Зелёная — оплаты с НДС; красная — суммы за минусом НДС"
+            )
+            self.without_vat_button.toggled.connect(self._apply_vat_style)
+            self.without_vat_button.toggled.connect(lambda *_: self.refresh())
+            self._apply_vat_style()
+            bar.addWidget(self.without_vat_button)
         bar.addStretch(1)
         root.addLayout(bar)
 
@@ -135,22 +170,52 @@ class MonthSummaryDialog(QDialog):
 
     # ------------------------------------------------------------------ вид
     def _headers(self) -> list[str]:
+        # v0.34.0: в «Сводке оплат» вторая колонка — «НДС»; итоговая
+        # колонка называется «Год».
         return (
             [self.KIND_COLUMN_TITLE]
+            + (["НДС"] if self.SHOW_VAT else [])
             + list(calc.MONTH_TITLES)
             + list(calc.QUARTER_TITLES)
-            + ["Всего за год"]
+            + [YEAR_COLUMN_TITLE]
         )
 
     def _setup_columns(self) -> None:
-        """Первая колонка — по названию, остальные делят ширину поровну."""
+        """Первая колонка — по названию, остальные делят ширину поровну.
+
+        v0.34.0: в «Сводке оплат» колонка «НДС» — тоже по содержимому
+        (ставка короткая), числовые колонки делят остаток поровну.
+        """
 
         header = self.table.horizontalHeader()
         header.setMinimumSectionSize(MIN_NUMBER_COLUMN)
         header.setSectionResizeMode(QHeaderView.ResizeMode.ResizeToContents)
         header.setSectionResizeMode(0, QHeaderView.ResizeMode.ResizeToContents)
-        for column in range(1, len(self.headers)):
+        first_number = 2 if self.SHOW_VAT else 1
+        if self.SHOW_VAT:
+            header.setSectionResizeMode(1, QHeaderView.ResizeMode.ResizeToContents)
+        for column in range(first_number, len(self.headers)):
             header.setSectionResizeMode(column, QHeaderView.ResizeMode.Stretch)
+
+    # ------------------------------------------------------------------ НДС
+    @property
+    def without_vat(self) -> bool:
+        """Показывать суммы за минусом НДС (v0.34.0)."""
+
+        return bool(
+            self.SHOW_VAT and getattr(self, "without_vat_button", None)
+            and self.without_vat_button.isChecked()
+        )
+
+    def _apply_vat_style(self) -> None:
+        """Зелёная кнопка — с НДС, красная — без НДС (v0.34.0)."""
+
+        button = getattr(self, "without_vat_button", None)
+        if button is None:
+            return
+        button.setStyleSheet(
+            _VAT_WITHOUT if button.isChecked() else _VAT_WITH
+        )
 
     # ------------------------------------------------------------------ год
     def current_year(self) -> int:
@@ -173,18 +238,34 @@ class MonthSummaryDialog(QDialog):
             f"{period} · база {self.base_title}" if self.base_title else period
         )
 
-        rows = list(summary.rows) + [summary.total]
+        # v0.34.0: «Без НДС» — показываем суммы за минусом НДС по
+        # ставке вида (240 при 20 % -> 200; ставка 0 — без изменений).
+        lines = [
+            calc.row_without_vat(line) if self.without_vat else line
+            for line in summary.rows
+        ]
+        # Строка «Всего» — сумма показанных строк: если из части сумм
+        # НДС вычтен, итог считается по тем же цифрам, что в таблице.
+        totals = [calc.ZERO] * 12
+        for line in lines:
+            for index, amount in enumerate(line.months):
+                totals[index] += amount
+        rows = list(lines) + [calc.payments_row(calc.TOTAL_ROW_TITLE, totals)]
         table = self.table
         table.setRowCount(len(rows))
+        # Первые колонки — название и (в «Сводке оплат») ставка НДС.
+        text_columns = 2 if self.SHOW_VAT else 1
         for row, line in enumerate(rows):
             bold = row == len(rows) - 1  # строка «Всего»
-            values = (line.name,) + tuple(line.months) + tuple(line.quarters)
-            values += (line.total,)
+            values: list[object] = [line.name]
+            if self.SHOW_VAT:
+                values.append(fmt_vat_rate(line.vat_rate))
+            values += list(line.months) + list(line.quarters) + [line.total]
             for column, amount in enumerate(values):
-                text = amount if column == 0 else _money(amount)
+                text = amount if column < text_columns else _money(amount)
                 item = QTableWidgetItem(str(text))
                 item.setFlags(Qt.ItemFlag.NoItemFlags)
-                if column > 0:
+                if column >= text_columns:
                     item.setTextAlignment(_MONEY_ALIGN)
                 if bold:
                     font = item.font()
