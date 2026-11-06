@@ -442,3 +442,93 @@ def test_payments_summary_sums_months_quarters_and_year():
         "Зарплата",
     ]
     assert future.total.total == Decimal("0")
+
+
+def test_incoming_summary_counts_cash_customers_and_other_income():
+    """v0.32.0: «Сводка поступлений» — зеркало блока «Поступление».
+
+    Оплата покупателя попадает только в поступления, оплата поставщику
+    — только в оплаты: одна и та же сумма не должна учитываться дважды.
+    """
+
+    from oplata.models import (
+        CARD_SOURCE,
+        CASH_SOURCE,
+        INCOMING,
+        OUTGOING,
+        CashReceipt,
+        OtherPayment,
+    )
+
+    data = AppData()
+    supplier = Counterparty(name="Поставщик")
+    customer = Counterparty(name="Покупатель")
+    data.suppliers = [supplier]
+    data.customers = [customer]
+    data.operations = [
+        Operation(
+            kind=KIND_PAYMENT,
+            counterparty_id=supplier.id,
+            date="2026-01-15",
+            amount="1000.00",
+        ),
+        Operation(
+            kind=KIND_PAYMENT,
+            counterparty_id=customer.id,
+            date="2026-02-05",
+            amount="700.00",
+        ),
+    ]
+    data.cash_receipts = [
+        CashReceipt(
+            date="2026-01-10", source=CASH_SOURCE, amount="5000.00", comment=""
+        ),
+        CashReceipt(
+            date="2026-03-10", source=CARD_SOURCE, amount="2500.00", comment=""
+        ),
+    ]
+    data.other_payments = [
+        OtherPayment(
+            date="2026-02-20", name="Аренда", amount="3000.00", direction=OUTGOING
+        ),
+        OtherPayment(
+            date="2026-04-20", name="Возврат", amount="900.00", direction=INCOMING
+        ),
+        OtherPayment(
+            date="2026-04-21",
+            name="Прочие поступления",
+            amount="150.00",
+            direction=INCOMING,
+        ),
+    ]
+
+    payments = calc.payments_summary(data, 2026)
+    assert [row.name for row in payments.rows] == ["Поставщики", "Аренда"]
+    # Оплата покупателя (700,00 в феврале) в оплаты не попала.
+    assert payments.rows[0].months[1] == Decimal("0")
+    assert payments.total.total == Decimal("4000.00")
+
+    incoming = calc.incoming_summary(data, 2026)
+    assert [row.name for row in incoming.rows] == [
+        "Поступление наличными",
+        "Поступление по картам",
+        "Покупатели",
+        "Прочие поступления",
+        "Возврат",
+    ]
+    assert incoming.rows[0].months[0] == Decimal("5000")   # наличные, январь
+    assert incoming.rows[1].months[2] == Decimal("2500")   # карты, март
+    assert incoming.rows[2].months[1] == Decimal("700")    # покупатель, февраль
+    assert incoming.rows[3].months[3] == Decimal("150")    # прочие поступления
+    assert incoming.rows[4].months[3] == Decimal("900")    # возврат, апрель
+
+    # I квартал: 5 000 + 700 + 2 500 = 8 200; за год — 9 250.
+    assert incoming.total.quarters[0] == Decimal("8200.00")
+    assert incoming.total.total == Decimal("9250.00")
+    # Оплата поставщику в поступления не попала: январь — только касса.
+    assert incoming.total.months[0] == Decimal("5000.00")
+
+    # Виды видны и в году без данных: таблица не «прыгает».
+    future = calc.incoming_summary(data, 2030)
+    assert len(future.rows) == 5
+    assert future.total.total == Decimal("0")

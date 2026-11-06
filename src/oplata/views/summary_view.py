@@ -66,6 +66,28 @@ class SummaryView(QWidget):
         root.setContentsMargins(10, 10, 10, 10)
         root.setSpacing(10)
 
+        # --- v0.32.0: кнопки сводок — одна над другой, в самом верху
+        # панели: сверху «Сводка поступлений», под ней «Сводка оплат».
+        # Раньше «Сводка оплат» стояла под плашкой внизу (v0.31.0). ---
+        summaries = QVBoxLayout()
+        summaries.setSpacing(6)
+        self.incoming_summary_button = QPushButton("Сводка поступлений")
+        self.incoming_summary_button.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.incoming_summary_button.setToolTip(
+            "Поступления помесячно, поквартально и за год по активной базе"
+        )
+        self.incoming_summary_button.clicked.connect(self._open_incoming_summary)
+        summaries.addWidget(self.incoming_summary_button)
+
+        self.payments_summary_button = QPushButton("Сводка оплат")
+        self.payments_summary_button.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.payments_summary_button.setToolTip(
+            "Оплаты помесячно, поквартально и за год по активной базе"
+        )
+        self.payments_summary_button.clicked.connect(self._open_payments_summary)
+        summaries.addWidget(self.payments_summary_button)
+        root.addLayout(summaries)
+
         # --- шапка в две строки (v0.22.1): панель узкая, поэтому
         # дата стоит отдельной строкой, а переключатели — под ней ---
         top = QHBoxLayout()
@@ -168,17 +190,6 @@ class SummaryView(QWidget):
         root.addWidget(self.panel)
         root.addStretch(1)
 
-        # v0.31.0: «Сводка оплат» — под плашкой «Сводка», в самом низу
-        # панели (просьба пользователя). Растяжка выше прижимает кнопку
-        # к нижнему краю, сколько бы строк ни было в плашке.
-        self.payments_summary_button = QPushButton("Сводка оплат")
-        self.payments_summary_button.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.payments_summary_button.setToolTip(
-            "Оплаты помесячно, поквартально и за год по активной базе"
-        )
-        self.payments_summary_button.clicked.connect(self._open_payments_summary)
-        root.addWidget(self.payments_summary_button)
-
         self.refresh()
 
     # ------------------------------------------------------------------ вид
@@ -260,6 +271,14 @@ class SummaryView(QWidget):
         from .payments_summary_view import PaymentsSummaryDialog
 
         dialog = PaymentsSummaryDialog(self.store, self.current_date(), self)
+        dialog.exec()
+
+    def _open_incoming_summary(self) -> None:
+        """Открыть «Сводку поступлений» за год из «Сводки» (v0.32.0)."""
+
+        from .incoming_summary_view import IncomingSummaryDialog
+
+        dialog = IncomingSummaryDialog(self.store, self.current_date(), self)
         dialog.exec()
 
     # ----------------------------------------------------------------- дата
