@@ -290,6 +290,8 @@ def _funds_records(
 
     v0.15.0: «Реализация» покупателей в ИТОГ ПОСТУПЛЕНИЕ не входит,
     поэтому из операций берём только ``KIND_PAYMENT``.
+    v0.35.0: операция «Оплата» **по покупателю** — это поступление
+    (деньги пришли), по поставщику — оплата (деньги ушли).
     """
 
     for receipt in data.cash_receipts:
@@ -306,11 +308,18 @@ def _funds_records(
             payment.direction == INCOMING,
             payment.name or "Прочий вид",
         )
+    # v0.35.0: деньги, пришедшие от покупателя, — это поступление, а не
+    # оплата (правило пользователя): сумма идёт плюсом в «Поступление
+    # за день», в остаток и в «Приход с начала месяца». Оплата
+    # поставщику (и оплата без контрагента) остаётся оплатой.
+    customer_ids = {item.id for item in data.customers}
     for op in data.operations:
         if op.kind == KIND_PAYMENT:
+            is_income = op.counterparty_id in customer_ids
             partner = find_counterparty(data, op.counterparty_id)
-            name = f"Оплата: {partner.name}" if partner is not None else "Оплата"
-            yield _iso_day(op.date), operation_amount(op), False, name
+            title = "Поступление" if is_income else "Оплата"
+            name = f"{title}: {partner.name}" if partner is not None else title
+            yield _iso_day(op.date), operation_amount(op), is_income, name
 
 
 def funds_totals(data: AppData, on_date: date) -> FundsTotals:
@@ -699,11 +708,18 @@ def customer_debt_totals(
 
 
 def month_totals(data: AppData, on_date: date) -> MonthTotals:
-    """Блок «Месяц»: приход и оплаты с 1-го числа месяца по ``on_date``."""
+    """Блок «Месяц»: приход и оплаты с 1-го числа месяца по ``on_date``.
+
+    v0.35.0: оплата **покупателя** считается приходом (это деньги,
+    которые пришли), оплата поставщику — оплатой.
+    """
 
     start = on_date.replace(day=1)
     income = ZERO
     payments = ZERO
+    # v0.35.0: оплата покупателя — поступление, поэтому она идёт
+    # в «Приход с начала месяца», а не в «Оплаты с начала месяца».
+    customer_ids = {item.id for item in data.customers}
     for op in data.operations:
         day = _iso_day(op.date)
         if day is None or not (start <= day <= on_date):
@@ -711,7 +727,10 @@ def month_totals(data: AppData, on_date: date) -> MonthTotals:
         if op.kind == KIND_INCOME:
             income += operation_amount(op)
         elif op.kind == KIND_PAYMENT:
-            payments += operation_amount(op)
+            if op.counterparty_id in customer_ids:
+                income += operation_amount(op)
+            else:
+                payments += operation_amount(op)
     for payment in data.other_payments:
         day = _iso_day(payment.date)
         if day is None or not (start <= day <= on_date):

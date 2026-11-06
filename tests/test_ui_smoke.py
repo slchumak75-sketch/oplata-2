@@ -1975,9 +1975,11 @@ def test_summary_customer_debt_block_counts_sales_minus_payments(qt_app, store):
     assert view.caption_text("cust_total") == "Задолженность покупателей"
     assert view.value_text("cust_total") == "3 500,00"
 
-    # «Итого поступление» не включает реализацию покупателей (v0.15.0).
-    assert view.value_text("income") == "0,00"
-    assert view.value_text("payments") == "1 500,00"
+    # v0.35.0: деньги, пришедшие от покупателя, — поступление, а не
+    # оплата: 1 500 стоит в «Поступление за день», а не в «Оплаты за
+    # день». Реализация в поступления по-прежнему не входит (v0.15.0).
+    assert view.value_text("income") == "1 500,00"
+    assert view.value_text("payments") == "0,00"
     window.close()
 
 
@@ -5057,4 +5059,50 @@ def test_incoming_summary_has_no_vat_column(qt_app, store):
     assert not hasattr(dialog, "without_vat_button")
     assert dialog.without_vat is False
     dialog.close()
+    window.close()
+
+
+def test_customer_income_grows_day_and_month_totals(qt_app, store):
+    """v0.35.0: поступление покупателя идёт плюсом и в день, и в месяц."""
+    from datetime import date
+    from decimal import Decimal
+
+    from PySide6.QtCore import QDate
+
+    from oplata.app import MainWindow
+    from oplata.models import (
+        KIND_PAYMENT,
+        Counterparty,
+        add_realization,
+        set_daily_operation,
+    )
+
+    buyer = Counterparty(name="Покупатель С")
+    store.data.customers.append(buyer)
+    add_realization(store.data, buyer.id, "2026-10-20", Decimal("5000"))
+    supplier = store.data.suppliers[0]
+    # Поставщику — оплата (минус), покупатель внёс деньги (плюс).
+    set_daily_operation(
+        store.data, supplier.id, "2026-10-27", KIND_PAYMENT, Decimal("1000")
+    )
+    set_daily_operation(
+        store.data, buyer.id, "2026-10-27", KIND_PAYMENT, Decimal("1500")
+    )
+
+    window = MainWindow(store)
+    window.show()
+    qt_app.processEvents()
+    view = window.summary_view
+    view.date_edit.setDate(QDate(2026, 10, 27))
+    view.refresh()
+
+    # Блок «Средства»: покупатель — в поступлениях, поставщик — в оплатах.
+    assert view.value_text("income") == "1 500,00"
+    assert view.value_text("payments") == "1 000,00"
+    assert view.value_text("balance") == "500,00"
+    # Блок «Месяц»: то же разделение — приход 1 500, оплаты 1 000.
+    assert view.value_text("month_income") == "1 500,00"
+    assert view.value_text("month_payments") == "1 000,00"
+    # Задолженность покупателя уменьшилась: 5 000 − 1 500.
+    assert view.value_text("cust_total") == "3 500,00"
     window.close()
