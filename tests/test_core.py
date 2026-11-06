@@ -700,8 +700,9 @@ def test_customer_payment_is_income_in_funds_and_month():
     """v0.35.0: деньги покупателя — поступление (плюс), поставщику — оплата.
 
     Правило пользователя: сумма, внесённая в блоке «Поступление» по
-    строке «Покупатели», идёт **плюсом** — в «Поступление за день»,
-    в остаток и в «Приход с начала месяца».
+    строке «Покупатели», идёт **плюсом** — в «Поступление за день» и
+    в остаток. В «Приход с начала месяца» (v0.37.0) она **не** идёт:
+    там считается только пришедший товар.
     """
 
     data = AppData()
@@ -720,8 +721,10 @@ def test_customer_payment_is_income_in_funds_and_month():
     # Оплата покупателя уменьшает его задолженность (Реализация − Оплата).
     assert calc.customer_debt_amount(data, customer) == Decimal("-1500")
 
+    # v0.37.0: «Приход с начала месяца» — только пришедший товар: здесь
+    # поставок нет, поэтому 0; деньги покупателя (1500) не считаются.
     month = calc.month_totals(data, date(2026, 10, 27))
-    assert month.income == Decimal("1500")      # «Приход с начала месяца»
+    assert month.income == Decimal("0")
     assert month.payments == Decimal("1000")    # «Оплаты с начала месяца»
 
     # Оплата без контрагента (старые данные) остаётся оплатой.
@@ -731,6 +734,41 @@ def test_customer_payment_is_income_in_funds_and_month():
     extra = calc.funds_totals(data, date(2026, 10, 27))
     assert extra.income == Decimal("1500")
     assert extra.payments == Decimal("1100")
+
+
+def test_month_income_counts_only_deliveries():
+    """v0.37.0: «Приход с начала месяца» — только пришедший товар.
+
+    Поставка (операция «Приход») входит в приход; деньги, пришедшие
+    от покупателя, — нет (v0.35.0 их прибавляла, из-за чего в одной
+    цифре смешивались товар и деньги).
+    """
+
+    data = AppData()
+    supplier = Counterparty(name="Поставщик")
+    customer = Counterparty(name="Покупатель")
+    data.suppliers = [supplier]
+    data.customers = [customer]
+    # Поставка на 3 000 — это пришедший товар.
+    add_delivery(data, supplier.id, "2026-10-27", "2026-11-03", Decimal("3000"))
+    # Деньги покупателя — поступление, но не приход месяца.
+    add_customer_receipt(data, customer.id, "2026-10-27", Decimal("1500"))
+    # Оплата поставщику — расход.
+    add_supplier_payment(data, supplier.id, "2026-10-27", Decimal("1000"))
+
+    month = calc.month_totals(data, date(2026, 10, 27))
+    assert month.income == Decimal("3000")    # только товар
+    assert month.payments == Decimal("1000")
+
+    # День покупателя всё равно идёт плюсом в «Средства» (v0.35.0).
+    funds = calc.funds_totals(data, date(2026, 10, 27))
+    assert funds.income == Decimal("1500")
+    assert funds.payments == Decimal("1000")
+
+    # За пределами месяца поставка не считается.
+    add_delivery(data, supplier.id, "2026-09-30", "2026-10-07", Decimal("500"))
+    month = calc.month_totals(data, date(2026, 10, 27))
+    assert month.income == Decimal("3000")
 
 
 def test_funds_movement_puts_customer_payment_into_income_column():

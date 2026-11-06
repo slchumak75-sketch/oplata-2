@@ -5066,7 +5066,11 @@ def test_incoming_summary_has_no_vat_column(qt_app, store):
 
 
 def test_customer_income_grows_day_and_month_totals(qt_app, store):
-    """v0.35.0: поступление покупателя идёт плюсом и в день, и в месяц."""
+    """v0.35.0: поступление покупателя идёт плюсом в «Средства».
+
+    v0.37.0: в «Приход с начала месяца» деньги покупателя больше
+    **не** входят — там только пришедший товар.
+    """
     from datetime import date
     from decimal import Decimal
 
@@ -5103,8 +5107,9 @@ def test_customer_income_grows_day_and_month_totals(qt_app, store):
     assert view.value_text("income") == "1 500,00"
     assert view.value_text("payments") == "1 000,00"
     assert view.value_text("balance") == "500,00"
-    # Блок «Месяц»: то же разделение — приход 1 500, оплаты 1 000.
-    assert view.value_text("month_income") == "1 500,00"
+    # Блок «Месяц» (v0.37.0): «Приход» — только товар, поставок нет,
+    # поэтому 0,00; деньги покупателя туда не входят. Оплаты — 1 000.
+    assert view.value_text("month_income") == "0,00"
     assert view.value_text("month_payments") == "1 000,00"
     # Задолженность покупателя уменьшилась: 5 000 − 1 500.
     assert view.value_text("cust_total") == "3 500,00"
