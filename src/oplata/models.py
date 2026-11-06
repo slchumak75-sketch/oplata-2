@@ -159,6 +159,10 @@ class OtherPayment:
     # таблице блока ячейки этих дней красятся красным. У старых записей
     # поля нет — from_dict подставит пустой список.
     dates: list[str] = field(default_factory=list)
+    # v0.33.0: ставка НДС вида оплаты — в процентах, пусто = без НДС.
+    # Задаётся в карточке вида; как и отмеченные даты, значение лежит
+    # в первой записи этого вида (это и есть «карточка вида»).
+    vat_rate: str = ""
     id: str = field(default_factory=new_id)
 
     @classmethod
@@ -170,6 +174,7 @@ class OtherPayment:
             id=str(data.get("id") or new_id()),
             direction=str(data.get("direction") or OUTGOING),
             dates=[str(day) for day in data.get("dates", []) if day],
+            vat_rate=str(data.get("vat_rate", "") or "").strip(),
         )
 
 
@@ -608,11 +613,13 @@ def add_other_payment(
     date_iso: str,
     direction: str = OUTGOING,
     dates: list[str] | None = None,
+    vat_rate: str = "",
 ) -> OtherPayment:
     """Создать строку вида оплаты (сумма 0 — строка только появилась).
 
     ``dates`` — даты, отмеченные в календаре карточки (v0.24.0): их
-    ячейки в таблице блока будут красными.
+    ячейки в таблице блока будут красными. ``vat_rate`` — ставка НДС
+    в процентах (v0.33.0), пустая строка = без НДС.
     """
 
     payment = OtherPayment(
@@ -621,6 +628,7 @@ def add_other_payment(
         amount="0",
         direction=direction,
         dates=list(dates or []),
+        vat_rate=str(vat_rate or "").strip(),
     )
     data.other_payments.append(payment)
     return payment

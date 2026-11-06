@@ -35,13 +35,14 @@ def store(tmp_path):
     return DataStore(tmp_path / "data.json")
 
 
-def patch_other_payment_card(monkeypatch, names=()):
+def patch_other_payment_card(monkeypatch, names=(), vat_rate=""):
     """Подменить карточку нового вида оплаты (v0.20.0).
 
     Сама карточка — модальный диалог: в headless-прогоне ``exec()``
     задел бы цикл событий и тест повис. Подмена возвращает имя из
     очереди (а дальше — как прежде: «Новый вид оплаты», «… 2», …),
-    дату блока и нулевую сумму.
+    дату блока и нулевую сумму. ``vat_rate`` — ставка НДС, которую
+    карточка «вводит» для каждого создаваемого вида (v0.33.0).
     """
     from decimal import Decimal
 
@@ -78,6 +79,12 @@ def patch_other_payment_card(monkeypatch, names=()):
             """Календаря в подменной карточке нет — дат не отмечаем."""
             return []
 
+        @property
+        def vat_value(self):
+            """Ставка НДС из карточки (v0.33.0)."""
+
+            return vat_rate
+
     monkeypatch.setattr(receipts_view_module, "OtherPaymentCardDialog", FakeCard)
 
 
@@ -103,10 +110,14 @@ def test_main_window_all_pages(qt_app, store):
     ]
     assert view.outgoing.table.item(0, 0).text() == "Поставщики"
     # v0.22.0: вместо «Неделя/Месяц/Квартал/Год» — колонки дней недели.
+    # v0.33.0: вторым столбцом стоит «НДС» (в блоке «Поступление»
+    # колонка скрыта — виды поступлений своей ставки не имеют).
     assert [
-        view.incoming.table.horizontalHeaderItem(c).text()
+        view.outgoing.table.horizontalHeaderItem(c).text()
         for c in range(COLUMN_COUNT)
-    ][:2] == ["", "Сумма"]
+    ][:3] == ["", "НДС", "Сумма"]
+    assert view.incoming.table.isColumnHidden(COL_VAT)
+    assert not view.outgoing.table.isColumnHidden(COL_VAT)
     assert view.incoming.days == view.incoming.week_days()
     assert len(view.incoming.days) == TABLE_DAYS
     # Кнопок «+»/«−» в блоке «Поступление» нет, в «Оплате» — есть.
@@ -1254,6 +1265,7 @@ def test_data_panels_are_collapsible(qt_app, store):
 from oplata.views.receipts_view import (  # noqa: E402
     COL_AMOUNT,
     COL_NAME,
+    COL_VAT,
     COLUMN_COUNT,
     TABLE_DAYS,
 )
@@ -1598,15 +1610,19 @@ def test_week_day_columns_show_daily_amounts(qt_app, store):
     qt_app.processEvents()
 
     # Шесть дней недели: Пн 26.10 – Сб 31.10 (воскресенья нет).
-    assert view.incoming.table.columnCount() == COLUMN_COUNT == 2 + TABLE_DAYS
+    # v0.33.0: колонок девять — название, НДС, сумма и шесть дней.
+    assert view.incoming.table.columnCount() == COLUMN_COUNT == 3 + TABLE_DAYS
     assert view.incoming.days[0] == date(2026, 10, 26)
     assert view.incoming.days[-1] == date(2026, 10, 31)
     headers = [
         view.incoming.table.horizontalHeaderItem(column).text()
         for column in range(COLUMN_COUNT)
     ]
-    assert headers[0] == "" and headers[1] == "Сумма"
-    assert headers[2].startswith("26.10") and headers[-1].startswith("31.10")
+    # v0.33.0: вторая колонка — «НДС» (в блоке «Поступление» скрыта),
+    # третья — «Сумма», дальше шесть дней.
+    assert headers[0] == "" and headers[2] == "Сумма"
+    assert view.incoming.table.isColumnHidden(COL_VAT)
+    assert headers[3].startswith("26.10") and headers[-1].startswith("31.10")
 
     row = view.incoming.row_keys.index("cash")
     assert view.incoming.amount_text("cash") == "3 000,00"  # выбранный день
@@ -2851,6 +2867,7 @@ def test_cell_editor_opens_without_frame_and_centered(qt_app, store):
     from oplata import styles
     from oplata.app import MainWindow
     from oplata.models import OUTGOING, add_other_payment
+    from oplata.views.receipts_view import COL_AMOUNT
 
     # В стиле приложения у редактора нет рамки и синего выделения.
     assert "QTableWidget QLineEdit" in styles.APP_STYLESHEET
@@ -2875,7 +2892,8 @@ def test_cell_editor_opens_without_frame_and_centered(qt_app, store):
         Qt.MouseButton.LeftButton,
         Qt.KeyboardModifier.NoModifier,
         QPoint(
-            table.columnViewportPosition(1) + 20,
+            # v0.33.0: сумма — третья колонка, вторая теперь «НДС».
+            table.columnViewportPosition(COL_AMOUNT) + 20,
             table.rowViewportPosition(row) + table.rowHeight(row) // 2,
         ),
     )
@@ -2955,10 +2973,21 @@ def test_edit_payment_card_renames_and_updates_dates(qt_app, store, monkeypatch)
     qt_app.processEvents()
 
     class _FakeEdit:
-        def __init__(self, direction, used, day, parent=None, name="", dates=()):
+        def __init__(
+            self,
+            direction,
+            used,
+            day,
+            parent=None,
+            name="",
+            dates=(),
+            vat_rate="",
+        ):
             self.direction = direction
             self.name_value = "Аренда офиса"
             self._dates = ["2026-10-28"]
+            # v0.33.0: ставку НДС карточка тоже правит.
+            self.vat_value = "20"
 
         def exec(self):
             return QDialog.DialogCode.Accepted
@@ -2976,6 +3005,9 @@ def test_edit_payment_card_renames_and_updates_dates(qt_app, store, monkeypatch)
     assert payment.name == "Аренда офиса"
     assert payment.dates == ["2026-10-28"]
     assert "other:Аренда офиса" in view.outgoing.row_keys
+    # v0.33.0: ставка НДС сохраняется карточкой и видна в колонке.
+    assert payment.vat_rate == "20"
+    assert view.outgoing.amount_text("other:Аренда офиса", COL_VAT) == "20 %"
     window.close()
 
 
@@ -4525,7 +4557,7 @@ def test_autosave_runs_once_per_exit(qt_app, store, monkeypatch):
 
 
 def test_payments_summary_button_opens_monthly_table(qt_app, store, monkeypatch):
-    """v0.31.0/v0.32.0: кнопки сводок вверху панели — таблица по месяцам."""
+    """v0.33.0: кнопки — внизу панели, столбиком; таблица по месяцам."""
 
     from datetime import date
     from decimal import Decimal
@@ -4570,15 +4602,20 @@ def test_payments_summary_button_opens_monthly_table(qt_app, store, monkeypatch)
     summary = window.summary_view
     assert summary.incoming_summary_button.text() == "Сводка поступлений"
     assert summary.payments_summary_button.text() == "Сводка оплат"
-    # v0.32.0: кнопки одна над другой в самом верху панели: сверху
-    # «Сводка поступлений», под ней «Сводка оплат», обе выше плашки.
+    # v0.33.0: три кнопки — внизу панели, одна под другой: сводка
+    # поступлений, сводка оплат, журнал движения средств.
     assert summary.incoming_summary_button.isVisible()
     assert summary.payments_summary_button.isVisible()
+    assert summary.movement_button.isVisible()
     assert (
         summary.incoming_summary_button.pos().y()
         < summary.payments_summary_button.pos().y()
+        < summary.movement_button.pos().y()
     )
-    assert summary.payments_summary_button.pos().y() < summary.panel.pos().y()
+    # Все три — под плашкой «Сводка» (v0.32.0 было наоборот).
+    assert summary.incoming_summary_button.pos().y() > summary.panel.pos().y()
+    # Переключатель архивных остался в шапке.
+    assert summary.show_archived.pos().y() < summary.panel.pos().y()
 
     opened: list[object] = []
     monkeypatch.setattr(
@@ -4744,27 +4781,32 @@ def test_incoming_summary_button_opens_monthly_table(qt_app, store, monkeypatch)
     assert table.horizontalHeaderItem(0).text() == "Вид поступления"
     assert table.horizontalHeaderItem(17).text() == "Всего за год"
 
-    # Строки повторяют блок «Поступление»: наличные, карты, покупатели,
-    # «Прочие поступления», добавленные виды, «Всего».
+    # v0.33.0: строки повторяют блок «Поступление» — наличные, карты,
+    # покупатели, «Прочие поступления» и «Всего». Посторонние записи
+    # направления INCOMING (например, «Возврат») в сводку не идут:
+    # в блоке такой строки нет.
     names = [table.item(row, 0).text() for row in range(table.rowCount())]
     assert names == [
         "Поступление наличными",
         "Поступление по картам",
         "Покупатели",
         "Прочие поступления",
-        "Возврат",
+        # «Возврат» в сводку не попадает (v0.33.0).
         "Всего",
     ]
     assert table.item(0, 1).text() == "5 000,00"   # наличные в январе
     assert table.item(1, 3).text() == "2 500,00"   # карты в марте
     assert table.item(2, 2).text() == "700,00"     # покупатель в феврале
-    assert table.item(4, 4).text() == "900,00"     # возврат в апреле
+    # v0.33.0: 900 р. записи «Возврат» за апрель в сводку не идут:
+    # в блоке «Поступление» такой строки нет.
+    assert table.item(3, 4).text() == ""
+    assert table.item(4, 4).text() == ""
 
     last = table.rowCount() - 1
     assert table.item(last, 1).text() == "5 000,00"   # январь
     assert table.item(last, 2).text() == "700,00"     # февраль
     assert table.item(last, 13).text() == "8 200,00"  # I квартал
-    assert table.item(last, 17).text() == "9 100,00"  # всего за год
+    assert table.item(last, 17).text() == "8 200,00"  # год без возврата
 
     # Оплата поставщику (1 000 в январе) в поступления не попала.
     assert "Поставщики" not in names
@@ -4775,4 +4817,123 @@ def test_incoming_summary_button_opens_monthly_table(qt_app, store, monkeypatch)
     assert dialog.table.item(last, 17).text() == ""
 
     dialog.close()
+    window.close()
+
+
+def test_outgoing_block_has_vat_column(qt_app, store, monkeypatch):
+    """v0.33.0: колонка «НДС» — вторая, между названием и суммой."""
+    from datetime import date
+
+    from oplata.app import MainWindow
+
+    window = MainWindow(store)
+    window.show()
+    qt_app.processEvents()
+    view = window.receipts_view
+    view.set_date(date(2026, 10, 27))
+
+    block = view.outgoing
+    headers = [
+        block.table.horizontalHeaderItem(column).text()
+        for column in range(block.table.columnCount())
+    ]
+    assert headers[:3] == ["", "НДС", "Сумма"]
+    # Дней по-прежнему шесть (Пн–Сб), колонок — девять.
+    assert block.table.columnCount() == 9
+    assert len(block.days) == 6
+
+    # В блоке «Поступление» колонки «НДС» нет совсем.
+    assert view.incoming.table.isColumnHidden(COL_VAT)
+    window.close()
+
+
+def test_vat_rate_comes_from_payment_card(qt_app, store, monkeypatch):
+    """v0.33.0: ставка из карточки вида оплаты видна в колонке «НДС»."""
+    from datetime import date
+
+    from oplata.app import MainWindow
+    from oplata.models import OUTGOING, add_other_payment
+
+    window = MainWindow(store)
+    window.show()
+    qt_app.processEvents()
+    view = window.receipts_view
+    view.outgoing.set_date(date(2026, 10, 27))
+
+    # Вид со ставкой 20 % и вид без ставки.
+    patch_other_payment_card(monkeypatch, ["Бензин (НДС 20)"], vat_rate="20")
+    view.add_other_row(OUTGOING)
+    add_other_payment(store.data, "Услуги", "2026-10-27", OUTGOING)
+    view.refresh_rows()
+    # Ставки видны и после обычного пересчёта (например, при старте).
+    view.refresh()
+    qt_app.processEvents()
+
+    block = view.outgoing
+    assert block.amount_text("other:Бензин (НДС 20)", COL_VAT) == "20 %"
+    assert block.amount_text("other:Услуги", COL_VAT) == ""
+    # У строки «Поставщики» ставки нет.
+    assert block.amount_text("suppliers", COL_VAT) == ""
+
+    # Колонка только для чтения: ставка правится карточкой, не ячейкой.
+    vat_item = block.table.item(block.row_keys.index("other:Бензин (НДС 20)"), COL_VAT)
+    assert not (vat_item.flags() & Qt.ItemFlag.ItemIsEditable)
+
+    # Ставка доезжает до файла и читается обратно.
+    saved = [p for p in store.data.other_payments if p.name == "Бензин (НДС 20)"]
+    assert saved[0].vat_rate == "20"
+    window.close()
+
+
+def test_vat_rate_kept_on_duplicate(qt_app, store, monkeypatch):
+    """v0.33.0: копия вида оплаты сохраняет ставку НДС."""
+    from datetime import date
+
+    from oplata.app import MainWindow
+    from oplata.models import OUTGOING, add_other_payment
+
+    window = MainWindow(store)
+    window.show()
+    qt_app.processEvents()
+    view = window.receipts_view
+    view.outgoing.set_date(date(2026, 10, 27))
+    add_other_payment(
+        store.data, "Аренда", "2026-10-27", OUTGOING, vat_rate="10.5"
+    )
+    view.refresh_rows()
+    qt_app.processEvents()
+    assert view.outgoing.amount_text("other:Аренда", COL_VAT) == "10.5 %"
+
+    view.duplicate_payment("other:Аренда", OUTGOING)
+    qt_app.processEvents()
+    assert "other:Аренда (копия)" in view.outgoing.row_keys
+    assert view.outgoing.amount_text("other:Аренда (копия)", COL_VAT) == "10.5 %"
+    window.close()
+
+
+def test_summary_buttons_stay_under_the_panel(qt_app, store):
+    """v0.33.0: три кнопки — внизу панели «Сводка», в столбик."""
+    from oplata.app import MainWindow
+
+    window = MainWindow(store)
+    window.show()
+    qt_app.processEvents()
+    summary = window.summary_view
+
+    # Кнопка журнала переехала из шапки вниз: в шапке остался только
+    # переключатель архивных.
+    assert summary.show_archived.pos().y() < summary.panel.pos().y()
+    assert summary.movement_button.pos().y() > summary.panel.pos().y()
+    assert (
+        summary.incoming_summary_button.pos().y()
+        < summary.payments_summary_button.pos().y()
+        < summary.movement_button.pos().y()
+    )
+    assert summary.incoming_summary_button.pos().y() > summary.panel.pos().y()
+    # Все кнопки — в одной колонке (один и тот же левый край).
+    assert (
+        summary.incoming_summary_button.pos().x()
+        == summary.payments_summary_button.pos().x()
+        == summary.movement_button.pos().x()
+    )
     window.close()

@@ -445,10 +445,14 @@ def test_payments_summary_sums_months_quarters_and_year():
 
 
 def test_incoming_summary_counts_cash_customers_and_other_income():
-    """v0.32.0: «Сводка поступлений» — зеркало блока «Поступление».
+    """v0.33.0: «Сводка поступлений» — ровно четыре строки блока.
 
     Оплата покупателя попадает только в поступления, оплата поставщику
     — только в оплаты: одна и та же сумма не должна учитываться дважды.
+
+    v0.33.0: посторонняя запись направления INCOMING (например,
+    «Новое поступление», оставшееся от старого вызова «+») в сводку
+    не попадает: в блоке «Поступление» своих видов нет.
     """
 
     from oplata.models import (
@@ -509,26 +513,83 @@ def test_incoming_summary_counts_cash_customers_and_other_income():
     assert payments.total.total == Decimal("4000.00")
 
     incoming = calc.incoming_summary(data, 2026)
+    # v0.33.0: ровно четыре строки — как в блоке «Поступление».
     assert [row.name for row in incoming.rows] == [
         "Поступление наличными",
         "Поступление по картам",
         "Покупатели",
         "Прочие поступления",
-        "Возврат",
     ]
     assert incoming.rows[0].months[0] == Decimal("5000")   # наличные, январь
     assert incoming.rows[1].months[2] == Decimal("2500")   # карты, март
     assert incoming.rows[2].months[1] == Decimal("700")    # покупатель, февраль
     assert incoming.rows[3].months[3] == Decimal("150")    # прочие поступления
-    assert incoming.rows[4].months[3] == Decimal("900")    # возврат, апрель
 
-    # I квартал: 5 000 + 700 + 2 500 = 8 200; за год — 9 250.
+    # v0.33.0: 900 р. записи «Возврат» (апрель) в сводку не попали.
+    # I квартал: 5 000 + 700 + 2 500 = 8 200; за год — 8 350.
     assert incoming.total.quarters[0] == Decimal("8200.00")
-    assert incoming.total.total == Decimal("9250.00")
+    assert incoming.total.total == Decimal("8350.00")
     # Оплата поставщику в поступления не попала: январь — только касса.
     assert incoming.total.months[0] == Decimal("5000.00")
 
+    # v0.33.0: посторонние записи INCOMING не добавляют строк.
+    data.other_payments.append(
+        OtherPayment(
+            date="2026-05-01",
+            name="Новое поступление",
+            amount="777.00",
+            direction=INCOMING,
+        )
+    )
+    extra = calc.incoming_summary(data, 2026)
+    assert [row.name for row in extra.rows] == [
+        "Поступление наличными",
+        "Поступление по картам",
+        "Покупатели",
+        "Прочие поступления",
+    ]
+    assert extra.total.total == Decimal("8350.00")
+
     # Виды видны и в году без данных: таблица не «прыгает».
     future = calc.incoming_summary(data, 2030)
-    assert len(future.rows) == 5
+    assert len(future.rows) == 4
     assert future.total.total == Decimal("0")
+
+
+def test_other_payment_vat_rate_defaults_and_roundtrip():
+    """v0.33.0: ставка НДС вида оплаты — пустая по умолчанию и в файле.
+
+    У старых записей поля нет: ``from_dict`` подставляет пустую строку
+    (вид оплаты без НДС), а новое значение доезжает до JSON и назад.
+    """
+
+    from oplata.models import OtherPayment, add_other_payment
+
+    old = OtherPayment.from_dict(
+        {"date": "2026-05-01", "name": "Аренда", "amount": "100.00"}
+    )
+    assert old.vat_rate == ""
+
+    data = AppData()
+    payment = add_other_payment(data, "Аренда", "2026-05-01", vat_rate="20")
+    assert payment.vat_rate == "20"
+
+    restored = AppData.from_dict(data.to_dict())
+    assert restored.other_payments[0].vat_rate == "20"
+
+    # Без ставки вид оплаты остаётся без НДС — ячейка пустая.
+    plain = add_other_payment(data, "Услуги", "2026-05-02")
+    assert plain.vat_rate == ""
+
+
+def test_fmt_vat_rate_shows_percent_only_for_set_rates():
+    """v0.33.0: ставка показывается как «20 %», пустая — пустая ячейка."""
+
+    from oplata.dates import fmt_vat_rate
+
+    assert fmt_vat_rate("") == ""
+    assert fmt_vat_rate("   ") == ""
+    assert fmt_vat_rate("20") == "20 %"
+    assert fmt_vat_rate("20.00") == "20 %"
+    assert fmt_vat_rate("10,5") == "10.5 %"
+    assert fmt_vat_rate("0") == "0 %"
