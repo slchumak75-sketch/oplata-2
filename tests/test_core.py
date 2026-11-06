@@ -694,3 +694,62 @@ def test_payments_summary_rows_keep_vat_rate_of_the_kind():
     # Ставка не влияет на обычный расчёт: в сводке суммы как ввели.
     assert summary.rows[1].total == Decimal("240.00")
     assert summary.total.total == Decimal("1540.00")
+
+
+def test_customer_payment_is_income_in_funds_and_month():
+    """v0.35.0: деньги покупателя — поступление (плюс), поставщику — оплата.
+
+    Правило пользователя: сумма, внесённая в блоке «Поступление» по
+    строке «Покупатели», идёт **плюсом** — в «Поступление за день»,
+    в остаток и в «Приход с начала месяца».
+    """
+
+    data = AppData()
+    supplier = Counterparty(name="Поставщик")
+    customer = Counterparty(name="Покупатель")
+    data.suppliers = [supplier]
+    data.customers = [customer]
+    add_supplier_payment(data, supplier.id, "2026-10-27", Decimal("1000"))
+    add_customer_receipt(data, customer.id, "2026-10-27", Decimal("1500"))
+
+    funds = calc.funds_totals(data, date(2026, 10, 27))
+    assert funds.income == Decimal("1500")      # покупатель — плюсом
+    assert funds.payments == Decimal("1000")    # поставщик — минусом
+    assert funds.balance == Decimal("500")
+
+    # Оплата покупателя уменьшает его задолженность (Реализация − Оплата).
+    assert calc.customer_debt_amount(data, customer) == Decimal("-1500")
+
+    month = calc.month_totals(data, date(2026, 10, 27))
+    assert month.income == Decimal("1500")      # «Приход с начала месяца»
+    assert month.payments == Decimal("1000")    # «Оплаты с начала месяца»
+
+    # Оплата без контрагента (старые данные) остаётся оплатой.
+    data.operations.append(
+        Operation(kind=KIND_PAYMENT, counterparty_id="", date="2026-10-27", amount="100")
+    )
+    extra = calc.funds_totals(data, date(2026, 10, 27))
+    assert extra.income == Decimal("1500")
+    assert extra.payments == Decimal("1100")
+
+
+def test_funds_movement_puts_customer_payment_into_income_column():
+    """v0.35.0: в журнале платёж покупателя стоит в графе «Поступление»."""
+
+    data = AppData()
+    supplier = Counterparty(name="Поставщик")
+    customer = Counterparty(name="Покупатель")
+    data.suppliers = [supplier]
+    data.customers = [customer]
+    add_supplier_payment(data, supplier.id, "2026-10-27", Decimal("1000"))
+    add_customer_receipt(data, customer.id, "2026-10-27", Decimal("1500"))
+
+    movement = calc.funds_movement(data, date(2026, 10, 27))
+    rows = [(row.name, row.income, row.payment, row.balance) for row in movement.rows]
+    assert rows == [
+        # Внутри дня поступления идут раньше оплат.
+        ("Поступление: Покупатель", Decimal("1500"), Decimal("0"), Decimal("1500")),
+        ("Оплата: Поставщик", Decimal("0"), Decimal("1000"), Decimal("500")),
+    ]
+    assert movement.income == Decimal("1500")
+    assert movement.payments == Decimal("1000")
