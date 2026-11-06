@@ -4631,9 +4631,10 @@ def test_payments_summary_button_opens_monthly_table(qt_app, store, monkeypatch)
         table.horizontalHeaderItem(column).text()
         for column in range(table.columnCount())
     ]
-    # Вид оплаты + 12 месяцев + 4 квартала + итог за год.
+    # v0.34.0: вид оплаты + НДС + 12 месяцев + 4 квартала + итог «Год».
     assert headers[0] == "Вид оплаты"
-    assert headers[1:13] == [
+    assert headers[1] == "НДС"
+    assert headers[2:14] == [
         "янв",
         "фев",
         "мар",
@@ -4647,28 +4648,29 @@ def test_payments_summary_button_opens_monthly_table(qt_app, store, monkeypatch)
         "ноя",
         "дек",
     ]
-    assert headers[13:17] == ["I кв.", "II кв.", "III кв.", "IV кв."]
-    assert headers[17] == "Всего за год"
+    assert headers[14:18] == ["I кв.", "II кв.", "III кв.", "IV кв."]
+    assert headers[18] == "Год"
 
     # Строки: «Поставщики», «Аренда», «Всего».
     assert table.rowCount() == 3
     assert table.item(0, 0).text() == "Поставщики"
-    assert table.item(0, 1).text() == "1 000,00"   # январь
-    assert table.item(0, 2).text() == "500,50"     # февраль
-    assert table.item(0, 3).text() == ""           # март: пусто вместо нуля
-    assert table.item(0, 13).text() == "1 500,50"  # I квартал
-    assert table.item(0, 17).text() == "1 500,50"  # всего за год
+    assert table.item(0, 1).text() == ""           # у поставщиков НДС нет
+    assert table.item(0, 2).text() == "1 000,00"   # январь
+    assert table.item(0, 3).text() == "500,50"     # февраль
+    assert table.item(0, 4).text() == ""           # март: пусто вместо нуля
+    assert table.item(0, 14).text() == "1 500,50"  # I квартал
+    assert table.item(0, 18).text() == "1 500,50"  # итог за год
     assert table.item(1, 0).text() == "Аренда"
-    assert table.item(1, 1).text() == "3 000,00"
+    assert table.item(1, 2).text() == "3 000,00"
 
     # Итог — последняя строка, жирная. Оплата покупателя (700,00 в
     # феврале) в оплаты не попала: февраль — только 500,50.
     last = table.rowCount() - 1
     assert table.item(last, 0).text() == "Всего"
-    assert table.item(last, 1).text() == "4 000,00"
-    assert table.item(last, 2).text() == "500,50"
-    assert table.item(last, 1).font().bold()
-    assert table.item(0, 1).font().bold() is False
+    assert table.item(last, 2).text() == "4 000,00"
+    assert table.item(last, 3).text() == "500,50"
+    assert table.item(last, 2).font().bold()
+    assert table.item(0, 2).font().bold() is False
     assert [table.item(row, 0).text() for row in range(table.rowCount())] == [
         "Поставщики",
         "Аренда",
@@ -4676,11 +4678,13 @@ def test_payments_summary_button_opens_monthly_table(qt_app, store, monkeypatch)
     ]
 
     # v0.32.0: окно на весь экран; колонка вида — узкая по содержимому,
-    # а все числовые колонки делят остаток ширины поровну.
+    # v0.34.0: колонка «НДС» — тоже по содержимому, а все числовые
+    # колонки делят остаток ширины поровну.
     assert dialog.windowState() & Qt.WindowState.WindowMaximized
     header = table.horizontalHeader()
     assert header.sectionResizeMode(0) == QHeaderView.ResizeMode.ResizeToContents
-    for column in range(1, table.columnCount()):
+    assert header.sectionResizeMode(1) == QHeaderView.ResizeMode.ResizeToContents
+    for column in range(2, table.columnCount()):
         assert header.sectionResizeMode(column) == QHeaderView.ResizeMode.Stretch
 
     dialog.close()
@@ -4704,13 +4708,14 @@ def test_payments_summary_dialog_switches_year(qt_app, store):
     # В подписи виден год и база: таблица считается по активной базе.
     assert dialog.period_label.text().startswith("Оплаты за 2026 год")
     assert "МИР" in dialog.period_label.text()
-    assert dialog.table.item(0, 3).text() == "1 200,00"  # март
+    # v0.34.0: вторая колонка — «НДС», поэтому март — четвёртая.
+    assert dialog.table.item(0, 4).text() == "1 200,00"  # март
 
     # В году без оплат ячейки пустые, но виды оплат остаются на месте.
     dialog.set_year(2027)
     assert dialog.period_label.text().startswith("Оплаты за 2027 год")
-    assert dialog.table.item(0, 3).text() == ""
-    assert dialog.table.item(0, 17).text() == ""
+    assert dialog.table.item(0, 4).text() == ""
+    assert dialog.table.item(0, 18).text() == ""
 
     dialog.go_this_year()
     assert dialog.current_year() == date.today().year
@@ -4779,7 +4784,10 @@ def test_incoming_summary_button_opens_monthly_table(qt_app, store, monkeypatch)
     assert dialog.windowTitle().startswith("Сводка поступлений")
     assert dialog.period_label.text().startswith("Поступления за 2026 год")
     assert table.horizontalHeaderItem(0).text() == "Вид поступления"
-    assert table.horizontalHeaderItem(17).text() == "Всего за год"
+    # v0.34.0: итоговая колонка называется «Год»; колонки «НДС»
+    # в сводке поступлений нет.
+    assert table.horizontalHeaderItem(1).text() == "янв"
+    assert table.horizontalHeaderItem(17).text() == "Год"
 
     # v0.33.0: строки повторяют блок «Поступление» — наличные, карты,
     # покупатели, «Прочие поступления» и «Всего». Посторонние записи
@@ -4936,4 +4944,117 @@ def test_summary_buttons_stay_under_the_panel(qt_app, store):
         == summary.payments_summary_button.pos().x()
         == summary.movement_button.pos().x()
     )
+    window.close()
+
+
+def test_payments_summary_without_vat_button(qt_app, store):
+    """v0.34.0: кнопка «Без НДС» показывает суммы за минусом НДС."""
+    from datetime import date
+    from decimal import Decimal
+
+    from oplata import styles
+    from oplata.app import MainWindow
+    from oplata.models import (
+        OUTGOING,
+        OtherPayment,
+        add_supplier_payment,
+    )
+    from oplata.views.payments_summary_view import PaymentsSummaryDialog
+
+    window = MainWindow(store)
+    window.show()
+    qt_app.processEvents()
+
+    supplier = store.data.suppliers[0]
+    add_supplier_payment(store.data, supplier.id, "2026-01-15", Decimal("1200"))
+    store.data.other_payments = [
+        # 240 при ставке 20 % -> 200.
+        OtherPayment(
+            date="2026-01-20",
+            name="Аренда",
+            amount="240.00",
+            direction=OUTGOING,
+            vat_rate="20",
+        ),
+        # Ставка 0 — сумма остаётся прежней.
+        OtherPayment(
+            date="2026-02-20",
+            name="Услуги",
+            amount="100.00",
+            direction=OUTGOING,
+            vat_rate="0",
+        ),
+        # Вид без ставки — тоже без изменений.
+        OtherPayment(
+            date="2026-03-20", name="Прочее", amount="50.00", direction=OUTGOING
+        ),
+    ]
+
+    dialog = PaymentsSummaryDialog(store, date(2026, 1, 1))
+    table = dialog.table
+    # v0.34.0: колонка «НДС» — вторая, после «Вид оплаты».
+    assert table.columnCount() == 19
+    assert table.horizontalHeaderItem(1).text() == "НДС"
+    assert table.horizontalHeaderItem(18).text() == "Год"
+
+    def cell(name: str, column: int) -> str:
+        row = [
+            index
+            for index in range(table.rowCount())
+            if table.item(index, 0).text() == name
+        ][0]
+        return table.item(row, column).text()
+
+    # Показываем с НДС: как ввели.
+    assert cell("Аренда", 1) == "20 %"
+    assert cell("Услуги", 1) == "0 %"
+    assert cell("Поставщики", 1) == ""
+    assert cell("Аренда", 2) == "240,00"
+    assert cell("Всего", 2) == "1 440,00"
+
+    button = dialog.without_vat_button
+    assert button.text() == "Без НДС"
+    assert not button.isChecked()  # по умолчанию — оплаты с НДС
+    assert styles.GREEN in button.styleSheet()
+
+    # Нажали: красная кнопка и суммы за минусом НДС.
+    button.setChecked(True)
+    qt_app.processEvents()
+    assert styles.RED in button.styleSheet()
+    assert cell("Аренда", 2) == "200,00"
+    assert cell("Услуги", 3) == "100,00"     # ставка 0 — без изменений
+    assert cell("Прочее", 4) == "50,00"      # без ставки — без изменений
+    assert cell("Поставщики", 2) == "1 200,00"
+    # Итог считается по показанным суммам.
+    assert cell("Всего", 2) == "1 400,00"
+    assert cell("Всего", 18) == "1 550,00"
+
+    # Отжали — всё вернулось.
+    button.setChecked(False)
+    qt_app.processEvents()
+    assert styles.GREEN in button.styleSheet()
+    assert cell("Аренда", 2) == "240,00"
+    assert cell("Всего", 2) == "1 440,00"
+
+    dialog.close()
+    window.close()
+
+
+def test_incoming_summary_has_no_vat_column(qt_app, store):
+    """v0.34.0: колонка «НДС» и кнопка «Без НДС» — только в «Сводке оплат»."""
+    from datetime import date
+
+    from oplata.app import MainWindow
+    from oplata.views.incoming_summary_view import IncomingSummaryDialog
+
+    window = MainWindow(store)
+    window.show()
+    qt_app.processEvents()
+
+    dialog = IncomingSummaryDialog(store, date(2026, 1, 1))
+    assert dialog.table.columnCount() == 18
+    assert dialog.table.horizontalHeaderItem(1).text() == "янв"
+    assert not hasattr(dialog, "without_vat_button")
+    assert dialog.without_vat is False
+    dialog.close()
     window.close()

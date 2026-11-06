@@ -33,7 +33,7 @@ from __future__ import annotations
 from collections.abc import Iterable, Iterator, Mapping, Sequence
 from dataclasses import dataclass, field
 from datetime import date, timedelta
-from decimal import Decimal, InvalidOperation
+from decimal import ROUND_HALF_UP, Decimal, InvalidOperation
 
 from .dates import fmt_money_plain, week_monday
 from .models import (
@@ -56,6 +56,8 @@ from .models import (
 )
 
 ZERO = Decimal("0")
+# Подпись строки итогов в обеих сводках (v0.34.0).
+TOTAL_ROW_TITLE = "Всего"
 
 _COLUMN_KIND_TO_OP_KIND = {
     "income": KIND_INCOME,
@@ -1000,6 +1002,9 @@ class PaymentsSummaryRow:
     months: tuple[Decimal, ...]  # 12 месяцев, январь — первый
     quarters: tuple[Decimal, ...]  # 4 квартала
     total: Decimal
+    # v0.34.0: ставка НДС вида — в процентах, пусто = без НДС.
+    # У строки «Поставщики» и у строки «Всего» ставки нет.
+    vat_rate: str = ""
 
 
 @dataclass(frozen=True)
@@ -1011,7 +1016,11 @@ class PaymentsSummary:
     total: PaymentsSummaryRow
 
 
-def _payments_row(name: str, months: Sequence[Decimal]) -> PaymentsSummaryRow:
+def payments_row(
+    name: str,
+    months: Sequence[Decimal],
+    vat_rate: str = "",
+) -> PaymentsSummaryRow:
     """Собрать строку: по месяцам, по кварталам и всего за год."""
 
     quarters = tuple(
@@ -1023,7 +1032,48 @@ def _payments_row(name: str, months: Sequence[Decimal]) -> PaymentsSummaryRow:
         months=tuple(months),
         quarters=quarters,
         total=sum(months, ZERO),
+        vat_rate=vat_rate,
     )
+
+
+def _vat_rate_number(vat_rate: str) -> Decimal | None:
+    """Ставка НДС числом: «20» -> 20; пусто и не число -> ``None``."""
+
+    text = str(vat_rate or "").strip().replace(",", ".").replace(" ", "")
+    if not text:
+        return None
+    try:
+        return Decimal(text)
+    except InvalidOperation:
+        return None
+
+
+def net_of_vat(amount: Decimal, vat_rate: str) -> Decimal:
+    """Сумма без НДС: 240 при ставке 20 % -> 200 (v0.34.0).
+
+    Ставка 0 или пустая — сумма не меняется (вид оплаты без НДС).
+    Результат округляется до копеек, как и любой ввод денег.
+    """
+
+    rate = _vat_rate_number(vat_rate)
+    if rate is None or rate == 0:
+        return amount
+    return (amount / (1 + rate / 100)).quantize(
+        Decimal("0.01"), rounding=ROUND_HALF_UP
+    )
+
+
+def row_without_vat(row: PaymentsSummaryRow) -> PaymentsSummaryRow:
+    """Строка сводки с суммами за минусом НДС (v0.34.0).
+
+    Месяцы, кварталы и итог делятся на (1 + ставка/100). У вида без
+    НДС (ставка пустая или 0) строка остаётся прежней.
+    """
+
+    if not _vat_rate_number(row.vat_rate):
+        return row
+    months = [net_of_vat(amount, row.vat_rate) for amount in row.months]
+    return payments_row(row.name, months, row.vat_rate)
 
 
 def _year_buckets() -> tuple[dict[str, list[Decimal]], list[str]]:
@@ -1051,15 +1101,39 @@ def _summary_from_buckets(
     year: int,
     amounts: dict[str, list[Decimal]],
     names: list[str],
+    vat_rates: dict[str, str] | None = None,
 ) -> PaymentsSummary:
     """Собрать сводку: строки — в порядке ``names``, последняя — «Всего»."""
 
-    rows = tuple(_payments_row(name, amounts.get(name, [ZERO] * 12)) for name in names)
+    rates = vat_rates or {}
+    rows = tuple(
+        payments_row(name, amounts.get(name, [ZERO] * 12), rates.get(name, ""))
+        for name in names
+    )
     totals = [ZERO] * 12
     for row in rows:
         for index, amount in enumerate(row.months):
             totals[index] += amount
-    return PaymentsSummary(year=year, rows=rows, total=_payments_row("Всего", totals))
+    return PaymentsSummary(
+        year=year, rows=rows, total=payments_row(TOTAL_ROW_TITLE, totals)
+    )
+
+
+def outgoing_vat_rates(data: AppData) -> dict[str, str]:
+    """Ставка НДС по видам оплат: название -> ставка (v0.34.0).
+
+    Ставка лежит в первой записи вида — это и есть его карточка
+    (как и отмеченные даты, v0.24.0). У «Поставщики» ставки нет.
+    """
+
+    rates: dict[str, str] = {}
+    for payment in data.other_payments:
+        if getattr(payment, "direction", OUTGOING) == INCOMING:
+            continue
+        name = payment.name or "Прочий вид"
+        if name not in rates:
+            rates[name] = str(getattr(payment, "vat_rate", "") or "").strip()
+    return rates
 
 
 def payments_summary(data: AppData, year: int) -> PaymentsSummary:
@@ -1072,7 +1146,8 @@ def payments_summary(data: AppData, year: int) -> PaymentsSummary:
       (v0.32.0: оплата покупателя — это поступление, в оплаты она не
       идёт, иначе одна сумма попадала бы в обе сводки);
     * прочие виды оплат (``direction`` = ``OUTGOING``) — по строке на
-      каждый вид, в порядке появления (как в блоке «Оплата»).
+      каждый вид, в порядке появления (как в блоке «Оплата»); у
+      строки есть ставка НДС вида (v0.34.0).
 
     Вид показывается, даже если в этом году оплат по нему не было:
     таблица не должна «прыгать» при смене года.
@@ -1116,7 +1191,8 @@ def payments_summary(data: AppData, year: int) -> PaymentsSummary:
     for name in names:  # виды, которых нет в настройке (данные важнее)
         if name not in order:
             order.append(name)
-    return _summary_from_buckets(year, amounts, order)
+    # v0.34.0: ставка НДС вида — из его карточки.
+    return _summary_from_buckets(year, amounts, order, outgoing_vat_rates(data))
 
 
 def incoming_summary(data: AppData, year: int) -> PaymentsSummary:
