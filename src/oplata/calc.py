@@ -1127,9 +1127,10 @@ def incoming_summary(data: AppData, year: int) -> PaymentsSummary:
     * касса — «Поступление наличными» и «Поступление по картам»;
     * операции вида «Оплата» **по покупателям** — строка «Покупатели»
       (деньги, пришедшие от покупателя);
-    * прочие поступления (``direction`` = ``INCOMING``) — постоянная
-      строка «Прочие поступления» и по строке на каждый добавленный
-      вид, в порядке появления.
+    * прочие поступления (``direction`` = ``INCOMING``) — только
+      постоянная строка «Прочие поступления» (v0.33.0): в блоке
+      «Поступление» своих видов нет, поэтому и в сводке других строк
+      быть не должно.
     """
 
     amounts, names = _year_buckets()
@@ -1162,30 +1163,31 @@ def incoming_summary(data: AppData, year: int) -> PaymentsSummary:
     for payment in data.other_payments:
         if getattr(payment, "direction", OUTGOING) != INCOMING:
             continue
+        # v0.33.0: в блоке «Поступление» своих видов нет — там ровно
+        # четыре строки. Поэтому считаем только постоянную строку
+        # «Прочие поступления»: посторонние записи направления
+        # INCOMING (например, «Новое поступление», оставшееся от
+        # старого вызова «+») в сводку не попадают.
+        if (payment.name or OTHER_INCOME_TITLE) != OTHER_INCOME_TITLE:
+            continue
         day = _iso_day(payment.date)
         if day is None or day.year != year:
             continue
         _add_to_bucket(
             amounts,
             names,
-            payment.name or OTHER_INCOME_TITLE,
+            OTHER_INCOME_TITLE,
             day.month,
             other_payment_amount(payment),
         )
 
     # Порядок строк — как в блоке «Поступление»: наличные, карты,
-    # покупатели, «Прочие поступления», дальше добавленные виды. Все
-    # четыре строки видны и без данных за год.
+    # покупатели, «Прочие поступления». Других строк нет (v0.33.0),
+    # все четыре видны и без данных за год.
     order = [
         CASH_INCOME_TITLE,
         CARD_INCOME_TITLE,
         CUSTOMERS_INCOME_TITLE,
         OTHER_INCOME_TITLE,
     ]
-    for name in other_payment_names(data, INCOMING):
-        if name not in order:
-            order.append(name)
-    for name in names:  # виды, которых нет в настройке (данные важнее)
-        if name not in order:
-            order.append(name)
     return _summary_from_buckets(year, amounts, order)

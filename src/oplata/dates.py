@@ -55,6 +55,28 @@ def fmt_money(value: Decimal) -> str:
     return f"{sign}{whole_str},{cents:02d} руб."
 
 
+def fmt_vat_rate(value: str) -> str:
+    """Ставка НДС для показа: «20 %»; пустая ставка — пустая ячейка.
+
+    Число показываем без лишних нулей: «20», «20.0» и «20,00» дают
+    «20 %». Ноль — тоже ставка, поэтому «0 %» показывается (v0.33.0).
+    """
+
+    text = str(value or "").strip()
+    if not text:
+        return ""
+    try:
+        rate = Decimal(text.replace(",", ".").replace(" ", ""))
+    except InvalidOperation:
+        return f"{text} %"
+    # Хвостовые нули убираем: 20.00 -> 20, 10.50 -> 10.5. Формат «f»
+    # обязателен: иначе normalize() даёт «2E+1» вместо «20».
+    rate = rate.normalize()
+    if rate == rate.to_integral_value():
+        rate = rate.to_integral_value()
+    return f"{format(rate, 'f')} %"
+
+
 def fmt_money_plain(value: Decimal) -> str:
     """Сумма без ``руб.`` — как в ячейках таблицы «Сводка» (``0,00``)."""
     return fmt_money(value).removesuffix(" руб.")

@@ -66,28 +66,6 @@ class SummaryView(QWidget):
         root.setContentsMargins(10, 10, 10, 10)
         root.setSpacing(10)
 
-        # --- v0.32.0: кнопки сводок — одна над другой, в самом верху
-        # панели: сверху «Сводка поступлений», под ней «Сводка оплат».
-        # Раньше «Сводка оплат» стояла под плашкой внизу (v0.31.0). ---
-        summaries = QVBoxLayout()
-        summaries.setSpacing(6)
-        self.incoming_summary_button = QPushButton("Сводка поступлений")
-        self.incoming_summary_button.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.incoming_summary_button.setToolTip(
-            "Поступления помесячно, поквартально и за год по активной базе"
-        )
-        self.incoming_summary_button.clicked.connect(self._open_incoming_summary)
-        summaries.addWidget(self.incoming_summary_button)
-
-        self.payments_summary_button = QPushButton("Сводка оплат")
-        self.payments_summary_button.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.payments_summary_button.setToolTip(
-            "Оплаты помесячно, поквартально и за год по активной базе"
-        )
-        self.payments_summary_button.clicked.connect(self._open_payments_summary)
-        summaries.addWidget(self.payments_summary_button)
-        root.addLayout(summaries)
-
         # --- шапка в две строки (v0.22.1): панель узкая, поэтому
         # дата стоит отдельной строкой, а переключатели — под ней ---
         top = QHBoxLayout()
@@ -105,7 +83,8 @@ class SummaryView(QWidget):
         top.addStretch(1)
         root.addLayout(top)
 
-        # Вторая строка шапки: архивные и журнал движения средств.
+        # Вторая строка шапки: только переключатель архивных (v0.33.0:
+        # кнопка журнала уехала вниз, под плашку «Сводка»).
         tools = QHBoxLayout()
         self.show_archived = QCheckBox("показывать архивных")
         # По умолчанию галочка стоит (v0.23.1): архивные контрагенты
@@ -114,14 +93,6 @@ class SummaryView(QWidget):
         self.show_archived.toggled.connect(lambda *_: self.refresh())
         tools.addWidget(self.show_archived)
         tools.addStretch(1)
-        self.movement_button = QPushButton("Журнал движения средств")
-        self.movement_button.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.movement_button.setToolTip(
-            "Поступления и оплаты за последние 30 дней с остатком по каждой "
-            "записи"
-        )
-        self.movement_button.clicked.connect(self._open_funds_movement)
-        tools.addWidget(self.movement_button)
         root.addLayout(tools)
 
         # --- плашка со всеми строками ---
@@ -188,6 +159,39 @@ class SummaryView(QWidget):
             ],
         )
         root.addWidget(self.panel)
+
+        # --- v0.33.0: три кнопки — внизу панели, в столбик: сводка
+        # поступлений, сводка оплат, журнал движения средств. Раньше
+        # кнопки сводок стояли в самом верху (v0.32.0), а журнал — в
+        # шапке рядом с переключателем архивных. ---
+        summaries = QVBoxLayout()
+        summaries.setSpacing(6)
+        self.incoming_summary_button = QPushButton("Сводка поступлений")
+        self.incoming_summary_button.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.incoming_summary_button.setToolTip(
+            "Поступления помесячно, поквартально и за год по активной базе"
+        )
+        self.incoming_summary_button.clicked.connect(self._open_incoming_summary)
+        summaries.addWidget(self.incoming_summary_button)
+
+        self.payments_summary_button = QPushButton("Сводка оплат")
+        self.payments_summary_button.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.payments_summary_button.setToolTip(
+            "Оплаты помесячно, поквартально и за год по активной базе"
+        )
+        self.payments_summary_button.clicked.connect(self._open_payments_summary)
+        summaries.addWidget(self.payments_summary_button)
+
+        self.movement_button = QPushButton("Журнал движения средств")
+        self.movement_button.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.movement_button.setToolTip(
+            "Поступления и оплаты за последние 30 дней с остатком по каждой "
+            "записи"
+        )
+        self.movement_button.clicked.connect(self._open_funds_movement)
+        summaries.addWidget(self.movement_button)
+        root.addLayout(summaries)
+
         root.addStretch(1)
 
         self.refresh()
