@@ -333,10 +333,12 @@ class SummaryView(QWidget):
             "debt_total",
             calc.supplier_debt_total_on_week(data, on_date, include_archived),
         )
-        # v0.27.3: «Задолженность на неделе» = долги со сроком внутри
-        # недели **плюс** просроченная задолженность (просьба
-        # пользователя): просрочку всё равно платить на этой неделе.
-        self._set_value("debt_week", debt.week + debt.late)
+        # v0.36.0: «Задолженность на неделе» — **только** долги со сроком
+        # внутри недели, как колонка «Неделя» таблицы поставщиков
+        # (v0.27.3 прибавляла просрочку — из-за этого цифра в «Сводке»
+        # расходилась с таблицей). Просрочка — отдельная справочная
+        # строка: она не входит ни в какие суммы.
+        self._set_value("debt_week", debt.week)
         self._set_value("debt_late", debt.late)
         for index, week in enumerate(plan, start=1):
             key = f"plan_{index}"

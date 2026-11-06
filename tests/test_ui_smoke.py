@@ -570,7 +570,10 @@ def test_summary_week_debt_includes_overdue(qt_app, store):
     totals = calc.debt_totals(store.data, date(2026, 10, 27))
     assert totals.late == Decimal("200.00")   # просрочено
     assert totals.week == Decimal("500.00")   # срок внутри недели
-    assert view.value_text("debt_week") == "700,00"   # 500 + 200
+    # v0.36.0: «Задолженность на неделе» — только долги со сроком внутри
+    # недели (500), без просрочки: так же, как колонка «Неделя» таблицы
+    # поставщиков. Просрочка — отдельная справочная строка.
+    assert view.value_text("debt_week") == "500,00"
     assert view.value_text("debt_late") == "200,00"   # отдельная строка
     window.close()
 
@@ -5105,4 +5108,57 @@ def test_customer_income_grows_day_and_month_totals(qt_app, store):
     assert view.value_text("month_payments") == "1 000,00"
     # Задолженность покупателя уменьшилась: 5 000 − 1 500.
     assert view.value_text("cust_total") == "3 500,00"
+    window.close()
+
+
+def test_summary_week_debt_matches_suppliers_table(qt_app, store):
+    """v0.36.0: «Задолженность на неделе» в Сводке = колонка «Неделя».
+
+    Раньше (v0.27.3) в «Сводку» прибавлялась просрочка, и цифра
+    расходилась с подписью «Задолженность за неделю» в таблице
+    поставщиков. Теперь считаются только долги со сроком внутри
+    недели; просрочка — отдельная справочная строка.
+    """
+    from datetime import date
+
+    from PySide6.QtCore import QDate
+
+    from oplata.app import MainWindow
+    from oplata.models import KIND_INCOME, Counterparty, Operation
+
+    supplier = Counterparty(name="Просрочка недели")
+    store.data.suppliers.append(supplier)
+    # Срок 20.10 уже прошёл (просрочка), срок 29.10 — внутри недели.
+    for day, amount in (("2026-10-20", "200"), ("2026-10-29", "500")):
+        store.data.operations.append(
+            Operation(
+                kind=KIND_INCOME,
+                counterparty_id=supplier.id,
+                date=day,
+                due_date=day,
+                amount=amount,
+            )
+        )
+    store.save()
+
+    window = MainWindow(store)
+    window.show()
+    qt_app.processEvents()
+
+    # Обе недели — одна и та же: 26.10–01.11.
+    suppliers = window.suppliers_view
+    suppliers.goto_date(date(2026, 10, 27))
+    qt_app.processEvents()
+    summary = window.summary_view
+    summary.date_edit.setDate(QDate(2026, 10, 27))
+    summary.refresh()
+    qt_app.processEvents()
+
+    # В тулбаре таблицы сумма показывается со словом «руб.».
+    table_week = suppliers.right_value_label.text().replace(" руб.", "")
+    assert table_week == "500,00"           # только долги недели
+    assert summary.value_text("debt_week") == table_week
+    # Просрочка в «Задолженность на неделе» не входит: 500 + 200 больше
+    # не складываются (как было в v0.27.3) — это отдельная строка.
+    assert summary.value_text("debt_late") == "200,00"
     window.close()
