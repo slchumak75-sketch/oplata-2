@@ -710,15 +710,16 @@ def customer_debt_totals(
 def month_totals(data: AppData, on_date: date) -> MonthTotals:
     """Блок «Месяц»: приход и оплаты с 1-го числа месяца по ``on_date``.
 
-    v0.35.0: оплата **покупателя** считается приходом (это деньги,
-    которые пришли), оплата поставщику — оплатой.
+    v0.37.0: «Приход с начала месяца» — это **только пришедший товар**:
+    сумма операций «Приход» (поставки поставщиков). Деньги, пришедшие
+    от покупателей, сюда **не** входят — в v0.35.0 они прибавлялись, и
+    в одной цифре смешивались товар и деньги. Правило v0.35.0 про
+    **день** («Поступление за день», «Итого остаток») не изменилось.
     """
 
     start = on_date.replace(day=1)
     income = ZERO
     payments = ZERO
-    # v0.35.0: оплата покупателя — поступление, поэтому она идёт
-    # в «Приход с начала месяца», а не в «Оплаты с начала месяца».
     customer_ids = {item.id for item in data.customers}
     for op in data.operations:
         day = _iso_day(op.date)
@@ -727,9 +728,10 @@ def month_totals(data: AppData, on_date: date) -> MonthTotals:
         if op.kind == KIND_INCOME:
             income += operation_amount(op)
         elif op.kind == KIND_PAYMENT:
-            if op.counterparty_id in customer_ids:
-                income += operation_amount(op)
-            else:
+            # v0.37.0: деньги покупателя в блоке «Месяц» не считаются
+            # ни приходом (там только товар), ни оплатой (это деньги,
+            # которые ушли). Оплаты — поставщикам и без контрагента.
+            if op.counterparty_id not in customer_ids:
                 payments += operation_amount(op)
     for payment in data.other_payments:
         day = _iso_day(payment.date)
