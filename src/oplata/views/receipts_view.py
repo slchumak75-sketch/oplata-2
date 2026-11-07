@@ -9,13 +9,13 @@
 * вверху каждого блока **одна строчка**: заголовок, подпись «Дата»,
   поле даты с выпадающим календарём, кнопка «Сегодня» и стрелки
   «←»/«→»;
-* ниже в блоке — **таблица** со столбцами «Сумма / дни текущей
-  недели», где «Сумма» — за выбранную дату, а колонки дней (Пн–Сб)
-  показывают сумму за каждый день (v0.22.0; раньше здесь были
-  нарастающие итоги «Неделя / Месяц / Квартал / Год»)
-  (понедельника недели, 1-го числа месяца, 1 января) по выбранную дату
-  включительно. Это агрегаты по сохранённым записям, без формул долгов
-  (ADR-017).
+* ниже в блоке — **таблица** с колонками дней текущей недели (Пн–Сб);
+  **v0.38.0: колонки «Сумма» больше нет** — сумма за день вводится и
+  показывается прямо в ячейке этого дня (раньше «Сумма» была суммой за
+  выбранную дату и дублировала ячейку дня);
+* v0.38.0: **стрелки «←»/«→» листают недели** — и кнопки в шапке блока,
+  и клавиши в самой таблице (переход по ячейкам остался на
+  Ctrl + «←»/«→»), как в таблицах «Поставщики»/«Покупатели»;
 
 Строки блока «Поступление»: «Поступление наличными», «Поступление по
 картам» (суммы вводятся **прямо в ячейку**) и «Покупатели» (клик открывает
@@ -24,7 +24,7 @@
 
 Строки блока «Оплата»: «Поставщики» (то же окно справа) и **прочие виды
 оплат**, которые пользователь добавляет сам кнопкой **«+»**: название
-вводится текстом прямо в ячейку, сумма — в ячейку «Сумма». Кнопка
+вводится текстом прямо в ячейку, сумма — в ячейку дня (v0.38.0). Кнопка
 **«−»** убирает выделенную строку.
 
 Куда попадают суммы (новых формул нет, см. ADR-016/017/018):
@@ -179,14 +179,15 @@ def _fmt_day(iso: str) -> str:
         return f"{iso[8:10]}.{iso[5:7]}.{iso[0:4]}"
     return iso
 
-COL_NAME, COL_VAT, COL_AMOUNT = 0, 1, 2
-# v0.33.0: вторым столбцом — ставка НДС (v0.33.0, просьба
-# пользователя): «Наименование · НДС · Сумма · дни». Ставка
-# показывается только здесь и только для своих видов оплаты.
+COL_NAME, COL_VAT = 0, 1
+# v0.38.0: колонки «Сумма» в таблицах «Поступление» и «Оплата» больше
+# нет — сумма вводится и показывается прямо в ячейке своего дня:
+# «Наименование · НДС · дни недели». Ставка НДС (v0.33.0) осталась
+# вторым столбцом и показывается только для своих видов оплаты.
 # v0.22.0: вместо итоговых колонок «Неделя / Месяц / Квартал / Год» в
 # таблице стоят колонки дней текущей недели — как в недельных таблицах,
 # шесть дней (Пн–Сб, воскресенья нет, v0.19.0).
-FIRST_DAY_COL = 3
+FIRST_DAY_COL = 2
 TABLE_DAYS = 6
 COLUMN_COUNT = FIRST_DAY_COL + TABLE_DAYS
 WEEKDAY_SHORT = ("Пн", "Вт", "Ср", "Чт", "Пт", "Сб", "Вс")
@@ -259,7 +260,7 @@ class DayHeaderView(QHeaderView):
 # влезает «88 888,88», а колонке названия остаётся место на
 # «Поступление наличными». v0.33.0: колонка «НДС» узкая — в ней
 # только ставка («20 %»).
-COLUMN_WIDTHS = {COL_VAT: 68, COL_AMOUNT: 104}
+COLUMN_WIDTHS = {COL_VAT: 68}
 # Колонки дней уже итогов «Неделя/Месяц/Квартал/Год»: в них день и сумма
 # за день («88 888,88» влезает и в 92 px).
 DAY_COLUMN_WIDTH = 96
@@ -350,7 +351,7 @@ class AmountPopup(QFrame):
         super().__init__(parent, Qt.WindowType.Popup)
         self.setObjectName("Popup")
         self.setStyleSheet(
-            "QFrame#Popup{background:#ffffff;border:1px solid #b9c9ef;"
+            "QFrame#Popup{background:#fffdf8;border:1px solid #e0ceb4;"
             "border-radius:10px}"
             f"QLabel#PopupTitle{{font-weight:800;font-size:{styles.fs(15)}px}}"
             f"QLabel#PopupTotal{{font-weight:800;font-size:{styles.fs(15)}px;"
@@ -891,7 +892,7 @@ class JournalPopup(QFrame):
         super().__init__(parent, Qt.WindowType.Popup)
         self.setObjectName("Popup")
         self.setStyleSheet(
-            "QFrame#Popup{background:#ffffff;border:1px solid #b9c9ef;"
+            "QFrame#Popup{background:#fffdf8;border:1px solid #e0ceb4;"
             "border-radius:10px}"
             f"QLabel#PopupTitle{{font-weight:800;font-size:{styles.fs(15)}px}}"
             f"QLabel#PopupTotal{{font-weight:800;font-size:{styles.fs(15)}px;"
@@ -1018,6 +1019,37 @@ class RowMouseFilter(QObject):
         return True
 
 
+class _ArrowWeekFilter(QObject):
+    """Стрелки «←»/«→» в таблице блока листают недели (v0.38.0).
+
+    Просьба пользователя: в таблицах «Поступление» и «Оплата» стрелки
+    влево-вправо должны переводить таблицу на предыдущую или
+    следующую неделю. Обычное поведение Qt (переход по ячейкам)
+    остаётся на **Ctrl + ←/→**, а пока в ячейке открыт ввод, стрелки
+    двигают курсор в тексте и неделю не листают.
+    """
+
+    def __init__(self, block: "MoneyBlock") -> None:
+        super().__init__(block.table)
+        self.block = block
+
+    def eventFilter(self, obj, event):  # noqa: N802 - Qt API
+        table = self.block.table
+        if (
+            obj is table
+            and event.type() == QEvent.Type.KeyPress
+            and event.modifiers() == Qt.KeyboardModifier.NoModifier
+            and table.state() != QAbstractItemView.State.EditingState
+        ):
+            if event.key() == Qt.Key.Key_Left:
+                self.block.shift_week(-1)
+                return True
+            if event.key() == Qt.Key.Key_Right:
+                self.block.shift_week(1)
+                return True
+        return super().eventFilter(obj, event)
+
+
 class MoneyBlock(QFrame):
     """Блок «Поступление»/«Оплата»: дата в одну строку с заголовком + таблица."""
 
@@ -1026,7 +1058,9 @@ class MoneyBlock(QFrame):
         title: str,
         row_keys: list[str],
         on_open_popup: Callable[[str, QWidget, int], None],
-        on_amount_entered: Callable[[str, str], None],
+        # v0.38.0: сумма вводится в ячейку дня, поэтому в обработчик
+        # приходит и дата колонки.
+        on_amount_entered: Callable[[str, str, date], None],
         on_date_changed: Callable[[], None] | None = None,
         on_name_edited: Callable[[str, str], None] | None = None,
         on_add_row: Callable[[], None] | None = None,
@@ -1088,12 +1122,15 @@ class MoneyBlock(QFrame):
         # v0.15.0: стрелки «←»/«→» стоят сразу справа от кнопки
         # «Сегодня» (жирные — только на этой вкладке), а «+»/«−», если
         # они у блока есть, уходят в правый край заголовка.
-        self.prev_btn = arrow_button("←", "День назад", bold=True)
-        self.prev_btn.clicked.connect(lambda: self.shift_date(-1))
+        # v0.38.0: стрелки листают **недели** (как в таблицах
+        # «Поставщики»/«Покупатели»), а не дни: таблица показывает
+        # колонки дней недели, а не одну дату.
+        self.prev_btn = arrow_button("←", "Неделя назад", bold=True)
+        self.prev_btn.clicked.connect(lambda: self.shift_week(-1))
         top.addWidget(self.prev_btn)
 
-        self.next_btn = arrow_button("→", "День вперёд", bold=True)
-        self.next_btn.clicked.connect(lambda: self.shift_date(1))
+        self.next_btn = arrow_button("→", "Неделя вперёд", bold=True)
+        self.next_btn.clicked.connect(lambda: self.shift_week(1))
         top.addWidget(self.next_btn)
 
         has_row_buttons = on_add_row is not None or on_remove_row is not None
@@ -1124,7 +1161,11 @@ class MoneyBlock(QFrame):
         # Ячейка становится полем ввода уже по одному клику (v0.12.0):
         # «клацаешь мышкой — и сразу вводишь».
         self.table.setEditTriggers(QAbstractItemView.EditTrigger.AllEditTriggers)
-        self.table.setItemDelegateForColumn(COL_AMOUNT, AmountItemDelegate(self.table))
+        # v0.38.0: сумма вводится прямо в ячейку дня, поэтому у колонок
+        # дней свой делегат с полем суммы (колонки «Сумма» больше нет).
+        self.amount_delegate = AmountItemDelegate(self.table)
+        for column in range(FIRST_DAY_COL, COLUMN_COUNT):
+            self.table.setItemDelegateForColumn(column, self.amount_delegate)
         # Длинные названия строк («Поступление наличными») переносим, а
         # не обрезаем: пять числовых колонок оставляют им 200–250 px.
         self.table.setWordWrap(True)
@@ -1138,6 +1179,9 @@ class MoneyBlock(QFrame):
         # оба клика перехватывает фильтр на viewport.
         self._row_filter = RowMouseFilter(self.table, self)
         self.table.viewport().installEventFilter(self._row_filter)
+        # v0.38.0: стрелки «←»/«→» в таблице листают недели.
+        self._arrow_filter = _ArrowWeekFilter(self)
+        self.table.installEventFilter(self._arrow_filter)
         # v0.26.2: журнал своего вида открывается с задержкой, чтобы
         # первый клик двойного не показывал журнал вместо карточки.
         self._popup_row = -1
@@ -1161,7 +1205,7 @@ class MoneyBlock(QFrame):
         install_row_hover(
             self.table,
             self._hover_delegate,
-            self.table.itemDelegateForColumn(COL_AMOUNT),
+            self.amount_delegate,
         )
 
         self.set_rows(self.row_keys)
@@ -1190,7 +1234,8 @@ class MoneyBlock(QFrame):
         self.days = days
         if self.table.columnCount() != COLUMN_COUNT:
             self.table.setColumnCount(COLUMN_COUNT)
-        headers = ["", "НДС", "Сумма"]
+        # v0.38.0: колонки «Сумма» нет — только название, НДС и дни.
+        headers = ["", "НДС"]
         for day in days:
             headers.append(
                 f"{day.strftime('%d.%m')} {WEEKDAY_SHORT[day.weekday()]}"
@@ -1256,42 +1301,55 @@ class MoneyBlock(QFrame):
         """Раскрасить колонки дней, как в таблицах «Поставщики» (v0.23.3).
 
         Выходной или праздник из календаря вкладки «Данные» — весь
-        столбец розовый; сегодняшняя дата — салатовой остаётся только
-        ячейка шапки с датой, а не весь столбец (просьба пользователя).
+        столбец розовый. **v0.38.0: колонка сегодняшней даты красится
+        на всю высоту** — и шапка, и все ячейки столбца (просьба
+        пользователя; раньше салатовой была только ячейка шапки).
         """
 
-        today = date.today()
-        pink = QColor(styles.WEEK_TABLE_WEEKEND_PINK)
-        green = QColor(styles.WEEK_TABLE_TODAY_GREEN)
-        # v0.24.0: даты, отмеченные в карточке вида оплаты, — красные.
-        red = QColor(styles.WEEK_TABLE_MARKED_RED)
-        empty: QBrush = QBrush()
-        header_colors: dict[int, QColor] = {}
-        off_days = {
-            day: calc.is_day_off(day, self.day_overrides) for day in self.days
-        }
-        for index, day in enumerate(self.days):
-            column = FIRST_DAY_COL + index
-            is_off = off_days[day]
-            # v0.23.7: салатовой — только ячейка шапки с сегодняшней
-            # датой, розовым — выходной/праздник (просьба пользователя).
-            if day == today:
-                header_colors[column] = green
-            elif is_off:
-                header_colors[column] = pink
-        for row, key in enumerate(self.row_keys):
-            marked = self.payment_marks.get(key, set())
+        # v0.38.0: ``setBackground`` тоже вызывает ``itemChanged``, а
+        # колонки дней теперь редактируемые — без флага «обновляем сами»
+        # перекраску столбца таблица приняла бы за ввод пустой строки и
+        # стёрла бы введённые суммы.
+        was_updating = self._updating
+        self._updating = True
+        try:
+            today = date.today()
+            pink = QColor(styles.WEEK_TABLE_WEEKEND_PINK)
+            green = QColor(styles.WEEK_TABLE_TODAY_GREEN)
+            # v0.38.0: ячейки столбца текущего дня — светлее шапки.
+            green_body = QColor(styles.WEEK_TABLE_TODAY_GREEN_BODY)
+            # v0.24.0: даты, отмеченные в карточке вида оплаты, — красные.
+            red = QColor(styles.WEEK_TABLE_MARKED_RED)
+            empty: QBrush = QBrush()
+            header_colors: dict[int, QColor] = {}
+            off_days = {
+                day: calc.is_day_off(day, self.day_overrides) for day in self.days
+            }
             for index, day in enumerate(self.days):
                 column = FIRST_DAY_COL + index
-                item = self.table.item(row, column)
-                if item is None:
-                    continue
-                if day.isoformat() in marked:
-                    item.setBackground(red)
-                else:
-                    item.setBackground(pink if off_days[day] else empty)
-        self.day_header.set_section_colors(header_colors)
-        self.table.viewport().update()
+                is_off = off_days[day]
+                if day == today:
+                    header_colors[column] = green
+                elif is_off:
+                    header_colors[column] = pink
+            for row, key in enumerate(self.row_keys):
+                marked = self.payment_marks.get(key, set())
+                for index, day in enumerate(self.days):
+                    column = FIRST_DAY_COL + index
+                    item = self.table.item(row, column)
+                    if item is None:
+                        continue
+                    if day.isoformat() in marked:
+                        item.setBackground(red)
+                    elif day == today:
+                        # v0.38.0: весь столбец сегодняшнего дня зелёный.
+                        item.setBackground(green_body)
+                    else:
+                        item.setBackground(pink if off_days[day] else empty)
+            self.day_header.set_section_colors(header_colors)
+            self.table.viewport().update()
+        finally:
+            self._updating = was_updating
 
     def set_rows(self, row_keys: list[str]) -> None:
         """Перестроить строки таблицы (состав строк меняется кнопкой «+»)."""
@@ -1324,13 +1382,16 @@ class MoneyBlock(QFrame):
             vat_item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
             vat_item.setToolTip("Ставка НДС вида оплаты")
             self.table.setItem(row, COL_VAT, vat_item)
-            for column in range(COL_AMOUNT, COLUMN_COUNT):
+            for column in range(FIRST_DAY_COL, COLUMN_COUNT):
                 item = QTableWidgetItem("")
                 item_flags = (
                     Qt.ItemFlag.ItemIsEnabled | Qt.ItemFlag.ItemIsSelectable
                 )
                 editable = key in DIRECT_INPUT_ROWS or key.startswith(OTHER_PREFIX)
-                if editable and column == COL_AMOUNT:
+                # v0.38.0: сумма вводится в ячейку своего дня (колонки
+                # «Сумма» больше нет). У строк-контрагентов (Покупатели,
+                # Поставщики) клик по-прежнему открывает окно со списком.
+                if editable:
                     item_flags |= Qt.ItemFlag.ItemIsEditable
                 item.setFlags(item_flags)
                 # v0.23.9: значения в таблице — по центру, раньше числа
@@ -1438,9 +1499,35 @@ class MoneyBlock(QFrame):
         item.setText(text)
         self._updating = False
 
-    def amount_text(self, row_key: str, column: int = COL_AMOUNT) -> str:
+    def day_for_column(self, column: int) -> date | None:
+        """Дата колонки таблицы (v0.38.0: ввод идёт в ячейку дня)."""
+
+        index = column - FIRST_DAY_COL
+        if 0 <= index < len(self.days):
+            return self.days[index]
+        return None
+
+    def column_for_day(self, day: date) -> int | None:
+        """Колонка даты; ``None`` — дата за пределами показанной недели."""
+
+        for index, column_day in enumerate(self.days):
+            if column_day == day:
+                return FIRST_DAY_COL + index
+        return None
+
+    def amount_text(self, row_key: str, column: int | None = None) -> str:
+        """Значение ячейки; по умолчанию — колонка дня, выбранного в блоке.
+
+        v0.38.0: колонки «Сумма» нет, поэтому сумму «за выбранную дату»
+        берём из колонки этого дня (как в недельных таблицах).
+        """
+
         if row_key not in self.row_keys:
             return ""
+        if column is None:
+            column = self.column_for_day(self.current_date())
+            if column is None:
+                return ""
         item = self.table.item(self.row_keys.index(row_key), column)
         return item.text() if item is not None else ""
 
@@ -1468,6 +1555,11 @@ class MoneyBlock(QFrame):
     def shift_date(self, days: int) -> None:
         self.set_date(self.current_date() + timedelta(days=days))
 
+    def shift_week(self, weeks: int) -> None:
+        """Сдвинуть дату блока на неделю (v0.38.0: стрелки «←»/«→»)."""
+
+        self.shift_date(weeks * 7)
+
     # ------------------------------------------------------------- действия
     def _on_item_changed(self, item: QTableWidgetItem) -> None:
         if self._updating:
@@ -1480,11 +1572,14 @@ class MoneyBlock(QFrame):
             if key.startswith(OTHER_PREFIX) and self.on_name_edited is not None:
                 self.on_name_edited(key, item.text())
             return
-        if item.column() != COL_AMOUNT:
+        if item.column() < FIRST_DAY_COL:
             return
         if key in POPUP_ROWS:
             return
-        self.on_amount_entered(key, item.text())
+        day = self.day_for_column(item.column())
+        if day is None:
+            return
+        self.on_amount_entered(key, item.text(), day)
         # v0.26.3: ячейка после ввода перерисовывается заново.
         self._repaint_table()
 
@@ -1576,7 +1671,8 @@ class MoneyBlock(QFrame):
         # v0.20.0: у строк-источников (касса, карты, свои виды) клик по
         # названию открывает журнал операций этого вида.
         # v0.27.3: журнал открывается **только по первому столбцу** —
-        # клик по ячейке «Сумма» и по дням остаётся вводом за день.
+        # клик по ячейкам дней остаётся вводом за день (v0.38.0:
+        # колонки «Сумма» нет).
         if is_popup_row(key) and column == COL_NAME:
             # v0.26.2: у своего вида журнал открывается с задержкой —
             # иначе первый клик двойного показывал журнал, и до карточки
@@ -1688,7 +1784,7 @@ class ReceiptsView(QWidget):
         left_layout.addWidget(self.outgoing, stretch=1)
 
         # Пояснений под блоками нет (v0.13.0): всё видно по заголовкам
-        # колонок «Сумма» и дней недели (v0.22.0).
+        # колонок дней недели (v0.22.0; колонки «Сумма» нет с v0.38.0).
 
         self.left_layout = left_layout
         # v0.22.0: «Сводка» вдвое у́же — раньше обе половины делили окно
@@ -1963,8 +2059,10 @@ class ReceiptsView(QWidget):
         self.refresh()
 
     # --------------------------------------------------------- ввод в ячейку
-    def save_direct_amount(self, row_key: str, text: str) -> None:
-        """Сохранить сумму, введённую прямо в ячейку."""
+    def save_direct_amount(
+        self, row_key: str, text: str, day: date | None = None
+    ) -> None:
+        """Сохранить сумму, введённую прямо в ячейку дня (v0.38.0)."""
 
         direction = OUTGOING
         if row_key == SUPPLIERS_ROW:
@@ -1980,7 +2078,8 @@ class ReceiptsView(QWidget):
             direction = block.direction
         else:
             block = self.incoming
-        day_iso = block.current_date().isoformat()
+        # v0.38.0: день берём из колонки, в которую вводили сумму.
+        day_iso = (day or block.current_date()).isoformat()
         cleaned = (text or "").strip()
         amount: Decimal | None = None
         if cleaned:
@@ -2260,7 +2359,7 @@ class ReceiptsView(QWidget):
         return marks
 
     def refresh(self) -> None:
-        """Заполнить «Сумму» за выбранный день и колонки дней недели."""
+        """Заполнить колонки дней недели (v0.38.0: колонки «Сумма» нет)."""
 
         customer_ids = {c.id for c in self.store.data.customers}
         supplier_ids = {s.id for s in self.store.data.suppliers}
@@ -2277,17 +2376,10 @@ class ReceiptsView(QWidget):
             # и при старте, когда состав строк задан до первого refresh).
             if block.direction == OUTGOING:
                 block.set_vat_rates(self._vat_rates())
-            day = block.current_date()
             for key in block.row_keys:
-                block.set_amount(
-                    key,
-                    COL_AMOUNT,
-                    _money_text(
-                        self._row_total(
-                            key, day, block.direction, customer_ids, supplier_ids
-                        )
-                    ),
-                )
+                # v0.38.0: колонки «Сумма» нет — сумма за выбранный день
+                # лежит в колонке этого дня (``day`` попадает в цикл ниже
+                # вместе с остальными днями недели).
                 for index, column_day in enumerate(block.days):
                     block.set_amount(
                         key,

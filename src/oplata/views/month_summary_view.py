@@ -149,7 +149,7 @@ class MonthSummaryDialog(QDialog):
         self.table.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOn)
         self.table.setStyleSheet(
             "QTableWidget{"
-            f"background:#ffffff;border:1px solid {styles.BORDER};"
+            f"background:#fffdf8;border:1px solid {styles.BORDER};"
             "border-radius:8px;"
             f"gridline-color:{styles.TABLE_GRID}}}"
             + styles.WIDE_SCROLLBAR

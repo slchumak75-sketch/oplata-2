@@ -7,33 +7,36 @@ from PySide6.QtWidgets import QAbstractItemView, QProxyStyle, QStyle
 
 from .resources import assets_dir
 
-NAVY = "#0f2a5c"        # тёмно-синяя шапка (база МИР)
-MAROON = "#8e1b3f"      # вишнёвая шапка (база КОРЕЛИЧИ, v0.17.0)
-NAVY_TEXT = "#ffffff"
-PAGE_BG = "#eef1f6"     # фон страницы под панелями
-PANEL_BG = "#ffffff"
-BORDER = "#d5dbe7"
-TEXT = "#1c2733"
-MUTED = "#6b7686"
-LINK_BLUE = "#1a56db"
+NAVY = "#f0e4d2"        # тёмно-синяя шапка (база МИР)
+MAROON = "#e4cbae"      # вишнёвая шапка (база КОРЕЛИЧИ, v0.17.0)
+NAVY_TEXT = "#fffdf8"
+PAGE_BG = "#faf6ef"     # фон страницы под панелями
+PANEL_BG = "#fffdf8"
+BORDER = "#e6dccb"
+TEXT = "#4a3f35"
+MUTED = "#8a7b6b"
+LINK_BLUE = "#a8542f"
 RED = "#e02424"
 GREEN = "#159947"
-BLUE = "#2563eb"
+BLUE = "#c0714a"
 # v0.27.6: рамка текущей даты во всех календарях (поле даты, карточка
 # вида оплаты, календарь «Данные»). Раньше в «Данных» был этот же
 # синий, а в полях даты рамки не было вовсе.
 TODAY_FRAME = BLUE
 WEEKEND_RED = "#e53935"     # красные ячейки выходных в календаре «Данные»
-WORKDAY_GREY = "#eceff3"    # серые ячейки рабочих дней там же
+WORKDAY_GREY = "#f0e9dc"    # серые ячейки рабочих дней там же
 WEEK_TABLE_MARKED_RED = "#ff0000"    # даты, отмеченные в карточке вида оплаты: ячейка красная (v0.24.2)
-WEEK_TABLE_WEEKEND_PINK = "#ffe1e8"  # розовые колонки выходных/праздников
-WEEK_TABLE_TODAY_GREEN = "#ccf5a3"   # салатовая верхняя ячейка текущей даты
+WEEK_TABLE_WEEKEND_PINK = "#fbe0d6"  # розовые колонки выходных/праздников
+WEEK_TABLE_TODAY_GREEN = "#d9e7ce"   # салатовая верхняя ячейка текущей даты
+# v0.38.0: весь столбец текущей даты — светлее шапки, иначе таблица
+# «пестрит» (просьба пользователя: красить день на всю высоту).
+WEEK_TABLE_TODAY_GREEN_BODY = "#eaf1e4"
 # v0.29.0: метка «выписано» в узкой колонке таблицы покупателей.
 # Красная — реализация ещё в работе, зелёная — документы выписаны.
 # Красный тот же, что у отмеченных дат (просьба пользователя).
 MARK_IN_WORK = "#ff0000"
 MARK_INVOICED = "#22c55e"
-TABLE_GRID = "#e3e8f0"      # линии сетки таблиц
+TABLE_GRID = "#ebe3d6"      # линии сетки таблиц
 
 # v0.28.2: стрелка выпадающего календаря для всех полей даты — своя
 # картинка (см. правило QDateEdit::down-arrow ниже). Путь считается на
@@ -41,7 +44,20 @@ TABLE_GRID = "#e3e8f0"      # линии сетки таблиц
 # разный, а в QSS нужен готовый путь до файла.
 DATE_ARROW_FILE = assets_dir() / "arrow-down.png"
 DATE_ARROW_URL = DATE_ARROW_FILE.as_posix()
-SELECTION_BG = "#dbeafe"    # фон выделенной строки
+
+# v0.38.0: тёплая светлая тема «Тёплый песок» (выбор пользователя).
+# Шапки баз стали **светлыми**, поэтому текст на них — тёмный: раньше
+# шапка была тёмно-синей (МР) и вишнёвой (КОРЕЛИЧИ) с белым текстом.
+HEADER_TEXT = "#4a3f35"           # основной текст на светлой шапке
+HEADER_TEXT_MUTED = "#8a7b6b"     # подпись под названием
+HEADER_CHECKED_BG = "#fffdf8"     # выбранная вкладка
+HEADER_HOVER = "rgba(74,63,53,0.10)"
+HEADER_TOOL_BG = "rgba(74,63,53,0.05)"
+HEADER_TOOL_HOVER = "rgba(74,63,53,0.12)"
+HEADER_TOOL_BORDER = "rgba(74,63,53,0.45)"
+ACCENT = "#c0714a"                # терракота: акцент и кнопка базы
+ACCENT_HOVER = "#a8542f"
+SELECTION_BG = "#f6e7d6"    # фон выделенной строки
 
 # Запрос пользователя v0.12.0: шрифты интерфейса на 30% больше.
 # Базовый размер 13px -> 17px, остальные пересчитаны тем же множителем.
@@ -52,13 +68,13 @@ FONT_SCALE = 1.3
 # и сделать широкий»). С v0.23.1 он один на всю программу: так же
 # выглядит прокрутка в таблицах «Поставщики» и «Покупатели».
 WIDE_SCROLLBAR = (
-    "QScrollBar:vertical{background:#f2f5fa;width:22px;margin:0}"
-    "QScrollBar::handle:vertical{background:#b9c4d6;border-radius:6px;"
+    "QScrollBar:vertical{background:#f7f2e9;width:22px;margin:0}"
+    "QScrollBar::handle:vertical{background:#d9c9b0;border-radius:6px;"
     "min-height:40px;margin:2px 3px}"
-    "QScrollBar::handle:vertical:hover{background:#93a3bd}"
+    "QScrollBar::handle:vertical:hover{background:#c0a882}"
     "QScrollBar::add-line:vertical,QScrollBar::sub-line:vertical{height:0}"
     "QScrollBar::add-page:vertical,QScrollBar::sub-page:vertical{"
-    "background:#f2f5fa}"
+    "background:#f7f2e9}"
 )
 
 
@@ -99,7 +115,7 @@ TABLE_CELL_RULES = (
     "QTableWidget::item:hover,QTableView::item:hover{"
     f"border:none;outline:none;color:{TEXT}}}"
     "QTableWidget QLineEdit,QTableView QLineEdit{"
-    "border:none;outline:none;background:#ffffff;"
+    "border:none;outline:none;background:#fffdf8;"
     f"color:{TEXT};"
     f"selection-background-color:{SELECTION_BG};"
     f"selection-color:{TEXT};"
@@ -107,15 +123,15 @@ TABLE_CELL_RULES = (
 )
 
 WIDE_SCROLLBAR_ON_AREA = (
-    "QScrollArea{background:#ffffff;border:none}"
-    "QScrollArea > QWidget > QWidget{background:#ffffff}"
+    "QScrollArea{background:#fffdf8;border:none}"
+    "QScrollArea > QWidget > QWidget{background:#fffdf8}"
     + WIDE_SCROLLBAR
     + TABLE_CELL_RULES
 )
 WIDE_SCROLLBAR_ON_TABLE = (
     # v0.24.3: outline:none — рамка фокуса виджета (пунктир по периметру
     # таблицы после клика) больше не рисуется.
-    "QTableWidget{background:#ffffff;outline:none;"
+    "QTableWidget{background:#fffdf8;outline:none;"
     f"border:1px solid {BORDER};border-radius:8px;"
     f"gridline-color:{TABLE_GRID};"
     # v0.27.0: выделение строки не заливается цветом — подсветка
@@ -204,7 +220,7 @@ QLabel#Muted {{
     color: {MUTED};
 }}
 QLineEdit, QComboBox, QDateEdit, QSpinBox {{
-    background: #ffffff;
+    background: #fffdf8;
     border: 1px solid {BORDER};
     border-radius: 8px;
     padding: 5px 8px;
@@ -241,21 +257,21 @@ QDateEdit::down-arrow {{
     height: 12px;
 }}
 QPushButton {{
-    background: #ffffff;
+    background: #fffdf8;
     border: 1px solid {BORDER};
     border-radius: 8px;
     padding: 6px 14px;
     font-weight: 600;
 }}
 QPushButton:hover {{
-    background: #f2f5fa;
+    background: #f7f2e9;
 }}
 QPushButton:disabled {{
-    color: #a3abb8;
-    background: #f3f5f8;
+    color: #a9977f;
+    background: #f4eee3;
 }}
 QTableWidget {{
-    background: #ffffff;
+    background: #fffdf8;
     border: 1px solid {BORDER};
     border-radius: 8px;
     gridline-color: {TABLE_GRID};
@@ -265,7 +281,7 @@ QTableWidget {{
 }}
 {TABLE_CELL_RULES}
 QHeaderView::section {{
-    background: #eef2f8;
+    background: #f4eee3;
     border: none;
     border-bottom: 1px solid {BORDER};
     padding: 6px 8px;
