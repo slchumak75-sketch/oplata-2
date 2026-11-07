@@ -72,8 +72,9 @@ NAV_TITLES = (
 )
 IDX_RECEIPTS, IDX_SUPPLIERS, IDX_CUSTOMERS, IDX_DATA = range(4)
 
-# v0.17.0: цвет шапки показывает, какая база открыта — синяя «МИР»,
-# вишнёвая «КОРЕЛИЧИ».
+# v0.17.0: цвет шапки показывает, какая база открыта — «МИР» и
+# «КОРЕЛИЧИ». v0.38.0: тема «Тёплый песок» — песочная «МИР» и
+# карамельная «КОРЕЛИЧИ» (раньше были тёмно-синяя и вишнёвая).
 BASE_HEADER_COLORS = {BASE_MIR: styles.NAVY, BASE_KORELICHI: styles.MAROON}
 
 
@@ -206,11 +207,12 @@ class MainWindow(QMainWindow):
         logo.setSpacing(0)
         logo_title = QLabel("▦  Оплаты")
         logo_title.setStyleSheet(
-            f"color:#ffffff;font-size:{styles.fs(19)}px;font-weight:800"
+            f"color:{styles.HEADER_TEXT};font-size:{styles.fs(19)}px;"""
+            f"font-weight:800"
         )
         logo_sub = QLabel("Строймаркет")
         logo_sub.setStyleSheet(
-            f"color:#c9d6f2;font-size:{styles.fs(11)}px"
+            f"color:{styles.HEADER_TEXT_MUTED};font-size:{styles.fs(11)}px"
         )
         logo.addWidget(logo_title)
         logo.addWidget(logo_sub)
@@ -266,36 +268,42 @@ class MainWindow(QMainWindow):
         return header
 
     def _apply_base_style(self) -> None:
-        """Перекрасить шапку под активную базу (МИР — синяя, КОРЕЛИЧИ — вишнёвая)."""
+        """Перекрасить шапку под активную базу (v0.38.0: песок и карамель)."""
         header_bg = BASE_HEADER_COLORS[self.store.base_key]
         nav_font = styles.fs(14)
         self.header.setStyleSheet(f"QFrame{{background:{header_bg}}}")
+        # v0.38.0: шапка светлая, поэтому текст и рамки на ней тёмные.
         nav_style = (
-            "QPushButton{background:transparent;color:#ffffff;border:none;"
+            "QPushButton{background:transparent;"
+            f"color:{styles.HEADER_TEXT};border:none;"
             "border-radius:8px;padding:7px 16px;font-weight:700;"
             f"font-size:{nav_font}px}}"
-            "QPushButton:hover{background:rgba(255,255,255,0.14)}"
-            f"QPushButton:checked{{background:#ffffff;color:{header_bg}}}"
+            f"QPushButton:hover{{background:{styles.HEADER_HOVER}}}"
+            f"QPushButton:checked{{background:{styles.HEADER_CHECKED_BG};"
+            f"color:{styles.HEADER_TEXT}}}"
         )
         for btn in self.nav_buttons:
             btn.setStyleSheet(nav_style)
         # Кнопки базы (v0.20.0): рамка, а не заливка, — чтобы не путать
         # их с вкладками и с переключателем «МИР/КОРЕЛИЧИ».
         base_tools_style = (
-            "QPushButton{background:rgba(255,255,255,0.16);color:#ffffff;"
-            "border:1px solid rgba(255,255,255,0.85);border-radius:8px;"
+            f"QPushButton{{background:{styles.HEADER_TOOL_BG};"
+            f"color:{styles.HEADER_TEXT};"
+            f"border:1px solid {styles.HEADER_TOOL_BORDER};"
+            "border-radius:8px;"
             f"padding:6px 14px;font-weight:700;font-size:{styles.fs(11)}px}}"
-            "QPushButton:hover{background:rgba(255,255,255,0.32)}"
+            f"QPushButton:hover{{background:{styles.HEADER_TOOL_HOVER}}}"
         )
         for btn in (self.export_button, self.import_button):
             btn.setStyleSheet(base_tools_style)
         self.base_button.setStyleSheet(
-            "QPushButton{background:#ffffff;"
-            f"color:{header_bg};"
-            "border:2px solid #ffffff;border-radius:10px;padding:0px 20px;"
+            f"QPushButton{{background:{styles.ACCENT};color:#fffdf8;"
+            f"border:2px solid {styles.ACCENT};border-radius:10px;"
+            "padding:0px 20px;"
             "font-weight:800;"
             f"font-size:{nav_font * 2}px}}"  # вдвое крупнее вкладок
-            "QPushButton:hover{background:#f0f3fa}"
+            f"QPushButton:hover{{background:{styles.ACCENT_HOVER};"
+            f"border-color:{styles.ACCENT_HOVER}}}"
         )
 
     def toggle_base(self) -> None:

@@ -165,7 +165,7 @@ def make_amount_edit(text: str = "") -> AmountLineEdit:
     return AmountLineEdit(text)
 
 
-_DISABLED_BUTTON_STYLE = "QPushButton:disabled{background:#cbd5e1;color:#fff}"
+_DISABLED_BUTTON_STYLE = "QPushButton:disabled{background:#dccdb8;color:#fffdf8}"
 
 
 def danger_button(text: str) -> QPushButton:
@@ -173,7 +173,7 @@ def danger_button(text: str) -> QPushButton:
     btn.setStyleSheet(
         f"QPushButton{{background:{styles.RED};color:#fff;border:none;"
         f"border-radius:8px;padding:7px 16px;font-weight:700}}"
-        f"QPushButton:hover{{background:#c81e1e}}"
+        f"QPushButton:hover{{background:#a81515}}"
         f"{_DISABLED_BUTTON_STYLE}"
     )
     return btn
@@ -184,7 +184,7 @@ def green_button(text: str) -> QPushButton:
     btn.setStyleSheet(
         f"QPushButton{{background:{styles.GREEN};color:#fff;border:none;"
         f"border-radius:8px;padding:7px 16px;font-weight:700}}"
-        f"QPushButton:hover{{background:#11853d}}"
+        f"QPushButton:hover{{background:#0f7435}}"
         f"{_DISABLED_BUTTON_STYLE}"
     )
     return btn
@@ -195,7 +195,7 @@ def blue_button(text: str) -> QPushButton:
     btn.setStyleSheet(
         f"QPushButton{{background:{styles.BLUE};color:#fff;border:none;"
         f"border-radius:8px;padding:7px 16px;font-weight:700}}"
-        f"QPushButton:hover{{background:#1d4ed8}}"
+        f"QPushButton:hover{{background:#a8542f}}"
         f"{_DISABLED_BUTTON_STYLE}"
     )
     return btn
@@ -290,8 +290,8 @@ def disable_selection_color(root: "QWidget") -> None:
     Поэтому цвет задаётся напрямую, а не через QSS.
     """
 
-    white = QColor("#ffffff")
-    text = QColor("#1c2733")
+    white = QColor("#fffdf8")
+    text = QColor("#4a3f35")
     for table in root.findChildren(QAbstractItemView):
         palette = table.palette()
         palette.setColor(QPalette.ColorRole.Highlight, white)

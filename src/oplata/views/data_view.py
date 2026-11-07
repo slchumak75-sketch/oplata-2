@@ -837,7 +837,7 @@ class DataView(QWidget):
     def _paint_day(self, btn: QPushButton, day: date) -> None:
         is_off = self._is_day_off(day)
         bg = styles.WEEKEND_RED if is_off else styles.WORKDAY_GREY
-        fg = "#ffffff" if is_off else styles.TEXT
+        fg = "#fffdf8" if is_off else styles.TEXT
         # v0.27.6: цвет рамки «сегодня» — общий для всех календарей.
         border = (
             f"2px solid {styles.TODAY_FRAME}" if day == date.today() else "none"

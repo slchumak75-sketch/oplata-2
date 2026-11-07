@@ -100,7 +100,7 @@ def test_main_window_all_pages(qt_app, store):
     ]
     assert window.stack.count() == 4  # вкладки «Сводка» больше нет
     # Вкладка «Поступление и оплаты»: два блока один под другим, в каждом
-    # таблица со столбцами «Сумма/Неделя/Месяц/Год».
+    # таблица с колонками дней недели (v0.38.0: колонки «Сумма» нет).
     view = window.receipts_view
     assert [view.incoming.table.item(row, 0).text() for row in range(4)] == [
         "Поступление наличными",
@@ -115,7 +115,7 @@ def test_main_window_all_pages(qt_app, store):
     assert [
         view.outgoing.table.horizontalHeaderItem(c).text()
         for c in range(COLUMN_COUNT)
-    ][:3] == ["", "НДС", "Сумма"]
+    ][:2] == ["", "НДС"]
     assert view.incoming.table.isColumnHidden(COL_VAT)
     assert not view.outgoing.table.isColumnHidden(COL_VAT)
     assert view.incoming.days == view.incoming.week_days()
@@ -198,10 +198,15 @@ def test_week_table_income_and_payment_input(qt_app, store):
         brush = table.item(row, col).background()
         return None if brush.style() == Qt.BrushStyle.NoBrush else brush.color().name()
 
-    assert bg_name(1, _DAY(view, 1, 0)) == styles.WEEK_TABLE_TODAY_GREEN  # только «27 вт»
-    assert bg_name(2, _DAY(view, 1, 0)) is None
-    assert bg_name(TOTAL_ROW, _DAY(view, 1, 0)) is None
-    assert bg_name(FIRST_DATA_ROW, _DAY(view, 1, 0)) is None
+    # v0.38.0: колонка текущего дня — на всю высоту: в шапке свой
+    # зелёный, в теле таблицы — светлее (просьба пользователя).
+    assert bg_name(1, _DAY(view, 1, 0)) == styles.WEEK_TABLE_TODAY_GREEN
+    assert bg_name(2, _DAY(view, 1, 0)) == styles.WEEK_TABLE_TODAY_GREEN_BODY
+    assert bg_name(TOTAL_ROW, _DAY(view, 1, 0)) == styles.WEEK_TABLE_TODAY_GREEN_BODY
+    assert (
+        bg_name(FIRST_DATA_ROW, _DAY(view, 1, 0))
+        == styles.WEEK_TABLE_TODAY_GREEN_BODY
+    )
     assert bg_name(1, _DAY(view, 4, 0)) == styles.WEEK_TABLE_WEEKEND_PINK  # праздник
     assert bg_name(FIRST_DATA_ROW, _DAY(view, 4, 0)) == styles.WEEK_TABLE_WEEKEND_PINK
     assert bg_name(FIRST_DATA_ROW, _DAY(view, 5, 0)) is None  # рабочая суббота
@@ -962,11 +967,15 @@ def test_customer_sale_table_and_direct_input(qt_app, store):
         brush = table.item(row, col).background()
         return None if brush.style() == Qt.BrushStyle.NoBrush else brush.color().name()
 
-    # Только верхнее поле «27 вт» салатовое; ниже этот день не красим.
+    # v0.38.0: колонка текущего дня красится на всю высоту (шапка —
+    # своим зелёным, тело таблицы — светлее).
     assert bg_name(1, _DAY(view, 1, 0)) == styles.WEEK_TABLE_TODAY_GREEN
-    assert bg_name(2, _DAY(view, 1, 0)) is None
-    assert bg_name(TOTAL_ROW, _DAY(view, 1, 0)) is None
-    assert bg_name(FIRST_DATA_ROW, _DAY(view, 1, 0)) is None
+    assert bg_name(2, _DAY(view, 1, 0)) == styles.WEEK_TABLE_TODAY_GREEN_BODY
+    assert bg_name(TOTAL_ROW, _DAY(view, 1, 0)) == styles.WEEK_TABLE_TODAY_GREEN_BODY
+    assert (
+        bg_name(FIRST_DATA_ROW, _DAY(view, 1, 0))
+        == styles.WEEK_TABLE_TODAY_GREEN_BODY
+    )
     # Суббота как обычный выходной остаётся розовой и в теле таблицы.
     assert bg_name(FIRST_DATA_ROW, _DAY(view, 5, 0)) == styles.WEEK_TABLE_WEEKEND_PINK
 
@@ -1021,11 +1030,14 @@ def test_realization_dialog_saves_without_due_date(qt_app, store):
 
 
 def test_receipts_table_direct_input_and_totals(qt_app, store):
-    """Таблица «Поступление»: ввод в ячейку и суммы по дням недели."""
+    """Таблица «Поступление»: ввод в ячейку дня и суммы по дням недели.
+
+    v0.38.0: колонки «Сумма» нет — сумма вводится прямо в ячейку
+    своего дня, а стрелки «←»/«→» листают недели.
+    """
     from datetime import date
 
     from oplata.app import MainWindow
-    from oplata.views.receipts_view import COL_AMOUNT
 
     window = MainWindow(store)
     view = window.receipts_view
@@ -1040,47 +1052,43 @@ def test_receipts_table_direct_input_and_totals(qt_app, store):
     assert incoming.date_edit.y() <= incoming.today_btn.y() + 4
 
     incoming.set_date(date(2026, 10, 27))
+    # v0.38.0: стрелки листают недели, а не дни.
     incoming.next_btn.click()
-    assert incoming.current_date() == date(2026, 10, 28)
+    assert incoming.current_date() == date(2026, 11, 3)
     incoming.prev_btn.click()
     incoming.prev_btn.click()
-    assert incoming.current_date() == date(2026, 10, 26)
+    assert incoming.current_date() == date(2026, 10, 20)
     view.set_date(date(2026, 10, 27))
 
-    # Наличные и карты вводятся прямо в ячейку таблицы.
-    incoming.table.item(0, COL_AMOUNT).setText("1 500,75")
+    col_26 = _DAY_COL(incoming, date(2026, 10, 26))
+    col_27 = _DAY_COL(incoming, date(2026, 10, 27))
+
+    # Наличные и карты вводятся прямо в ячейку дня (v0.38.0).
+    incoming.table.item(0, col_27).setText("1 500,75")
     assert [(r.source, r.date, r.amount) for r in store.data.cash_receipts] == [
         ("cash", "2026-10-27", "1500.75")
     ]
     assert incoming.amount_text("cash") == "1 500,75"
-    incoming.table.item(1, COL_AMOUNT).setText("2 000")
+    incoming.table.item(1, col_27).setText("2 000")
     assert [(r.source, r.amount) for r in store.data.cash_receipts] == [
         ("cash", "1500.75"),
         ("card", "2000.00"),
     ]
     assert incoming.amount_text("card") == "2 000,00"
 
-    # Колонки дней недели (Пн 26.10 – Сб 31.10): сумма видна в колонке
-    # своего дня, а «Сумма» — за дату, выбранную в блоке (v0.22.0).
-    incoming.table.item(0, COL_AMOUNT).setText("1 000")
-    col_26 = _DAY_COL(incoming, date(2026, 10, 26))
-    col_27 = _DAY_COL(incoming, date(2026, 10, 27))
-    assert incoming.amount_text("cash", COL_AMOUNT) == "1 000,00"
+    # Сумма видна в колонке своего дня (v0.22.0).
+    incoming.table.item(0, col_27).setText("1 000")
     assert incoming.amount_text("cash", col_27) == "1 000,00"
     assert incoming.amount_text("cash", col_26) == ""
 
     # Сумма другого дня этой же недели стоит в своей колонке.
-    view.incoming.set_date(date(2026, 10, 26))
-    view.incoming.table.item(0, COL_AMOUNT).setText("500")
-    assert view.incoming.amount_text("cash", COL_AMOUNT) == "500,00"
-    view.incoming.set_date(date(2026, 10, 27))
-    assert view.incoming.amount_text("cash", COL_AMOUNT) == "1 000,00"
+    view.incoming.table.item(0, col_26).setText("500")
     assert view.incoming.amount_text("cash", col_26) == "500,00"
     assert view.incoming.amount_text("cash", col_27) == "1 000,00"
     assert view.incoming.amount_text("card", col_27) == "2 000,00"
 
     # Пустая ячейка убирает запись дня (только по своему источнику).
-    view.incoming.table.item(0, COL_AMOUNT).setText("")
+    view.incoming.table.item(0, col_27).setText("")
     assert view.incoming.amount_text("cash") == ""
     assert [(r.source, r.date) for r in store.data.cash_receipts] == [
         ("card", "2026-10-27"),
@@ -1266,7 +1274,6 @@ def test_data_panels_are_collapsible(qt_app, store):
 
 
 from oplata.views.receipts_view import (  # noqa: E402
-    COL_AMOUNT,
     COL_NAME,
     COL_VAT,
     COLUMN_COUNT,
@@ -1339,8 +1346,8 @@ def test_other_payment_rows_add_sum_and_remove(qt_app, store, monkeypatch):
     qt_app.processEvents()
     assert isinstance(view._popup, JournalPopup)
 
-    # Сумма — прямо в ячейку, итоги считаются по названию.
-    view.outgoing.table.item(1, COL_AMOUNT).setText("12 000")
+    # Сумма — прямо в ячейку дня (v0.38.0), итоги считаются по названию.
+    view.outgoing.table.item(1, day_column).setText("12 000")
     assert view.outgoing.amount_text("other:Новый вид оплаты") == "12 000,00"
     assert view.outgoing.amount_text("other:Новый вид оплаты", day_column) == "12 000,00"
     assert [
@@ -1451,8 +1458,10 @@ def test_incoming_block_has_fixed_other_income_row(qt_app, store, monkeypatch):
     name_item = view.incoming.table.item(3, COL_NAME)
     assert not (name_item.flags() & Qt.ItemFlag.ItemIsEditable)
 
-    # Сумма вводится прямо в ячейку и пишется с направлением «in».
-    view.incoming.table.item(3, COL_AMOUNT).setText("5 000")
+    # Сумма вводится прямо в ячейку дня (v0.38.0) с направлением «in».
+    view.incoming.table.item(3, _DAY_COL(view.incoming, date(2026, 10, 27))).setText(
+        "5 000"
+    )
     qt_app.processEvents()
     assert view.incoming.amount_text("other:Прочие поступления") == "5 000,00"
     assert [
@@ -1535,7 +1544,7 @@ def test_tables_edit_on_single_click_and_numbers_centered(qt_app, store):
     from PySide6.QtWidgets import QAbstractItemView
 
     from oplata.app import MainWindow
-    from oplata.views.receipts_view import COL_AMOUNT, COLUMN_COUNT
+    from oplata.views.receipts_view import COLUMN_COUNT, FIRST_DAY_COL
 
     window = MainWindow(store)
     window.show()
@@ -1551,8 +1560,9 @@ def test_tables_edit_on_single_click_and_numbers_centered(qt_app, store):
     ):
         assert table.editTriggers() == QAbstractItemView.EditTrigger.AllEditTriggers
 
-    # «Сумма» и все колонки дней недели — по центру (v0.23.9).
-    for column in range(COL_AMOUNT, COLUMN_COUNT):
+    # Все колонки дней недели — по центру (v0.23.9; колонки «Сумма»
+    # с v0.38.0 нет).
+    for column in range(FIRST_DAY_COL, COLUMN_COUNT):
         assert view.incoming.table.item(0, column).textAlignment() == center
         assert (
             view.incoming.table.horizontalHeaderItem(column).textAlignment()
@@ -1614,18 +1624,19 @@ def test_week_day_columns_show_daily_amounts(qt_app, store):
 
     # Шесть дней недели: Пн 26.10 – Сб 31.10 (воскресенья нет).
     # v0.33.0: колонок девять — название, НДС, сумма и шесть дней.
-    assert view.incoming.table.columnCount() == COLUMN_COUNT == 3 + TABLE_DAYS
+    # v0.38.0: колонки «Сумма» нет, поэтому столбцов на один меньше.
+    assert view.incoming.table.columnCount() == COLUMN_COUNT == 2 + TABLE_DAYS
     assert view.incoming.days[0] == date(2026, 10, 26)
     assert view.incoming.days[-1] == date(2026, 10, 31)
     headers = [
         view.incoming.table.horizontalHeaderItem(column).text()
         for column in range(COLUMN_COUNT)
     ]
-    # v0.33.0: вторая колонка — «НДС» (в блоке «Поступление» скрыта),
-    # третья — «Сумма», дальше шесть дней.
-    assert headers[0] == "" and headers[2] == "Сумма"
+    # v0.33.0: вторая колонка — «НДС» (в блоке «Поступление» скрыта);
+    # v0.38.0: третьей колонкой «Сумма» больше нет — сразу дни.
+    assert headers[0] == "" and headers[1] == "НДС"
     assert view.incoming.table.isColumnHidden(COL_VAT)
-    assert headers[3].startswith("26.10") and headers[-1].startswith("31.10")
+    assert headers[2].startswith("26.10") and headers[-1].startswith("31.10")
 
     row = view.incoming.row_keys.index("cash")
     assert view.incoming.amount_text("cash") == "3 000,00"  # выбранный день
@@ -2135,7 +2146,7 @@ def test_funds_block_carries_balance_to_next_day(qt_app, store):
 def test_summary_refreshes_right_after_typing_amount(qt_app, store):
     """Сводка пересчитывается сразу после ввода суммы в ячейку."""
     from oplata.app import MainWindow
-    from oplata.views.receipts_view import COL_AMOUNT
+    from oplata.views.receipts_view import FIRST_DAY_COL
 
     window = MainWindow(store)
     window.show()
@@ -2143,14 +2154,16 @@ def test_summary_refreshes_right_after_typing_amount(qt_app, store):
     view = window.receipts_view
     summary = window.summary_view
 
+    today_column = _DAY_COL(view.incoming, view.incoming.current_date())
+    assert today_column >= FIRST_DAY_COL
     assert summary.value_text("income") == "0,00"
-    view.incoming.table.item(0, COL_AMOUNT).setText("2 500")
+    view.incoming.table.item(0, today_column).setText("2 500")
     qt_app.processEvents()
     assert summary.value_text("income") == "2 500,00"
     assert summary.value_text("balance") == "2 500,00"
 
     # Убрали сумму — сводка снова пересчиталась.
-    view.incoming.table.item(0, COL_AMOUNT).setText("")
+    view.incoming.table.item(0, today_column).setText("")
     qt_app.processEvents()
     assert summary.value_text("income") == "0,00"
     window.close()
@@ -2298,17 +2311,20 @@ def test_wide_scrollbar_keeps_white_background(qt_app, store):
 
     from PySide6.QtGui import QColor, QPalette
 
+    from oplata import styles
+
     from oplata.app import MainWindow
     from oplata.views.receipts_view import AmountPopup
 
-    white = QColor("#ffffff")
+    white = QColor(styles.PANEL_BG)
 
     entries = [(f"id{index}", f"Контрагент {index}") for index in range(12)]
     popup = AmountPopup("Покупатели", entries, lambda values: None)
     popup.show()
     qt_app.processEvents()
     scroll = popup.scroll_area
-    assert "background:#ffffff" in scroll.styleSheet()
+    # v0.38.0: тёплая тема — белый стал тёплым (styles.PANEL_BG).
+    assert f"background:{styles.PANEL_BG}" in scroll.styleSheet()
     viewport = scroll.viewport()
     viewport.ensurePolished()
     assert viewport.palette().color(QPalette.ColorRole.Window) == white
@@ -2701,7 +2717,12 @@ def test_tables_selection_color_is_white(qt_app, store):
     Замер показал: QSS, заданный на самом виджете (``WIDE_SCROLLBAR_ON_TABLE``),
     палитру не меняет — цвет оставался системным (``#308cc6``), и на
     строке появлялись синие штрихи. Поэтому цвет задаётся напрямую.
+
+    v0.38.0: белый стал тёплым белым темы «Тёплый песок».
     """
+
+    from oplata import styles
+
 
     from PySide6.QtGui import QPalette
     from PySide6.QtWidgets import QAbstractItemView
@@ -2717,7 +2738,10 @@ def test_tables_selection_color_is_white(qt_app, store):
     assert tables, "в окне должны быть таблицы"
     for table in tables:
         color = table.palette().color(QPalette.ColorRole.Highlight)
-        assert color.name() == "#ffffff", f"{type(table).__name__}: {color.name()}"
+        # v0.38.0: белый фон таблиц — тёплый белый темы «Тёплый песок».
+        assert color.name() == styles.PANEL_BG, (
+            f"{type(table).__name__}: {color.name()}"
+        )
     window.close()
 
 
@@ -2872,7 +2896,7 @@ def test_cell_editor_opens_without_frame_and_centered(qt_app, store):
     from oplata import styles
     from oplata.app import MainWindow
     from oplata.models import OUTGOING, add_other_payment
-    from oplata.views.receipts_view import COL_AMOUNT
+    from oplata.views.receipts_view import FIRST_DAY_COL
 
     # В стиле приложения у редактора нет рамки и синего выделения.
     assert "QTableWidget QLineEdit" in styles.APP_STYLESHEET
@@ -2897,8 +2921,8 @@ def test_cell_editor_opens_without_frame_and_centered(qt_app, store):
         Qt.MouseButton.LeftButton,
         Qt.KeyboardModifier.NoModifier,
         QPoint(
-            # v0.33.0: сумма — третья колонка, вторая теперь «НДС».
-            table.columnViewportPosition(COL_AMOUNT) + 20,
+            # v0.38.0: сумма вводится в ячейку дня (первая колонка дней).
+            table.columnViewportPosition(FIRST_DAY_COL) + 20,
             table.rowViewportPosition(row) + table.rowHeight(row) // 2,
         ),
     )
@@ -3059,6 +3083,8 @@ def test_marked_dates_of_payment_paint_cells_red(qt_app, store):
     """v0.24.0: даты, отмеченные в карточке вида оплаты, — красные
     ячейки в таблице блока «Оплата»."""
 
+    from datetime import date
+
     from oplata import styles
     from oplata.app import MainWindow
     from oplata.models import OUTGOING, add_other_payment
@@ -3089,6 +3115,9 @@ def test_marked_dates_of_payment_paint_cells_red(qt_app, store):
         color = item.background().color().name()
         if day.isoformat() in marked:
             assert color == red, day
+        elif day == date.today():
+            # v0.38.0: сегодняшний день зелёный, даже если это выходной.
+            assert color == styles.WEEK_TABLE_TODAY_GREEN_BODY, day
         elif day.weekday() >= 5:
             assert color == styles.WEEK_TABLE_WEEKEND_PINK, day
         else:
@@ -4083,7 +4112,12 @@ def test_customer_invoice_mark_toggles_by_click(qt_app, store):
 
     table.item(row, sale_column).setText("")
     assert view._mark_color(buyer.id, day) is None
-    assert mark_color() == "#ffffff"
+    # v0.38.0: фон ячейки метки — как у колонки дня (сегодня зелёный).
+    assert mark_color() == (
+        styles.WEEK_TABLE_TODAY_GREEN_BODY
+        if day == date.today()
+        else styles.PANEL_BG
+    )
     window.close()
 
 
@@ -4850,9 +4884,10 @@ def test_outgoing_block_has_vat_column(qt_app, store, monkeypatch):
         block.table.horizontalHeaderItem(column).text()
         for column in range(block.table.columnCount())
     ]
-    assert headers[:3] == ["", "НДС", "Сумма"]
-    # Дней по-прежнему шесть (Пн–Сб), колонок — девять.
-    assert block.table.columnCount() == 9
+    # v0.38.0: колонки «Сумма» нет: название, НДС и шесть дней.
+    assert block.table.columnCount() == 8
+    assert headers[:2] == ["", "НДС"]
+    # Дней по-прежнему шесть (Пн–Сб), колонок — восемь.
     assert len(block.days) == 6
 
     # В блоке «Поступление» колонки «НДС» нет совсем.
@@ -5166,4 +5201,88 @@ def test_summary_week_debt_matches_suppliers_table(qt_app, store):
     # Просрочка в «Задолженность на неделе» не входит: 500 + 200 больше
     # не складываются (как было в v0.27.3) — это отдельная строка.
     assert summary.value_text("debt_late") == "200,00"
+    window.close()
+
+
+def test_receipts_arrows_switch_week(qt_app, store):
+    """v0.38.0: стрелки «←»/«→» листают недели, а не дни.
+
+    И в самой таблице (клавиши), и в шапке блока (кнопки). Обычный
+    переход по ячейкам оставлен на Ctrl + «←»/«→».
+    """
+    from datetime import date
+
+    from PySide6.QtCore import QEvent, Qt
+    from PySide6.QtGui import QKeyEvent
+    from PySide6.QtWidgets import QApplication
+
+    from oplata.app import MainWindow
+
+    window = MainWindow(store)
+    window.show()
+    qt_app.processEvents()
+    view = window.receipts_view
+    view.set_date(date(2026, 10, 27))
+    block = view.incoming
+    assert block.days[0] == date(2026, 10, 26)
+
+    def press(key, modifier=Qt.KeyboardModifier.NoModifier) -> None:
+        QApplication.sendEvent(
+            block.table,
+            QKeyEvent(QEvent.Type.KeyPress, key, modifier),
+        )
+        qt_app.processEvents()
+
+    press(Qt.Key.Key_Right)
+    assert block.current_date() == date(2026, 11, 3)
+    assert block.days[0] == date(2026, 11, 2)     # и колонки дней другие
+    press(Qt.Key.Key_Left)
+    press(Qt.Key.Key_Left)
+    assert block.current_date() == date(2026, 10, 20)
+    assert block.days[0] == date(2026, 10, 19)
+
+    # Ctrl + «→» — обычный переход по ячейкам, неделя остаётся прежней.
+    block.table.setCurrentCell(0, 2)
+    press(Qt.Key.Key_Right, Qt.KeyboardModifier.ControlModifier)
+    assert block.current_date() == date(2026, 10, 20)
+
+    # Кнопки «←»/«→» в шапке блока — тоже недели.
+    block.next_btn.click()
+    assert block.current_date() == date(2026, 10, 27)
+    block.prev_btn.click()
+    assert block.current_date() == date(2026, 10, 20)
+    window.close()
+
+
+def test_receipts_today_column_is_painted_full_height(qt_app, store):
+    """v0.38.0: в блоках «Поступление»/«Оплата» сегодня — весь столбец."""
+    from datetime import date
+
+    from PySide6.QtGui import QColor
+
+    from oplata import styles
+    from oplata.app import MainWindow
+    from oplata.views.receipts_view import FIRST_DAY_COL
+
+    window = MainWindow(store)
+    window.show()
+    qt_app.processEvents()
+    view = window.receipts_view
+    today = date.today()
+    view.set_date(today)
+    block = view.incoming
+    if today not in block.days:
+        # Воскресенье в таблице не показывается (шесть дней, Пн–Сб).
+        qt_app.processEvents()
+        window.close()
+        return
+    column = FIRST_DAY_COL + block.days.index(today)
+    body = QColor(styles.WEEK_TABLE_TODAY_GREEN_BODY).name()
+    for row in range(len(block.row_keys)):
+        item = block.table.item(row, column)
+        assert item is not None
+        assert item.background().color().name() == body, (row, column)
+    # Соседний день этой же недели так не красим.
+    other = FIRST_DAY_COL + ((block.days.index(today) + 1) % len(block.days))
+    assert block.table.item(0, other).background().color().name() != body
     window.close()

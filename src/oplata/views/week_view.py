@@ -100,7 +100,7 @@ OP_KIND_BY_COLUMN = {
     "sale": KIND_SALE,
     "payment": KIND_PAYMENT,
 }
-DAY_SEPARATOR_COLOR = "#5b6b84"  # толстые линии между днями, как на макете 08
+DAY_SEPARATOR_COLOR = "#9a8873"  # толстые линии между днями, как на макете 08
 SEPARATOR_AFTER_COLS = {2, 5, 8, 11, 14, 17, 20}  # поставщики, после каждого дня кроме Вс
 MAX_AMOUNT_TEXT = "88 888,88"  # под это число подгоняется шрифт сумм (запрос пользователя)
 META_ROLE = Qt.ItemDataRole.UserRole        # "id|дата|kind" редактируемых ячеек
@@ -322,7 +322,7 @@ class WeekView(QWidget):
         self.frozen_table.setObjectName("FrozenWeekHeader")
         self.frozen_table.setStyleSheet(
             f"QTableWidget{{font-size:{styles.fs(12)}px;"
-            f"background:#ffffff;border:0px;gridline-color:transparent}}"
+            f"background:#fffdf8;border:0px;gridline-color:transparent}}"
         )
         self.frozen_table.horizontalHeader().setVisible(False)
         self.frozen_table.verticalHeader().setVisible(False)
@@ -741,7 +741,7 @@ class WeekView(QWidget):
         """Фон ячейки дня под меткой (розовые выходные, как в таблице)."""
 
         if day == date.today():
-            return None
+            return styles.WEEK_TABLE_TODAY_GREEN_BODY
         if calc.is_day_off(day, self.store.data.day_overrides):
             return styles.WEEK_TABLE_WEEKEND_PINK
         return None
@@ -755,7 +755,7 @@ class WeekView(QWidget):
         """Залить ячейку метки и положить в неё данные для клика."""
 
         color = self._mark_color(partner_id, day)
-        background = QColor(color or self._day_mark_bg(day) or "#ffffff")
+        background = QColor(color or self._day_mark_bg(day) or "#fffdf8")
         item.setBackground(background)
         item.setData(MARK_ROLE, f"{partner_id}|{day.isoformat()}")
         item.setToolTip(
@@ -1092,14 +1092,14 @@ class WeekView(QWidget):
             return cell
 
         def day_body_bg(day: date) -> str | None:
-            """Фон ячеек под датой: только розовые выходные/праздники.
+            """Фон ячеек под датой: розовые выходные и весь столбец «сегодня».
 
-            Уточнение пользователя: у текущей даты салатовой должна быть
-            только верхняя ячейка вида «27 вт»; остальные ячейки этого дня
-            не красим.
+            v0.38.0 (просьба пользователя): колонка текущей даты
+            красится **на всю высоту**, а не только шапкой. Цвет взят
+            светлее шапочного, чтобы таблица не пестрела.
             """
             if day == today:
-                return None
+                return styles.WEEK_TABLE_TODAY_GREEN_BODY
             if calc.is_day_off(day, self.store.data.day_overrides):
                 return styles.WEEK_TABLE_WEEKEND_PINK
             return None
