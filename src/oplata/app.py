@@ -46,7 +46,7 @@ from .excelio import (
     export_bases,
     import_bases,
 )
-from .models import AppData
+from .models import AppData, set_year_start_funds
 from .storage import (
     BASE_KORELICHI,
     BASE_MIR,
@@ -90,6 +90,9 @@ class MainWindow(QMainWindow):
         # «Конфигурация» открывается по паролю: флаг живёт, пока
         # пользователь не ушёл с этой вкладки.
         self._config_unlocked = False
+        # v0.40.0: путь последней удачной выгрузки — по нему «Очистить
+        # базу» понимает, что копия действительно сохранена.
+        self._last_export_path: str | None = None
         # Открытые окна журналов операций держим, чтобы они не закрывались
         # сборщиком мусора (окна немодальные).
         self._journal_dialogs: list[OperationsJournalDialog] = []
@@ -100,7 +103,9 @@ class MainWindow(QMainWindow):
         self.autosave_on_exit = True
         self._exit_export_done = False
         self.setWindowTitle(f"{__app_name__}  v{__version__}")
-        self.resize(1440, 860)
+        # v0.40.0: 1440 -> 1600 — в шапке три кнопки базы вместо двух,
+        # им нужно место (шрифт кнопок стал как у вкладок).
+        self.resize(1600, 860)
         self.setMinimumSize(1100, 640)
 
         root = QWidget()
@@ -233,7 +238,9 @@ class MainWindow(QMainWindow):
             self.nav_buttons.append(btn)
             layout.addWidget(btn)
 
-        layout.addSpacing(28)
+        # v0.40.0: в шапке три кнопки базы вместо двух — отступы справа
+        # от вкладок теснее, иначе длинные подписи обрезались бы.
+        layout.addSpacing(14)
         # v0.17.0: переключатель базы — на свободном поле справа от
         # вкладок. Шрифт вдвое крупнее, чем у вкладок («Конфигурация»);
         # нажатие меняет базу МИР <-> КОРЕЛИЧИ вместе с цветом шапки.
@@ -242,7 +249,7 @@ class MainWindow(QMainWindow):
         self.base_button.clicked.connect(self.toggle_base)
         layout.addWidget(self.base_button)
 
-        layout.addSpacing(10)
+        layout.addSpacing(6)
         # v0.20.0: выгрузка и загрузка **обеих** баз (МИР и КОРЕЛИЧИ)
         # одним файлом Excel. Кнопки видит только администратор — у
         # остальных пользователей их нет в шапке.
@@ -251,7 +258,8 @@ class MainWindow(QMainWindow):
         self.export_button.setToolTip(
             "Сохранить обе базы (МИР и КОРЕЛИЧИ) в файл Excel"
         )
-        self.export_button.clicked.connect(self.export_bases_to_excel)
+        # v0.40.0: все три кнопки работают по паролю «Конфигурации».
+        self.export_button.clicked.connect(self._on_export_clicked)
         layout.addWidget(self.export_button)
 
         self.import_button = QPushButton("Загрузить базы")
@@ -259,8 +267,20 @@ class MainWindow(QMainWindow):
         self.import_button.setToolTip(
             "Заменить данные баз (МИР и КОРЕЛИЧИ) данными из файла Excel"
         )
-        self.import_button.clicked.connect(self.import_bases_from_excel)
+        self.import_button.clicked.connect(self._on_import_clicked)
         layout.addWidget(self.import_button)
+
+        # v0.40.0: «Очистить базу» — удалить операции и суммы текущей
+        # базы; поставщики и покупатели (справочники) остаются.
+        self.clear_button = QPushButton("Очистить базу")
+        self.clear_button.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.clear_button.setToolTip(
+            "Удалить операции и суммы базы «"
+            + BASE_TITLES[self.store.base_key]
+            + "»: поставщики и покупатели остаются"
+        )
+        self.clear_button.clicked.connect(self._on_clear_base_clicked)
+        layout.addWidget(self.clear_button)
 
         self._apply_base_style()
 
@@ -280,7 +300,7 @@ class MainWindow(QMainWindow):
         nav_style = (
             "QPushButton{background:transparent;"
             f"color:{styles.HEADER_TEXT};border:none;"
-            "border-radius:8px;padding:7px 16px;font-weight:700;"
+            "border-radius:8px;padding:7px 10px;font-weight:700;"
             f"font-size:{nav_font}px}}"
             f"QPushButton:hover{{background:{styles.HEADER_HOVER}}}"
             f"QPushButton:checked{{background:{styles.HEADER_CHECKED_BG};"
@@ -290,21 +310,30 @@ class MainWindow(QMainWindow):
             btn.setStyleSheet(nav_style)
         # Кнопки базы (v0.20.0): рамка, а не заливка, — чтобы не путать
         # их с вкладками и с переключателем «МИР/КОРЕЛИЧИ».
+        # v0.40.0: шрифт кнопок — такой же, как у вкладок («Поставщики»,
+        # «Покупатели»); раньше он был мельче (fs(11)).
         base_tools_style = (
             f"QPushButton{{background:{styles.HEADER_TOOL_BG};"
             f"color:{styles.HEADER_TEXT};"
             f"border:1px solid {styles.HEADER_TOOL_BORDER};"
             "border-radius:8px;"
-            f"padding:6px 14px;font-weight:700;font-size:{styles.fs(11)}px}}"
+            f"padding:6px 6px;font-weight:700;font-size:{nav_font}px}}"
             f"QPushButton:hover{{background:{styles.HEADER_TOOL_HOVER}}}"
         )
-        for btn in (self.export_button, self.import_button):
+        for btn in (self.export_button, self.import_button, self.clear_button):
             btn.setStyleSheet(base_tools_style)
+        # v0.40.0: подсказка «Очистить базу» называет текущую базу —
+        # переключатель базы меняет её вместе с шапкой.
+        self.clear_button.setToolTip(
+            "Удалить операции и суммы базы «"
+            + BASE_TITLES[self.store.base_key]
+            + "»: поставщики и покупатели остаются"
+        )
         self.base_button.setStyleSheet(
             f"QPushButton{{background:{styles.HEADER_CHECKED_BG};"
             f"color:{header_bg};"
             f"border:2px solid {styles.HEADER_CHECKED_BG};border-radius:10px;"
-            "padding:0px 20px;"
+            "padding:0px 10px;"
             "font-weight:800;"
             f"font-size:{nav_font * 2}px}}"  # вдвое крупнее вкладок
             f"QPushButton:hover{{background:{styles.HEADER_HOVER}}}"
@@ -321,6 +350,104 @@ class MainWindow(QMainWindow):
         self.base_button.setText(BASE_TITLES[self.store.base_key])
         self._apply_base_style()
         self.refresh_all_views()
+
+    # ------------------------------------------- кнопки шапки (v0.40.0)
+    def _on_export_clicked(self) -> None:
+        """«Выгрузить базы» по паролю (v0.40.0)."""
+
+        if not self._ask_password("Выгрузка баз", "Пароль администратора:"):
+            return
+        self.export_bases_to_excel()
+
+    def _on_import_clicked(self) -> None:
+        """«Загрузить базы» по паролю (v0.40.0)."""
+
+        if not self._ask_password("Загрузка баз", "Пароль администратора:"):
+            return
+        self.import_bases_from_excel()
+
+    def _on_clear_base_clicked(self) -> None:
+        """«Очистить базу»: удалить операции и суммы (v0.40.0).
+
+        Справочники (поставщики и покупатели), рабочий календарь,
+        пользователи и права **не** трогаются. Перед очисткой
+        предлагаем выгрузить базу в Excel: отменить очистку будет
+        нечем.
+        """
+
+        if not self._ask_password("Очистка базы", "Пароль администратора:"):
+            return
+        data = self.store.data
+        operations = len(data.operations)
+        cash = len(data.cash_receipts)
+        others = len(data.other_payments)
+        debts = len(data.year_start.supplier_debts) + len(
+            data.year_start.customer_debts
+        )
+        if operations + cash + others + debts == 0:
+            QMessageBox.information(
+                self,
+                "Очистка базы",
+                f"В базе «{BASE_TITLES[self.store.base_key]}» нет операций "
+                "и сумм — очищать нечего.",
+            )
+            return
+
+        box = QMessageBox(self)
+        box.setWindowTitle("Очистка базы")
+        box.setIcon(QMessageBox.Icon.Warning)
+        box.setText(
+            f"Удалить операции и суммы базы "
+            f"«{BASE_TITLES[self.store.base_key]}»?"
+        )
+        box.setInformativeText(
+            f"Будет удалено: операций — {operations}, "
+            f"поступлений кассы — {cash}, "
+            f"прочих видов оплат — {others}, "
+            f"долгов переноса — {debts}.\n\n"
+            "Поставщики, покупатели, рабочий календарь, пользователи "
+            "и права остаются. Отменить очистку будет нельзя."
+        )
+        export_btn = box.addButton(
+            "Выгрузить и очистить", QMessageBox.ButtonRole.AcceptRole
+        )
+        clear_btn = box.addButton("Очистить", QMessageBox.ButtonRole.DestructiveRole)
+        box.addButton("Отмена", QMessageBox.ButtonRole.RejectRole)
+        box.setDefaultButton(export_btn)
+        box.exec()
+
+        clicked = box.clickedButton()
+        if clicked is export_btn:
+            self.export_bases_to_excel()
+            # Выгрузку отменили или она не удалась — очистку не делаем:
+            # файл — единственный шанс вернуть данные.
+            if not self._last_export_path:
+                return
+        elif clicked is not clear_btn:  # «Отмена» или закрытие окна
+            return
+        self._clear_current_base()
+
+    def _clear_current_base(self) -> None:
+        """Удалить операции и суммы текущей базы (v0.40.0)."""
+
+        data = self.store.data
+        data.operations.clear()
+        data.cash_receipts.clear()
+        data.other_payments.clear()
+        # Перенос на 1 января — это тоже суммы, их убираем; дату
+        # остатков и справочники не трогаем.
+        data.year_start.supplier_debts.clear()
+        data.year_start.customer_debts.clear()
+        set_year_start_funds(data, None)
+        self.store.save()
+        self.refresh_all_views()
+        QMessageBox.information(
+            self,
+            "Очистка базы",
+            f"База «{BASE_TITLES[self.store.base_key]}» очищена: "
+            "операции, поступления кассы, прочие виды оплат и долги "
+            "переноса удалены. Поставщики и покупатели остались.",
+        )
 
     def _read_base(self, base_key: str) -> AppData:
         """Прочитать базу с диска (без переключения активной базы)."""
@@ -359,6 +486,7 @@ class MainWindow(QMainWindow):
         программой и подставляет имя «Оплата <сегодня>.xlsx» (ADR-082).
         """
 
+        self._last_export_path = None
         bases = self._collect_bases()
 
         # Папку создаём заранее: если её не было, диалог всё равно
@@ -385,6 +513,7 @@ class MainWindow(QMainWindow):
         except ExcelError as exc:
             QMessageBox.warning(self, "Выгрузка баз", str(exc))
             return
+        self._last_export_path = path
         QMessageBox.information(
             self,
             "Выгрузка баз",
@@ -618,10 +747,23 @@ class MainWindow(QMainWindow):
         # вкладке «Конфигурация» раскрывать больше нечего.
 
     def _ask_config_password(self) -> bool:
-        """Пароль на вкладку «Конфигурация» (v0.18.0).
+        """Пароль на вкладку «Конфигурация» (v0.18.0)."""
+
+        return self._ask_password(
+            "Конфигурация",
+            "Пароль на раздел «Конфигурация»:",
+            unlock_config=True,
+        )
+
+    def _ask_password(
+        self, title: str, label: str, *, unlock_config: bool = False
+    ) -> bool:
+        """Пароль администратора (v0.18.0; общий для всех — v0.40.0).
 
         Пока пароль не задан, просим придумать его; дальше проверяем
-        введённый. Возвращаем True, если вход разрешён.
+        введённый. Возвращаем True, если вход разрешён. Флаг
+        ``unlock_config`` открывает вкладку «Конфигурацию» — для
+        кнопок шапки он не нужен.
         """
 
         from PySide6.QtWidgets import QInputDialog, QLineEdit
@@ -647,19 +789,21 @@ class MainWindow(QMainWindow):
                 if confirm != text:
                     continue
                 set_password(text)
-                self._config_unlocked = True
+                if unlock_config:
+                    self._config_unlocked = True
                 return True
 
         text, ok = QInputDialog.getText(
             self,
-            "Конфигурация",
-            "Пароль на раздел «Конфигурация»:",
+            title,
+            label,
             QLineEdit.EchoMode.Password,
         )
         if ok and text and check_password(text):
-            self._config_unlocked = True
+            if unlock_config:
+                self._config_unlocked = True
             return True
-        if ok:
+        if ok and unlock_config:
             self._config_unlocked = False
         return False
 
@@ -674,6 +818,9 @@ class MainWindow(QMainWindow):
         # Выгрузка и загрузка баз — только администратору (v0.20.0).
         self.export_button.setVisible(self.access.can_admin_data)
         self.import_button.setVisible(self.access.can_admin_data)
+        # v0.40.0: «Очистить базу» — только администратору, как выгрузка
+        # и загрузка.
+        self.clear_button.setVisible(self.access.can_admin_data)
         # Пользователь «посажен» на свою базу: МИР или КОРЕЛИЧИ.
         fixed = self.access.fixed_base
         if fixed and self.store.base_key != fixed:
