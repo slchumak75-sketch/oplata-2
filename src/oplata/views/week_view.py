@@ -292,8 +292,19 @@ class WeekView(QWidget):
         self.table.setVerticalScrollBarPolicy(
             Qt.ScrollBarPolicy.ScrollBarAlwaysOn
         )
+        # v0.40.0: горизонтальной прокрутки в таблицах нет — колонки
+        # всегда укладываются в ширину окна (просьба пользователя).
+        # Полосу отключаем, чтобы она не появлялась даже на миг, пока
+        # ширины подгоняются.
+        self.table.setHorizontalScrollBarPolicy(
+            Qt.ScrollBarPolicy.ScrollBarAlwaysOff
+        )
         self.table.horizontalHeader().setVisible(False)
         self.table.verticalHeader().setVisible(False)
+        # v0.40.0: стандартный минимум секции (26 px по шрифту) мешает
+        # сжать колонки на узком окне — а горизонтальной прокрутки быть
+        # не должно, поэтому убираем и этот предел.
+        self.table.horizontalHeader().setMinimumSectionSize(1)
         week_delegate = DaySeparatorDelegate(
             self.separator_after_cols, self.table
         )
@@ -326,6 +337,8 @@ class WeekView(QWidget):
         )
         self.frozen_table.horizontalHeader().setVisible(False)
         self.frozen_table.verticalHeader().setVisible(False)
+        # v0.40.0: те же узкие колонки, что и в основной таблице.
+        self.frozen_table.horizontalHeader().setMinimumSectionSize(1)
         # Полос прокрутки у закреплённой шапки нет: её горизонтальный
         # сдвиг повторяет прокрутку основной таблицы.
         self.frozen_table.setHorizontalScrollBarPolicy(
@@ -1005,10 +1018,6 @@ class WeekView(QWidget):
             self.table.horizontalScrollBar().value()
         )
 
-    def resizeEvent(self, event) -> None:  # type: ignore[override]
-        super().resizeEvent(event)
-        # Ширина закреплённой шапки зависит от размера таблицы.
-        self._update_frozen_geometry()
 
     # --------------------------------------------------------------- данные
     def counterparties(self) -> list[Counterparty]:
@@ -1366,22 +1375,81 @@ class WeekView(QWidget):
             self.right_value_label.setText(fmt_money(total_week))
 
     # ---------------------------------------------------- ширина на весь экран
+    def showEvent(self, event: QShowEvent) -> None:
+        super().showEvent(event)
+        QTimer.singleShot(0, self._fit_columns_to_width)
+
     def resizeEvent(self, event: QResizeEvent) -> None:
         super().resizeEvent(event)
+        # v0.40.0: ширина закреплённой шапки и колонок зависит от
+        # размера таблицы — пересчитываем и то, и другое.
+        self._update_frozen_geometry()
         # Отложенно: viewport таблицы получает финальный размер чуть позже
         # самого resizeEvent (особенно при первом показе вкладки).
         QTimer.singleShot(0, self._fit_columns_to_width)
 
-    def showEvent(self, event: QShowEvent) -> None:
-        super().showEvent(event)
-        QTimer.singleShot(0, self._fit_columns_to_width)
+    def _column_widths(self, available: int) -> list[int]:
+        """Ширины колонок, которые дают ровно ``available`` пикселей (v0.40.0).
+
+        Между минимальной и базовой шириной колонка занимает
+        пропорциональную долю. Если не влезают даже минимумы, они
+        сжимаются пропорционально — так горизонтальной прокрутки нет
+        ни при какой ширине окна.
+        """
+
+        total_base = sum(self.base_widths)
+        total_min = sum(self.min_widths)
+        if available >= total_base:
+            widths = [
+                max(min_w, available * base // total_base)
+                for base, min_w in zip(self.base_widths, self.min_widths)
+            ]
+        elif available >= total_min:
+            # Между минимумом и базой: к минимуму добавляем свою долю
+            # разницы — колонки сужаются плавно и все вместе.
+            extra = available - total_min
+            span = total_base - total_min or 1
+            widths = [
+                min_w + extra * (base - min_w) // span
+                for base, min_w in zip(self.base_widths, self.min_widths)
+            ]
+        else:
+            # Уже минимумы не влезают: сжимаем их пропорционально.
+            # Иначе Qt покажет горизонтальную полосу прокрутки, а её
+            # быть не должно (просьба пользователя).
+            widths = [
+                max(1, min_w * available // total_min)
+                for min_w in self.min_widths
+            ]
+        # Остаток от деления раздаём по одному пикселю: сумма должна
+        # быть ровно available, иначе появится полоса прокрутки.
+        diff = available - sum(widths)
+        if diff > 0:
+            while diff > 0:
+                for col in range(self.column_count):
+                    if diff == 0:
+                        break
+                    widths[col] += 1
+                    diff -= 1
+        while diff < 0:
+            shrinked = False
+            for col in range(self.column_count):
+                if diff == 0:
+                    break
+                if widths[col] > 1:
+                    widths[col] -= 1
+                    diff += 1
+                    shrinked = True
+            if not shrinked:
+                break
+        return widths
 
     def _fit_columns_to_width(self) -> None:
         """Растянуть колонки ровно на ширину таблицы и подогнать шрифт сумм.
 
         Ширина раздаётся пропорционально базовым весам текущей таблицы;
-        ниже минимальных ширин колонки не сжимаются — на узких окнах
-        появляется прокрутка.
+        ниже минимальных ширин колонки сжимаются (v0.40.0), поэтому
+        горизонтальной прокрутки нет ни при какой ширине окна.
         """
         table = getattr(self, "table", None)
         if table is None or table.columnCount() != self.column_count:
@@ -1389,31 +1457,12 @@ class WeekView(QWidget):
         available = table.viewport().width()
         if available <= 0:
             widths = list(self.base_widths)
-        elif available <= sum(self.min_widths):
-            widths = list(self.min_widths)
         else:
-            total_base = sum(self.base_widths)
-            widths = [
-                max(min_w, available * base // total_base)
-                for base, min_w in zip(self.base_widths, self.min_widths)
-            ]
-            diff = available - sum(widths)
-            col = 3
-            while diff > 0:
-                widths[col] += 1
-                diff -= 1
-                col = 3 + (col - 2) % (self.column_count - 3)
-            while diff < 0:
-                widest = max(
-                    range(self.column_count),
-                    key=lambda c: widths[c] - self.min_widths[c],
-                )
-                if widths[widest] <= self.min_widths[widest]:
-                    break
-                widths[widest] -= 1
-                diff += 1
+            widths = self._column_widths(available)
         for col, width in enumerate(widths):
             table.setColumnWidth(col, width)
+            if self.frozen_table.columnCount() == self.column_count:
+                self.frozen_table.setColumnWidth(col, width)
         # v0.18.0: ширину берём у колонки дня (первая после итоговых),
         # а не у фиксированного индекса: тот указывал на итоговую
         # колонку, и шрифт сумм подбирался слишком крупным —
@@ -1427,6 +1476,8 @@ class WeekView(QWidget):
             if subcolumn != self.mark_index
         ]
         self._fit_amount_font(min(widths[column] for column in money_columns))
+        # v0.40.0: закреплённая шапка должна лечь на те же колонки.
+        self._update_frozen_geometry()
 
     def _fit_amount_font(self, day_column_width: int) -> None:
         """Подобрать размер шрифта сумм так, чтобы «88 888,88» влезало целиком."""

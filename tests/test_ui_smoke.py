@@ -5398,3 +5398,285 @@ def test_popup_falls_back_to_block_date_on_name_column(qt_app, store):
     assert popup is not None
     assert "28.10" in popup.title_label.text()
     window.close()
+
+
+def test_week_tables_fit_width_without_horizontal_scroll(qt_app, store):
+    """v0.40.0: горизонтальной прокрутки в таблицах нет — колонки влезают."""
+    from oplata.app import MainWindow
+
+    window = MainWindow(store)
+    window.show()
+    qt_app.processEvents()
+
+    for view in (window.suppliers_view, window.customers_view):
+        table = view.table
+        assert table.horizontalScrollBarPolicy() is (
+            Qt.ScrollBarPolicy.ScrollBarAlwaysOff
+        )
+        view._fit_columns_to_width()
+        qt_app.processEvents()
+        widths = [table.columnWidth(col) for col in range(view.column_count)]
+        # Сумма ширин ровно в ширину окна: полосы прокрутки нет.
+        assert sum(widths) == table.viewport().width()
+        assert table.horizontalScrollBar().maximum() == 0
+        # Вертикальная прокрутка осталась.
+        assert table.verticalScrollBarPolicy() is (
+            Qt.ScrollBarPolicy.ScrollBarAlwaysOn
+        )
+        # Закреплённая шапка повторяет те же ширины.
+        assert [
+            view.frozen_table.columnWidth(col) for col in range(view.column_count)
+        ] == widths
+        # Узкое окно: колонки сжимаются ниже минимума, но всё равно
+        # укладываются в любую ширину.
+        for available in (120, 400, 900):
+            widths = view._column_widths(available)
+            assert sum(widths) == available
+        narrow = view._column_widths(400)
+        assert all(w <= m for w, m in zip(narrow, view.min_widths))
+    window.close()
+
+
+def test_base_tools_use_nav_font_and_clear_button_is_admin_only(qt_app, store):
+    """v0.40.0: шрифт кнопок базы — как у вкладок; «Очистить базу» — админу."""
+    from oplata.access import ALL_PAGES, Access, User, save_users
+    from oplata.app import MainWindow
+
+    admin = User(
+        id="admin",
+        name="Администратор",
+        pages=list(ALL_PAGES),
+        can_edit=True,
+        can_switch_base=True,
+    )
+    viewer = User(id="viewer", name="Наблюдатель", pages=[0])
+    save_users([admin, viewer])
+
+    window = MainWindow(store, access=Access(admin))
+    window.show()
+    qt_app.processEvents()
+
+    def font_size(button) -> str:
+        for chunk in button.styleSheet().split("}"):
+            if "font-size:" in chunk and "QPushButton{" in chunk:
+                return chunk.split("font-size:")[1]
+        return ""
+
+    nav_size = font_size(window.nav_buttons[0])
+    assert nav_size.endswith("px")
+    # Одинаковый шрифт у вкладок («Поставщики», «Покупатели») и у всех
+    # трёх кнопок базы.
+    for button in (window.export_button, window.import_button, window.clear_button):
+        assert font_size(button) == nav_size
+
+    assert window.clear_button.text() == "Очистить базу"
+    assert window.clear_button.isVisible()
+    window.apply_current_user(viewer)
+    assert not window.clear_button.isVisible()
+    window.close()
+
+
+def test_base_tools_ask_password_before_work(qt_app, store, monkeypatch, tmp_path):
+    """v0.40.0: «Выгрузить»/«Загрузить»/«Очистить» — по паролю администратора."""
+    from PySide6.QtWidgets import QInputDialog
+
+    from oplata import access as access_module
+    from oplata.app import MainWindow
+
+    monkeypatch.setattr(access_module, "data_dir", lambda: tmp_path)
+    access_module.set_password("1234")
+
+    window = MainWindow(store)
+    window.show()
+    qt_app.processEvents()
+
+    calls: list[str] = []
+    monkeypatch.setattr(
+        window, "export_bases_to_excel", lambda: calls.append("export")
+    )
+    monkeypatch.setattr(
+        window, "import_bases_from_excel", lambda: calls.append("import")
+    )
+
+    answers = {"текст": "0000", "ок": True}
+    monkeypatch.setattr(
+        QInputDialog,
+        "getText",
+        staticmethod(lambda *args, **kwargs: (answers["текст"], answers["ок"])),
+    )
+    window.export_button.click()
+    window.import_button.click()
+    qt_app.processEvents()
+    assert calls == [], "с неверным паролем кнопки работать не должны"
+
+    answers["текст"] = "1234"
+    window.export_button.click()
+    window.import_button.click()
+    qt_app.processEvents()
+    assert calls == ["export", "import"]
+    window.close()
+
+
+def _ask_password_as(monkeypatch, answer):
+    """Подменить запрос пароля: вернуть ``answer`` («текст», «ок»)."""
+    from PySide6.QtWidgets import QInputDialog
+
+    monkeypatch.setattr(
+        QInputDialog,
+        "getText",
+        staticmethod(lambda *args, **kwargs: answer),
+    )
+
+
+def _click_message_box_button(monkeypatch, title_substring):
+    """«Нажать» в диалоге подтверждения кнопку с нужной подписью."""
+    from PySide6.QtWidgets import QMessageBox
+
+    def fake_exec(self):
+        for button in self.buttons():
+            if title_substring in button.text():
+                monkeypatch.setattr(
+                    QMessageBox,
+                    "clickedButton",
+                    lambda _self, btn=button: btn,
+                )
+                return 0
+        raise AssertionError(f"кнопка «{title_substring}» не найдена")
+
+    monkeypatch.setattr(QMessageBox, "exec", fake_exec)
+
+
+def test_clear_base_keeps_partners_and_removes_money(
+    qt_app, store, monkeypatch, tmp_path
+):
+    """v0.40.0: «Очистить базу» стирает операции и суммы, справочники — нет."""
+    from PySide6.QtWidgets import QMessageBox
+
+    from oplata import access as access_module
+    from oplata.app import MainWindow
+    from oplata.models import (
+        CashReceipt,
+        Operation,
+        OtherPayment,
+        YearStartCustomerDebt,
+        YearStartDebt,
+    )
+
+    monkeypatch.setattr(access_module, "data_dir", lambda: tmp_path)
+    access_module.set_password("1234")
+
+    data = store.data
+    customer = data.customers[0] if data.customers else None
+    if customer is None:
+        from oplata.models import Counterparty
+
+        customer = Counterparty(name="Покупатель В")
+        data.customers.append(customer)
+    supplier = data.suppliers[0]
+    data.operations.append(
+        Operation(kind="Приход", counterparty_id=supplier.id, amount="100.00")
+    )
+    data.cash_receipts.append(CashReceipt(date="2026-10-27", amount="50.00"))
+    data.other_payments.append(
+        OtherPayment(date="2026-10-27", name="Аренда", amount="30.00")
+    )
+    data.year_start.supplier_debts.append(
+        YearStartDebt(counterparty_id=supplier.id, amount="10.00")
+    )
+    data.year_start.customer_debts.append(
+        YearStartCustomerDebt(counterparty_id=customer.id, amount="20.00")
+    )
+    data.year_start.funds = "777.00"
+    data.day_overrides["2026-10-27"] = "work"
+    store.save()
+
+    window = MainWindow(store)
+    window.show()
+    qt_app.processEvents()
+
+    # 1. Неверный пароль — ничего не трогаем.
+    _ask_password_as(monkeypatch, ("0000", True))
+    window.clear_button.click()
+    qt_app.processEvents()
+    assert data.operations, "с неверным паролем база не очищается"
+
+    # 2. Верный пароль, но «Отмена» — тоже ничего.
+    _ask_password_as(monkeypatch, ("1234", True))
+    _click_message_box_button(monkeypatch, "Отмена")
+    window.clear_button.click()
+    qt_app.processEvents()
+    assert data.operations
+
+    # 3. «Выгрузить и очистить», но выгрузку отменили — не очищаем:
+    #    файл — единственный шанс вернуть данные.
+    def cancelled_export() -> None:
+        window._last_export_path = None
+
+    monkeypatch.setattr(window, "export_bases_to_excel", cancelled_export)
+    _click_message_box_button(monkeypatch, "Выгрузить и очистить")
+    window.clear_button.click()
+    qt_app.processEvents()
+    assert data.operations, "без выгрузки очистка не делается"
+
+    # 4. «Очистить» — операции и суммы удалены, справочники целы.
+    _click_message_box_button(monkeypatch, "Очистить")
+    monkeypatch.setattr(
+        QMessageBox, "information", staticmethod(lambda *args, **kwargs: None)
+    )
+    window.clear_button.click()
+    qt_app.processEvents()
+    assert data.operations == []
+    assert data.cash_receipts == []
+    assert data.other_payments == []
+    assert data.year_start.supplier_debts == []
+    assert data.year_start.customer_debts == []
+    assert data.year_start.funds == "0.00"
+    assert data.suppliers, "поставщики остаются"
+    assert data.customers, "покупатели остаются"
+    assert data.day_overrides == {"2026-10-27": "work"}, "календарь не тронут"
+
+    # 5. То же самое, но через «Выгрузить и очистить»: выгрузка удалась —
+    #    база очищается.
+    data.operations.append(
+        Operation(kind="Приход", counterparty_id=supplier.id, amount="100.00")
+    )
+
+    def done_export() -> None:
+        window._last_export_path = str(tmp_path / "базы.xlsx")
+
+    monkeypatch.setattr(window, "export_bases_to_excel", done_export)
+    _click_message_box_button(monkeypatch, "Выгрузить и очистить")
+    window.clear_button.click()
+    qt_app.processEvents()
+    assert data.operations == []
+    assert data.suppliers, "справочники и в этом пути остаются"
+    window.close()
+
+
+def test_clear_base_says_when_nothing_to_clear(qt_app, store, monkeypatch, tmp_path):
+    """v0.40.0: в пустой базе «Очистить базу» только сообщает об этом."""
+    from PySide6.QtWidgets import QMessageBox
+
+    from oplata import access as access_module
+    from oplata.app import MainWindow
+
+    monkeypatch.setattr(access_module, "data_dir", lambda: tmp_path)
+    access_module.set_password("1234")
+
+    window = MainWindow(store)
+    window.show()
+    qt_app.processEvents()
+
+    _ask_password_as(monkeypatch, ("1234", True))
+    _click_message_box_button(monkeypatch, "Очистить")
+    notices: list[str] = []
+    monkeypatch.setattr(
+        QMessageBox,
+        "information",
+        staticmethod(lambda *args, **kwargs: notices.append(str(args[-1]))),
+    )
+    window.clear_button.click()
+    qt_app.processEvents()
+    assert store.data.suppliers, "справочники остаются и без операций"
+    assert notices and "нечего" in notices[-1]
+    window.close()
