@@ -295,12 +295,12 @@ def test_delivery_dialog_saves_and_debt_shows_in_week(qt_app, store):
     assert table.item(3, week_col).text() == "88 888,88"  # ВСЕГО за неделю
     assert window.suppliers_view.right_value_label.text() == "88 888,88 руб."
 
-    # v0.27.2: оплата уменьшает «Долг» — в ячейке дня остаётся только
-    # остаток (требование пользователя: оплатили часть раньше срока —
-    # в графе «долг» виден остаток). «За неделю» гасится той же оплатой.
+    # v0.41.0: оплата НЕ уменьшает «Долг» в ячейке дня — сумма там
+    # архивная (просьба пользователя). Результат оплаты виден только
+    # в «Итого»/«Просрочено»/«Неделя».
     payment_cell = table.item(ggg_row, _DAY(window.suppliers_view, 3, 2))  # Оплата чт 05.11
     payment_cell.setText("88 888,88")
-    assert table.item(ggg_row, _DAY(window.suppliers_view, 3, 1)).text() == ""  # долг погашен
+    assert table.item(ggg_row, _DAY(window.suppliers_view, 3, 1)).text() == "88 888,88"  # долг архивный
     assert table.item(ggg_row, week_col).text() == ""  # «за неделю» погашено
     assert table.item(3, week_col).text() == ""  # ВСЕГО за неделю
     assert window.suppliers_view.right_value_label.text() == "0,00 руб."
@@ -616,12 +616,13 @@ def test_supplier_table_shows_conditions_column(qt_app, store):
     window.close()
 
 
-def test_early_payment_reduces_debt_in_day_cell(qt_app, store):
-    """v0.27.2: досрочная оплата уменьшает «Долг» в день срока.
+def test_early_payment_keeps_debt_archival_in_day_cell(qt_app, store):
+    """v0.41.0: оплата не уменьшает «Долг» в день срока — он архивный.
 
     Пример пользователя: приход 100 с отсрочкой 30 дней → в графе
     «Долг» в день срока стоит 100. Оплата 70 через 10 дней после
-    прихода → в той же графе должен быть остаток 30.
+    прихода → в той же графе остаётся **100**: оплата видна только
+    в столбцах «Итого», «Просрочено» и «Неделя».
     """
 
     from datetime import date, timedelta
@@ -667,9 +668,13 @@ def test_early_payment_reduces_debt_in_day_cell(qt_app, store):
     window.suppliers_view.refresh()
     table = window.suppliers_view.table
 
-    assert table.item(row, debt_col).text() == "30,00"    # остаток долга
-    assert table.item(row, total_col).text() == "30,00"       # «Итого» тот же
-    assert table.item(3, debt_col).text() == "30,00"      # строка «ВСЕГО»
+    # «Долг» в дне остался прежним — 100 (архив).
+    assert table.item(row, debt_col).text() == "100,00"
+    assert table.item(3, debt_col).text() == "100,00"     # строка «ВСЕГО»
+    # А «Итого» уменьшилось: оплата сразу видна в итоговых столбцах.
+    assert table.item(row, total_col).text() == "30,00"
+    week_col = 3 + window.suppliers_view.lead_offset
+    assert table.item(row, week_col).text() == "30,00"    # «Неделя»
     window.close()
 
 
@@ -770,19 +775,24 @@ def test_operation_dialog_and_journal_crud(qt_app, store):
     window.receipts_view.outgoing.set_date(date(2026, 10, 27))
     assert window.receipts_view.outgoing.amount_text("suppliers") == "200,00"
 
-    # Поставка даёт долг 1 200 на сроке 26.11 (чт); оплата 200 от 27.10
-    # этот долг уменьшает (v0.27.2) — в «Долге» остаётся 1 000.
+    # Поставка даёт долг 1 200 на сроке 26.11 (чт). Оплата 200 от 27.10
+    # в «Долге» дня ничего не меняет (v0.41.0: сумма архивная) — она
+    # видна только в «Итого»: 1 200 − 200 = 1 000.
     window.suppliers_view.goto_date(date(2026, 11, 26))
     week_table = window.suppliers_view.table
     ggg_row = 4 + [s.name for s in store.data.suppliers].index("ггг")
-    assert week_table.item(ggg_row, _DAY(window.suppliers_view, 3, 1)).text() == "1 000,00"
+    debt_col = _DAY(window.suppliers_view, 3, 1)
+    total_col = 1 + window.suppliers_view.lead_offset
+    assert week_table.item(ggg_row, debt_col).text() == "1 200,00"
+    assert week_table.item(ggg_row, total_col).text() == "1 000,00"
 
-    # Удаление оплаты возвращает долг к полной сумме поставки
+    # Удаление оплаты возвращает «Итого» к полной сумме поставки
     # (в программе это делает колбэк on_data_changed журнала).
     assert journal.delete_operation(payment_op.id)
     window.suppliers_view.refresh()
     week_table = window.suppliers_view.table
-    assert week_table.item(ggg_row, _DAY(window.suppliers_view, 3, 1)).text() == "1 200,00"
+    assert week_table.item(ggg_row, debt_col).text() == "1 200,00"
+    assert week_table.item(ggg_row, total_col).text() == "1 200,00"
     assert [item.id for item in store.data.operations] == [op.id]
     assert journal.found_label.text() == "Найдено: 1"  # осталась поставка
     assert journal.selected_operation_id() == op.id  # выделение перешло на неё
