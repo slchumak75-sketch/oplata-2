@@ -72,10 +72,13 @@ NAV_TITLES = (
 )
 IDX_RECEIPTS, IDX_SUPPLIERS, IDX_CUSTOMERS, IDX_DATA = range(4)
 
-# v0.17.0: цвет шапки показывает, какая база открыта — «МИР» и
-# «КОРЕЛИЧИ». v0.38.0: тема «Тёплый песок» — песочная «МИР» и
-# карамельная «КОРЕЛИЧИ» (раньше были тёмно-синяя и вишнёвая).
-BASE_HEADER_COLORS = {BASE_MIR: styles.NAVY, BASE_KORELICHI: styles.MAROON}
+# v0.17.0: цвет шапки показывает, какая база открыта. v0.39.0:
+# «МИР» — зелёная, «КОРЕЛИЧИ» — вишнёвая (в v0.38.0 были песочная и
+# карамельная, до неё — тёмно-синяя и вишнёвая).
+BASE_HEADER_COLORS = {
+    BASE_MIR: styles.BASE_GREEN,
+    BASE_KORELICHI: styles.BASE_MAROON,
+}
 
 
 class MainWindow(QMainWindow):
@@ -268,11 +271,12 @@ class MainWindow(QMainWindow):
         return header
 
     def _apply_base_style(self) -> None:
-        """Перекрасить шапку под активную базу (v0.38.0: песок и карамель)."""
+        """Перекрасить шапку под активную базу (v0.39.0: зелёная/вишнёвая)."""
         header_bg = BASE_HEADER_COLORS[self.store.base_key]
         nav_font = styles.fs(14)
         self.header.setStyleSheet(f"QFrame{{background:{header_bg}}}")
-        # v0.38.0: шапка светлая, поэтому текст и рамки на ней тёмные.
+        # v0.39.0: шапка снова тёмная, поэтому на ней светлый текст,
+        # а выбранная вкладка — светлая «пилюля» с тёмным текстом.
         nav_style = (
             "QPushButton{background:transparent;"
             f"color:{styles.HEADER_TEXT};border:none;"
@@ -280,7 +284,7 @@ class MainWindow(QMainWindow):
             f"font-size:{nav_font}px}}"
             f"QPushButton:hover{{background:{styles.HEADER_HOVER}}}"
             f"QPushButton:checked{{background:{styles.HEADER_CHECKED_BG};"
-            f"color:{styles.HEADER_TEXT}}}"
+            f"color:{header_bg}}}"
         )
         for btn in self.nav_buttons:
             btn.setStyleSheet(nav_style)
@@ -297,13 +301,13 @@ class MainWindow(QMainWindow):
         for btn in (self.export_button, self.import_button):
             btn.setStyleSheet(base_tools_style)
         self.base_button.setStyleSheet(
-            f"QPushButton{{background:{styles.ACCENT};color:#fffdf8;"
-            f"border:2px solid {styles.ACCENT};border-radius:10px;"
+            f"QPushButton{{background:{styles.HEADER_CHECKED_BG};"
+            f"color:{header_bg};"
+            f"border:2px solid {styles.HEADER_CHECKED_BG};border-radius:10px;"
             "padding:0px 20px;"
             "font-weight:800;"
             f"font-size:{nav_font * 2}px}}"  # вдвое крупнее вкладок
-            f"QPushButton:hover{{background:{styles.ACCENT_HOVER};"
-            f"border-color:{styles.ACCENT_HOVER}}}"
+            f"QPushButton:hover{{background:{styles.HEADER_HOVER}}}"
         )
 
     def toggle_base(self) -> None:

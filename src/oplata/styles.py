@@ -7,9 +7,12 @@ from PySide6.QtWidgets import QAbstractItemView, QProxyStyle, QStyle
 
 from .resources import assets_dir
 
-NAVY = "#f0e4d2"        # тёмно-синяя шапка (база МИР)
-MAROON = "#e4cbae"      # вишнёвая шапка (база КОРЕЛИЧИ, v0.17.0)
-NAVY_TEXT = "#fffdf8"
+# v0.39.0: шапка базы снова цветная и тёмная — МИР зелёная,
+# КОРЕЛИЧИ вишнёвая (в v0.38.0 они были светлыми: песочной и
+# карамельной). Текст, вкладки и кнопки на шапке — светлые.
+BASE_GREEN = "#1f5c3a"   # зелёная шапка (база МИР)
+BASE_MAROON = "#8e1b3f"  # вишнёвая шапка (база КОРЕЛИЧИ, v0.17.0)
+BASE_TEXT = "#fffdf8"    # текст на цветной шапке
 PAGE_BG = "#faf6ef"     # фон страницы под панелями
 PANEL_BG = "#fffdf8"
 BORDER = "#e6dccb"
@@ -45,16 +48,16 @@ TABLE_GRID = "#ebe3d6"      # линии сетки таблиц
 DATE_ARROW_FILE = assets_dir() / "arrow-down.png"
 DATE_ARROW_URL = DATE_ARROW_FILE.as_posix()
 
-# v0.38.0: тёплая светлая тема «Тёплый песок» (выбор пользователя).
-# Шапки баз стали **светлыми**, поэтому текст на них — тёмный: раньше
-# шапка была тёмно-синей (МР) и вишнёвой (КОРЕЛИЧИ) с белым текстом.
-HEADER_TEXT = "#4a3f35"           # основной текст на светлой шапке
-HEADER_TEXT_MUTED = "#8a7b6b"     # подпись под названием
+# Тёплая светлая тема «Тёплый песок» (v0.38.0) живёт на панелях и
+# таблицах; шапка базы с v0.39.0 снова тёмная (зелёная/вишнёвая),
+# поэтому текст и рамки на ней — светлые.
+HEADER_TEXT = "#fffdf8"           # основной текст на шапке
+HEADER_TEXT_MUTED = "#e6d7c3"     # подпись под названием
 HEADER_CHECKED_BG = "#fffdf8"     # выбранная вкладка
-HEADER_HOVER = "rgba(74,63,53,0.10)"
-HEADER_TOOL_BG = "rgba(74,63,53,0.05)"
-HEADER_TOOL_HOVER = "rgba(74,63,53,0.12)"
-HEADER_TOOL_BORDER = "rgba(74,63,53,0.45)"
+HEADER_HOVER = "rgba(255,255,255,0.14)"
+HEADER_TOOL_BG = "rgba(255,255,255,0.16)"
+HEADER_TOOL_HOVER = "rgba(255,255,255,0.32)"
+HEADER_TOOL_BORDER = "rgba(255,255,255,0.85)"
 ACCENT = "#c0714a"                # терракота: акцент и кнопка базы
 ACCENT_HOVER = "#a8542f"
 SELECTION_BG = "#f6e7d6"    # фон выделенной строки
