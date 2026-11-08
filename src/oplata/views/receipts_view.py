@@ -377,6 +377,9 @@ class AmountPopup(QFrame):
 
         header = QLabel(title)
         header.setObjectName("PopupTitle")
+        # v0.39.0: заголовок держим — по нему видно (и в тестах
+        # проверяется), за какой день открыто окно.
+        self.title_label = header
         root.addWidget(header)
 
         fields = QWidget()
@@ -1057,7 +1060,9 @@ class MoneyBlock(QFrame):
         self,
         title: str,
         row_keys: list[str],
-        on_open_popup: Callable[[str, QWidget, int], None],
+        # v0.39.0: четвёртый аргумент — дата нажатой колонки (или
+        # ``None``, если кликнули по названию строки).
+        on_open_popup: Callable[[str, QWidget, int, date | None], None],
         # v0.38.0: сумма вводится в ячейку дня, поэтому в обработчик
         # приходит и дата колонки.
         on_amount_entered: Callable[[str, str, date], None],
@@ -1602,7 +1607,7 @@ class MoneyBlock(QFrame):
         self._popup_row = -1
         if row < 0 or row >= len(self.row_keys):
             return
-        self.on_open_popup(self.row_keys[row], self.table, row)
+        self.on_open_popup(self.row_keys[row], self.table, row, None)
 
     def _repaint_table(self) -> None:
         """Перерисовать таблицу и ячейки ввода заново (v0.26.3).
@@ -1662,11 +1667,17 @@ class MoneyBlock(QFrame):
             self.on_duplicate_card(key)
 
     def _on_cell_clicked(self, row: int, column: int) -> None:
-        """Клик по строке: окно контрагентов или журнал строки."""
+        """Клик по строке: окно контрагентов или журнал строки.
+
+        v0.39.0: в обработчик уходит **дата нажатой колонки** — окно
+        контрагентов и журнал работают с этим днём, а не с датой,
+        выбранной в блоке (просьба пользователя).
+        """
 
         key = self.row_keys[row]
+        day = self.day_for_column(column)
         if key in POPUP_ROWS:
-            self.on_open_popup(key, self.table, row)
+            self.on_open_popup(key, self.table, row, day)
             return
         # v0.20.0: у строк-источников (касса, карты, свои виды) клик по
         # названию открывает журнал операций этого вида.
@@ -1683,7 +1694,7 @@ class MoneyBlock(QFrame):
                     QApplication.doubleClickInterval() + 80
                 )
                 return
-            self.on_open_popup(key, self.table, row)
+            self.on_open_popup(key, self.table, row, day)
             return
         _ = column  # клик по ячейке суммы уходит в режим ввода
 
@@ -2111,9 +2122,18 @@ class ReceiptsView(QWidget):
 
     # -------------------------------------------------------------- выпадающее
     def open_popup(
-        self, row_key: str, anchor: QWidget | None = None, row: int | None = None
+        self,
+        row_key: str,
+        anchor: QWidget | None = None,
+        row: int | None = None,
+        day: date | None = None,
     ) -> AmountPopup | None:
-        """Открыть окно со списком контрагентов справа от строки."""
+        """Открыть окно со списком контрагентов справа от строки.
+
+        v0.39.0: ``day`` — дата ячейки, по которой кликнули: суммы
+        сохраняются за этот день. Если кликнули по названию строки
+        (дня у колонки нет), берётся дата, выбранная в блоке.
+        """
 
         # v0.20.0: блок определяем по строке — «прочие» бывают в обоих.
         block = self.incoming if row_key in self.incoming.row_keys else self.outgoing
@@ -2125,9 +2145,12 @@ class ReceiptsView(QWidget):
             anchor = table
         # Строки-источники (касса, карты, свои виды) открывают журнал.
         if row_key not in POPUP_ROWS:
-            return self._open_journal_popup(row_key, block, anchor, row_top)
-        title = ROW_TITLES[row_key]
-        day_iso = block.current_date().isoformat()
+            return self._open_journal_popup(row_key, block, anchor, row_top, day)
+        # v0.39.0: день берём из нажатой ячейки, иначе — выбранный в блоке.
+        target_day = day or block.current_date()
+        day_iso = target_day.isoformat()
+        # В заголовке окна видно, за какой день вводятся суммы.
+        title = f"{ROW_TITLES[row_key]} · {target_day.strftime('%d.%m')}"
 
         if row_key == CUSTOMERS_ROW:
             people = [c for c in self.store.data.customers if not c.archived]
@@ -2157,7 +2180,9 @@ class ReceiptsView(QWidget):
         popup = AmountPopup(
             title,
             [(person.id, person.name) for person in people],
-            self._make_saver(block, row_key, [person.id for person in people]),
+            self._make_saver(
+                block, row_key, [person.id for person in people], day_iso
+            ),
             self,
             hint,
             values,
@@ -2180,12 +2205,21 @@ class ReceiptsView(QWidget):
         return popup
 
     def _open_journal_popup(
-        self, row_key: str, block: MoneyBlock, anchor: QWidget, row_top: int
+        self,
+        row_key: str,
+        block: MoneyBlock,
+        anchor: QWidget,
+        row_top: int,
+        day: date | None = None,
     ) -> JournalPopup:
-        """Журнал операций вида за месяц: окно справа от строки (v0.20.0)."""
+        """Журнал операций вида за месяц: окно справа от строки (v0.20.0).
+
+        v0.39.0: месяц считается от **нажатого дня**, а не от даты
+        блока, — иначе журнал открывался на другом месяце.
+        """
 
         data = self.store.data
-        day = block.current_date()
+        day = day or block.current_date()
         month_start = day.replace(day=1)
         month_end = (
             (month_start + timedelta(days=31)).replace(day=1) - timedelta(days=1)
@@ -2240,9 +2274,12 @@ class ReceiptsView(QWidget):
     def _forget_popup(self, *_args) -> None:
         self._popup = None
 
-    def _make_saver(self, block: MoneyBlock, row_key: str, ids: list[str]):
+    def _make_saver(
+        self, block: MoneyBlock, row_key: str, ids: list[str], day_iso: str
+    ):
+        """v0.39.0: ``day_iso`` — день нажатой ячейки, а не дата блока."""
+
         def save(values: dict[str, Decimal]) -> None:
-            day_iso = block.current_date().isoformat()
             for counterparty_id in ids:
                 amount = values.get(counterparty_id) or ZERO
                 set_daily_operation(

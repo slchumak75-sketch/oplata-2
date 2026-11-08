@@ -2145,6 +2145,8 @@ def test_funds_block_carries_balance_to_next_day(qt_app, store):
 
 def test_summary_refreshes_right_after_typing_amount(qt_app, store):
     """Сводка пересчитывается сразу после ввода суммы в ячейку."""
+    from datetime import date
+
     from oplata.app import MainWindow
     from oplata.views.receipts_view import FIRST_DAY_COL
 
@@ -2154,7 +2156,13 @@ def test_summary_refreshes_right_after_typing_amount(qt_app, store):
     view = window.receipts_view
     summary = window.summary_view
 
-    today_column = _DAY_COL(view.incoming, view.incoming.current_date())
+    # Дату задаём явно: сегодня может быть воскресенье, а его в
+    # таблице нет (шесть дней, Пн–Сб). «Сводка» держит свою дату,
+    # поэтому её переводим на тот же день.
+    view.set_date(date(2026, 10, 27))
+    summary.set_date(date(2026, 10, 27))
+    qt_app.processEvents()
+    today_column = _DAY_COL(view.incoming, date(2026, 10, 27))
     assert today_column >= FIRST_DAY_COL
     assert summary.value_text("income") == "0,00"
     view.incoming.table.item(0, today_column).setText("2 500")
@@ -2582,7 +2590,10 @@ def test_payment_card_opens_by_right_click(qt_app, store):
     popups: list[str] = []
     view.outgoing.on_edit_card = opened.append
     view.outgoing._repaint_table = lambda: repaints.append(1)
-    view.outgoing.on_open_popup = lambda key, widget, row: popups.append(key)
+    # v0.39.0: обработчик получает и дату нажатой ячейки.
+    view.outgoing.on_open_popup = (
+        lambda key, widget, row, day=None: popups.append(key)
+    )
     block = view.outgoing
     table = block.table
 
@@ -3489,7 +3500,7 @@ def test_base_switch_button_changes_database_and_header(qt_app, store, monkeypat
     window.base_button.click()
     qt_app.processEvents()
     assert window.base_button.text() == "КОРЕЛИЧИ"
-    assert styles.MAROON in window.header.styleSheet()  # шапка вишнёвая
+    assert styles.BASE_MAROON in window.header.styleSheet()  # шапка вишнёвая
     assert store.path == tmp_path / "data-korelichi.json"
     assert not any(s.name == "Поставщик МИР" for s in store.data.suppliers)
     # Выбор базы запоминается для следующего запуска.
@@ -3498,7 +3509,7 @@ def test_base_switch_button_changes_database_and_header(qt_app, store, monkeypat
     window.base_button.click()
     qt_app.processEvents()
     assert window.base_button.text() == "МИР"
-    assert styles.NAVY in window.header.styleSheet()  # шапка снова синяя
+    assert styles.BASE_GREEN in window.header.styleSheet()  # шапка зелёная
     assert store.path == mir_path
     assert any(s.name == "Поставщик МИР" for s in store.data.suppliers)
     # Таблица поставщиков перерисована по активной базе.
@@ -5285,4 +5296,105 @@ def test_receipts_today_column_is_painted_full_height(qt_app, store):
     # Соседний день этой же недели так не красим.
     other = FIRST_DAY_COL + ((block.days.index(today) + 1) % len(block.days))
     assert block.table.item(0, other).background().color().name() != body
+    window.close()
+
+
+def test_popup_row_saves_into_clicked_day_cell(qt_app, store):
+    """v0.39.0: сумма контрагента попадает в день **нажатой** ячейки.
+
+    Раньше окно со списком открывалось всегда на дату, выбранную в
+    блоке, и введённая сумма уезжала на неё, даже когда кликнули по
+    другой ячейке недели.
+    """
+    from datetime import date
+    from decimal import Decimal
+
+    from oplata.app import MainWindow
+    from oplata.models import Counterparty, KIND_PAYMENT, Operation
+
+    buyer = Counterparty(name="Покупатель дня")
+    supplier = Counterparty(name="Поставщик дня")
+    store.data.customers.append(buyer)
+    store.data.suppliers.append(supplier)
+
+    window = MainWindow(store)
+    window.show()
+    qt_app.processEvents()
+    view = window.receipts_view
+    # В блоке выбрана среда 28.10, а кликаем мы по пятнице 30.10.
+    view.set_date(date(2026, 10, 28))
+    qt_app.processEvents()
+
+    def day_column(block, day):
+        from oplata.views.receipts_view import FIRST_DAY_COL
+
+        return FIRST_DAY_COL + block.days.index(day)
+
+    friday = date(2026, 10, 30)
+
+    # --- Покупатели: клик по ячейке пятницы, сумма пишется за пятницу.
+    incoming = view.incoming
+    row_customers = incoming.row_keys.index("customers")
+    incoming.table.cellClicked.emit(row_customers, day_column(incoming, friday))
+    qt_app.processEvents()
+    popup = view._popup
+    assert popup is not None
+    assert "30.10" in popup.title_label.text()  # окно — за нажатый день
+    popup.edits[buyer.id].setText("1 200")
+    popup._save()
+    qt_app.processEvents()
+    assert [
+        (op.date, op.amount, op.counterparty_id)
+        for op in store.data.operations
+        if op.kind == KIND_PAYMENT and op.counterparty_id == buyer.id
+    ] == [("2026-10-30", "1200.00", buyer.id)]
+    assert incoming.amount_text("customers", day_column(incoming, friday)) == (
+        "1 200,00"
+    )
+    # В колонке выбранного дня (28.10) этой суммы нет.
+    assert incoming.amount_text("customers", day_column(incoming, date(2026, 10, 28))) == ""
+
+    # --- Поставщики: то же самое в блоке «Оплата».
+    outgoing = view.outgoing
+    row_suppliers = outgoing.row_keys.index("suppliers")
+    outgoing.table.cellClicked.emit(row_suppliers, day_column(outgoing, friday))
+    qt_app.processEvents()
+    popup = view._popup
+    assert popup is not None
+    popup.edits[supplier.id].setText("3 400")
+    popup._save()
+    qt_app.processEvents()
+    assert [
+        (op.date, op.amount)
+        for op in store.data.operations
+        if op.kind == KIND_PAYMENT and op.counterparty_id == supplier.id
+    ] == [("2026-10-30", "3400.00")]
+    assert outgoing.amount_text("suppliers", day_column(outgoing, friday)) == (
+        "3 400,00"
+    )
+    window.close()
+
+
+def test_popup_falls_back_to_block_date_on_name_column(qt_app, store):
+    """v0.39.0: клик по названию строки — дата блока (дня у колонки нет)."""
+    from datetime import date
+
+    from oplata.app import MainWindow
+    from oplata.models import Counterparty
+
+    store.data.customers.append(Counterparty(name="Покупатель В"))
+    window = MainWindow(store)
+    window.show()
+    qt_app.processEvents()
+    view = window.receipts_view
+    view.set_date(date(2026, 10, 28))
+    qt_app.processEvents()
+
+    incoming = view.incoming
+    row_customers = incoming.row_keys.index("customers")
+    incoming.table.cellClicked.emit(row_customers, 0)  # колонка названия
+    qt_app.processEvents()
+    popup = view._popup
+    assert popup is not None
+    assert "28.10" in popup.title_label.text()
     window.close()
