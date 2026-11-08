@@ -637,7 +637,10 @@ class WeekView(QWidget):
         а остаток оплаты идёт в «за неделю». Оплаты берутся по конец
         показанной недели, недоплаченный остаток остаётся на своём
         сроке и потому переносится в «на сегодня» следующих недель.
-        Архивный «Долг» в ячейках дней не меняется.
+
+        v0.41.0: этой картой считаются только итоговые столбцы
+        («Итого», «Просрочено», «Неделя») — ячейки дней «Долг»
+        берут архивный график :meth:`_archival_due_maps`.
         """
 
         if self.kind != "supplier" or not self._days:
@@ -645,6 +648,23 @@ class WeekView(QWidget):
         upto = self._days[-1]
         return [
             calc.debt_remaining_by_due_date(self.store.data, partner, upto)
+            for partner in self._partners
+        ]
+
+    def _archival_due_maps(self) -> list[dict[date, Decimal]]:
+        """Архивный график долга по срокам — для «Долга» в ячейках дней.
+
+        v0.41.0: «Долг» в дне — это сумма поставок, чей срок оплаты
+        приходится на этот день. Оплаты её **не уменьшают** (просьба
+        пользователя): результат оплаты виден только в «Итого»,
+        «Просрочено» и «Неделя», которые считаются по остатку
+        (:meth:`_remaining_due_maps`).
+        """
+
+        if self.kind != "supplier" or not self._days:
+            return [{} for _ in self._partners]
+        return [
+            calc.debt_by_due_date(self.store.data, partner)
             for partner in self._partners
         ]
 
@@ -843,6 +863,8 @@ class WeekView(QWidget):
         """Пересчитать Долг, «Итого»/«за неделю», ВСЕГО и тулбар без перестройки."""
         today = date.today()
         remaining_maps = self._remaining_due_maps()
+        # v0.41.0: «Долг» в днях — архивный, без оплат.
+        archival_maps = self._archival_due_maps()
         partner_ids = [p.id for p in self._partners]
         operations = self.store.data.operations
         # v0.22.1: «Итого» по всем поставщикам. v0.26.5: считается той
@@ -861,8 +883,8 @@ class WeekView(QWidget):
         try:
             for r, remaining_map in enumerate(remaining_maps):
                 row = FIRST_DATA_ROW + r
-                # v0.27.2: и ячейки дней «Долг», и «Итого»/«за неделю»
-                # считаются по остатку долга после оплат.
+                # v0.41.0: «Итого»/«за неделю» — по остатку долга
+                # после оплат, а ячейки дней «Долг» — по архиву.
                 total, late, week = self._debt_columns(
                     remaining_map,
                     days,
@@ -909,7 +931,7 @@ class WeekView(QWidget):
                         self._set_cell_text(
                             row,
                             self._day_column(i, debt_index),
-                            _money_text(remaining_map.get(day, ZERO)),
+                            _money_text(archival_maps[r].get(day, ZERO)),
                         )
             if self.kind == "supplier":
                 total_all = sum(
@@ -940,8 +962,9 @@ class WeekView(QWidget):
                     if kind_name == "mark":
                         continue  # метка не суммируется
                     if kind_name == "debt":
+                        # v0.41.0: строка «ВСЕГО» по дням — тоже архив.
                         amount = sum(
-                            (m.get(day, ZERO) for m in remaining_maps), ZERO
+                            (m.get(day, ZERO) for m in archival_maps), ZERO
                         )
                         text = _money_text(amount)
                     else:
@@ -1193,10 +1216,9 @@ class WeekView(QWidget):
         operations = self.store.data.operations
         partner_ids = [p.id for p in partners]
         remaining_maps = self._remaining_due_maps()
-        # v0.27.2: и «Итого»/«за неделю», и «Долг» в днях считаются
-        # по остатку после оплат — досрочная оплата уменьшает долг на
-        # своём сроке (архивный график без оплат больше не нужен,
-        # поэтому отдельные карты сроков не считаются).
+        # v0.41.0: «Долг» в днях — архивный график без оплат; по
+        # остатку считаются только «Итого»/«Просрочено»/«Неделя».
+        archival_maps = self._archival_due_maps()
         debt_columns = [
             self._debt_columns(
                 m,
@@ -1265,9 +1287,9 @@ class WeekView(QWidget):
                         bg=day_body_bg(day), bold=True, size=styles.fs(12))
                     continue
                 if kind_name == "debt":
-                    # v0.27.2: «Долг» в днях — остаток после оплат
-                    # (досрочная оплата уменьшает долг на своём сроке).
-                    amount = sum((m.get(day, ZERO) for m in remaining_maps), ZERO)
+                    # v0.41.0: «Долг» в днях — архивная сумма поставок
+                    # со сроком в этот день (оплаты её не уменьшают).
+                    amount = sum((m.get(day, ZERO) for m in archival_maps), ZERO)
                     value = _money_text(amount)
                 else:
                     value = calc.week_column_total(
@@ -1281,9 +1303,9 @@ class WeekView(QWidget):
         # Строки контрагентов
         for r, partner in enumerate(partners):
             row = FIRST_DATA_ROW + r
-            # v0.27.2: ячейки дней показывают остаток долга после
-            # оплат (как «Итого»), а не архивную сумму поставки.
-            due_map = remaining_maps[r]
+            # v0.41.0: ячейки дней показывают архивную сумму поставки
+            # (оплата её не уменьшает), а не остаток долга.
+            due_map = archival_maps[r]
             total, late, week = debt_columns[r]
             name_item = put(row, 0, partner.name, center=False,
                             color=styles.LINK_BLUE, underline=True,
@@ -1345,9 +1367,11 @@ class WeekView(QWidget):
                             bg=day_body_bg(day),
                         )
                         cell.setToolTip(
-                            "Остаток долга со сроком оплаты в этот день. "
-                            "Уменьшается на оплаты: оплатили часть раньше "
-                            "срока — здесь будет остаток"
+                            "Долг со сроком оплаты в этот день: сумма "
+                            "поставок, чей срок — этот день. Сумма "
+                            "архивная, оплаты её не уменьшают; результат "
+                            "оплаты виден в столбцах «Итого», "
+                            "«Просрочено» и «Неделя»"
                         )
                         continue
 
