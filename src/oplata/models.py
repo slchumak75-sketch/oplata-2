@@ -261,6 +261,86 @@ def year_start_amount(entry) -> Decimal:
         return Decimal("0")
 
 
+# --------------------------------------------------------- отчёты ККМ (v0.42.0)
+# Реестр самостоятельный: на расчёты денег («Поступление», касса,
+# долги) он не влияет (решение пользователя).
+KKM_KIND_REPORT = "report"
+KKM_KIND_RETURN = "return"
+KKM_KIND_TITLES = {
+    KKM_KIND_REPORT: "Отчет ККМ",
+    KKM_KIND_RETURN: "Возврат покупателя",
+}
+# Сколько строк и в каком порядке приходится на один день каждой базы:
+# МИР — два отчёта ККМ и один возврат; КОРЕЛИЧИ — отчёт и возврат.
+KKM_DAY_KINDS = {
+    "mir": (KKM_KIND_REPORT, KKM_KIND_REPORT, KKM_KIND_RETURN),
+    "korelichi": (KKM_KIND_REPORT, KKM_KIND_RETURN),
+}
+
+
+@dataclass
+class KkmReport:
+    """Одна строка реестра «Отчеты ККМ»: вид строки и сумма за день.
+
+    ``kind`` — ``KKM_KIND_REPORT`` («Отчет ККМ») или
+    ``KKM_KIND_RETURN`` («Возврат покупателя»); сколько строк какого
+    вида приходится на день, задаёт ``KKM_DAY_KINDS`` по базе.
+    """
+
+    date: str = ""               # ISO YYYY-MM-DD
+    kind: str = KKM_KIND_REPORT
+    # Номер строки внутри дня (0, 1, 2...): у МИР на один день три
+    # строки, из них две «Отчет ККМ», поэтому одного вида мало.
+    slot: int = 0
+    amount: str = "0"            # Decimal строкой
+    id: str = field(default_factory=new_id)
+
+    @classmethod
+    def from_dict(cls, data: dict) -> "KkmReport":
+        kind = str(data.get("kind", KKM_KIND_REPORT))
+        try:
+            slot = int(data.get("slot", 0))
+        except (TypeError, ValueError):
+            slot = 0
+        return cls(
+            date=str(data.get("date", "")),
+            kind=kind if kind in KKM_KIND_TITLES else KKM_KIND_REPORT,
+            slot=slot if slot >= 0 else 0,
+            amount=str(data.get("amount", "0")),
+            id=str(data.get("id") or new_id()),
+        )
+
+
+def find_kkm_report(data: "AppData", day_iso: str, slot: int) -> KkmReport | None:
+    """Строка реестра ККМ за день с этим номером (v0.42.0)."""
+
+    for row in data.kkm_reports:
+        if row.date == day_iso and row.slot == slot:
+            return row
+    return None
+
+
+def set_kkm_amount(
+    data: "AppData",
+    day_iso: str,
+    slot: int,
+    kind: str,
+    amount: Decimal | None,
+) -> None:
+    """Записать сумму строки реестра ККМ; пусто или 0 — удалить (v0.42.0)."""
+
+    row = find_kkm_report(data, day_iso, slot)
+    if amount is None or amount == 0:
+        if row is not None:
+            data.kkm_reports.remove(row)
+        return
+    if row is None:
+        row = KkmReport(date=day_iso, slot=slot, kind=kind)
+        data.kkm_reports.append(row)
+    row.kind = kind
+    row.amount = f"{amount.quantize(Decimal('0.01')):.2f}"
+
+
 @dataclass
 class AppData:
     """Весь сохраняемый набор данных (один JSON-файл, см. storage.py)."""
@@ -279,6 +359,9 @@ class AppData:
     # "YYYY-MM-DD" -> "off" (выходной) | "work" (рабочий).
     # Без отметки Сб/Вс считаются выходными, Пн–Пт — рабочими.
     day_overrides: dict[str, str] = field(default_factory=dict)
+    # Реестр отчётов ККМ (вкладка «Отчеты ККМ», v0.42.0). Поле добавлено
+    # в v0.42.0, в старых файлах его нет - пустой список.
+    kkm_reports: list[KkmReport] = field(default_factory=list)
     # Разовые переносимые данные на 1 января (плашка «Данные» вкладки
     # «Конфигурация»). Поле добавлено в v0.14.0; в старых файлах его
     # нет — from_dict подставит пустую структуру.
@@ -293,6 +376,7 @@ class AppData:
             "cash_receipts": [asdict(r) for r in self.cash_receipts],
             "other_payments": [asdict(p) for p in self.other_payments],
             "day_overrides": dict(self.day_overrides),
+            "kkm_reports": [asdict(r) for r in self.kkm_reports],
             "year_start": {
                 "date": self.year_start.date,
                 "supplier_debts": [
@@ -321,6 +405,9 @@ class AppData:
                 str(k): str(v) for k, v in data.get("day_overrides", {}).items()
             },
             year_start=YearStart.from_dict(data.get("year_start")),
+            kkm_reports=[
+                KkmReport.from_dict(x) for x in data.get("kkm_reports", [])
+            ],
         )
         # Миграция v0.8.0: у покупателей прежний «Приход» теперь называется
         # «Реализация» и не имеет срока оплаты.

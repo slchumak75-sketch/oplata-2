@@ -37,14 +37,54 @@ from .storage import (
 )
 
 # Индексы вкладок главного окна (должны совпадать с app.NAV_TITLES).
-IDX_RECEIPTS, IDX_SUPPLIERS, IDX_CUSTOMERS, IDX_DATA = range(4)
+# v0.42.0: между «Поступление и оплаты» и «Поставщики» встала вкладка
+# «Отчеты ККМ» (IDX_KKM), поэтому «Поставщики» и «Покупатели» сдвинулись.
+IDX_RECEIPTS, IDX_KKM, IDX_SUPPLIERS, IDX_CUSTOMERS, IDX_DATA = range(5)
 PAGE_TITLES = (
     "Поступление и оплаты",
+    "Отчеты ККМ",
     "Поставщики",
     "Покупатели",
     "Конфигурация",
 )
-ALL_PAGES = (IDX_RECEIPTS, IDX_SUPPLIERS, IDX_CUSTOMERS, IDX_DATA)
+# v0.42.0: в файле пользователей вкладки хранятся **именами**, а не
+# номерами: вставка новой вкладки в середину больше не сдвигает права.
+# Прежние файлы (числа) читаются и переводятся по OLD_PAGE_KEYS.
+PAGE_KEYS = ("receipts", "kkm", "suppliers", "customers", "data")
+OLD_PAGE_KEYS = ("receipts", "suppliers", "customers", "data")
+ALL_PAGES = (IDX_RECEIPTS, IDX_KKM, IDX_SUPPLIERS, IDX_CUSTOMERS, IDX_DATA)
+
+
+def pages_to_keys(pages: list[int]) -> list[str]:
+    """Номера вкладок -> их имена для users.json (v0.42.0)."""
+
+    return [PAGE_KEYS[i] for i in pages if isinstance(i, int) and 0 <= i < len(PAGE_KEYS)]
+
+
+def pages_from_keys(raw) -> list[int]:
+    """Содержимое ``pages`` из users.json -> номера вкладок (v0.42.0).
+
+    Новый формат — имена вкладок (``"kkm"``), старый (v0.41.0 и раньше)
+    — номера по прежнему порядку (0..3). Прежний список переводится в
+    новые номера; у того, у кого были открыты все прежние вкладки,
+    новая «Отчеты ККМ» открывается сразу (администратор и руководитель),
+    остальным её включает администратор в «Конфигурации».
+    """
+
+    keys: list[str] = []
+    for item in raw or []:
+        if isinstance(item, str):
+            if item in PAGE_KEYS:
+                keys.append(item)
+        elif isinstance(item, int) and 0 <= item < len(OLD_PAGE_KEYS):
+            keys.append(OLD_PAGE_KEYS[item])
+    pages = [PAGE_KEYS.index(key) for key in dict.fromkeys(keys)]
+    # Полный прежний доступ дополняем новой вкладкой.
+    if pages and set(OLD_PAGE_KEYS).issubset(set(keys)):
+        if IDX_KKM not in pages:
+            pages.append(IDX_KKM)
+    pages.sort()  # в файле — в порядке вкладок
+    return pages
 
 USERS_FILE_NAME = "users.json"
 CURRENT_USER_FILE_NAME = "current-user.json"
@@ -100,7 +140,9 @@ class User:
         return {
             "id": self.id,
             "name": self.name,
-            "pages": list(self.pages),
+            # v0.42.0: именами вкладок — номера при вставке новой
+            # вкладки сдвигались бы и права поехали.
+            "pages": pages_to_keys(self.pages),
             "base": self.base,
             "can_edit": self.can_edit,
             "can_switch_base": self.can_switch_base,
@@ -108,8 +150,10 @@ class User:
 
     @staticmethod
     def from_dict(raw: dict) -> "User":
-        pages = raw.get("pages") or [IDX_CUSTOMERS]
-        pages = [p for p in pages if isinstance(p, int) and p in ALL_PAGES]
+        # Прежний формат файла — номера вкладок, новый — имена.
+        raw_pages = raw.get("pages")
+        pages = pages_from_keys(raw_pages) if raw_pages else []
+        pages = [p for p in pages if p in ALL_PAGES] or [IDX_CUSTOMERS]
         base = raw.get("base")
         return User(
             id=str(raw.get("id") or secrets.token_hex(4)),
