@@ -762,13 +762,18 @@ def test_month_totals_count_kkm_reports_for_whole_month():
         month = calc.month_totals(data, date(2026, 10, day))
         assert month.kkm_reports == Decimal("1500")   # 1 000 + 500
         assert month.kkm_returns == Decimal("120")
-        assert month.kkm_total == Decimal("1380")     # отчеты − возвраты
+        # v0.44.0: «Итого по Отчетам ККМ» = отчеты − возвраты.
+        assert month.kkm_total == Decimal("1380")
+        # «Итого за месяц» = ККМ за вычетом возвратов + реализация.
+        assert month.sale_invoiced == Decimal("0")
+        assert month.month_total == Decimal("1380")
 
     # Ноябрь — только своя запись.
     november = calc.month_totals(data, date(2026, 11, 15))
     assert november.kkm_reports == Decimal("7000")
     assert november.kkm_returns == Decimal("0")
     assert november.kkm_total == Decimal("7000")
+    assert november.month_total == Decimal("7000")
 
     # Деньги операций в блок «Месяц» больше не попадают (v0.43.0).
     supplier = Counterparty(name="Поставщик")
@@ -814,9 +819,12 @@ def test_month_realization_invoiced_counts_only_green_marked_sales():
     assert calc.month_realization_invoiced(data, 2026, 11) == Decimal("777")
     assert calc.month_realization_invoiced(data, 2026, 12) == Decimal("0")
 
-    # Строка есть и в блоке «Месяц» целиком.
+    # Строка есть и в блоке «Месяц» целиком; «Итого за месяц» (v0.44.0)
+    # складывает ККМ за вычетом возвратов и выписанную реализацию.
     totals = calc.month_totals(data, date(2026, 10, 20))
     assert totals.sale_invoiced == Decimal("4600")
+    assert totals.kkm_total == Decimal("0")
+    assert totals.month_total == Decimal("4600")
 
 
 def test_funds_movement_puts_customer_payment_into_income_column():

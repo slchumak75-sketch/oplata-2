@@ -50,7 +50,19 @@ HEADERS = ("Дата", "Отчет", "Сумма")
 BLOCKS = 3
 DAYS_PER_BLOCK = 10
 COLUMNS_PER_BLOCK = len(HEADERS)
-SEPARATOR_WIDTH = 8
+# v0.44.0: поле между вертикальными рядами — в 10 раз шире прежних
+# 8 точек, чтобы ряды дней читались раздельно.
+SEPARATOR_WIDTH = 80
+# v0.44.0: «Сумма» вдвое у́же своей доли — колонка пустовала, а цифры
+# в ней всё равно короткие. У́же ``AMOUNT_MIN_WIDTH`` не сжимаем: иначе
+# длинная сумма обрезалась бы многоточием.
+AMOUNT_WIDTH_RATIO = 0.5
+AMOUNT_MIN_WIDTH = 110
+# v0.44.0: зебра для читаемости — **один день — один цвет**: все строки
+# дня (у МИР их три, у КОРЕЛИЧИ две) залиты одинаково, соседние дни
+# отличаются. Тона светлые, из палитры программы.
+ZEBRA_EVEN = styles.PANEL_BG      # почти белый
+ZEBRA_ODD = styles.WORKDAY_GREY   # светлый песок
 COLUMN_COUNT = BLOCKS * COLUMNS_PER_BLOCK + (BLOCKS - 1)
 SEPARATOR_COLUMNS = tuple(
     block * (COLUMNS_PER_BLOCK + 1) + COLUMNS_PER_BLOCK
@@ -138,16 +150,13 @@ class KkmView(QWidget):
             header.setSectionResizeMode(
                 first + COL_KIND, QHeaderView.ResizeMode.ResizeToContents
             )
+            # «Сумма» не растягивается: ширину считает ``_fit_columns``.
             header.setSectionResizeMode(
-                first + COL_AMOUNT, QHeaderView.ResizeMode.Stretch
+                first + COL_AMOUNT, QHeaderView.ResizeMode.Fixed
             )
         for column in SEPARATOR_COLUMNS:
             header.setSectionResizeMode(column, QHeaderView.ResizeMode.Fixed)
-        # Разделитель — узкая полоска: шире минимума по умолчанию не
-        # пускаем, иначе вместо линии получается широкая колонка.
-        header.setMinimumSectionSize(SEPARATOR_WIDTH)
-        for column in SEPARATOR_COLUMNS:
-            self.table.setColumnWidth(column, SEPARATOR_WIDTH)
+        header.setMinimumSectionSize(8)
         self.table.setEditTriggers(QAbstractItemView.EditTrigger.AllEditTriggers)
         self.table.setItemDelegate(_AmountDelegate(self.table))
         self.table.itemChanged.connect(self._on_item_changed)
@@ -176,13 +185,15 @@ class KkmView(QWidget):
 
         layout.addSpacing(24)
         # v0.42.0: итог за месяц — отчёты ККМ, возвраты и разница.
+        # v0.44.0: третья цифра называется «Итого по Отчетам ККМ»
+        # (это отчеты за вычетом возвратов).
         self.reports_label = QLabel("")
         self.returns_label = QLabel("")
-        self.diff_label = QLabel("")
+        self.total_label = QLabel("")
         for label, color in (
             (self.reports_label, styles.TEXT),
             (self.returns_label, styles.RED),
-            (self.diff_label, styles.TEXT),
+            (self.total_label, styles.TEXT),
         ):
             label.setStyleSheet(
                 f"font-size:{styles.fs(14)}px;font-weight:700;color:{color};"
@@ -264,18 +275,22 @@ class KkmView(QWidget):
                 first = _block_first_column(block_index)
                 for day_index, day in enumerate(block):
                     day_iso = day.isoformat()
-                    today_bg = (
-                        styles.WEEK_TABLE_TODAY_GREEN_BODY if day == today else None
-                    )
+                    # v0.44.0: зебра по дням — у всех строк одного дня
+                    # одинаковый цвет (светлый/светло-песочный);
+                    # сегодняшний день остаётся светло-зелёным.
+                    if day == today:
+                        day_bg = styles.WEEK_TABLE_TODAY_GREEN_BODY
+                    else:
+                        day_bg = ZEBRA_ODD if day.day % 2 else ZEBRA_EVEN
                     for slot, kind in enumerate(kinds):
                         row = day_index * len(kinds) + slot
                         self._put(
-                            row, first + COL_DATE, fmt_date(day), bg=today_bg,
+                            row, first + COL_DATE, fmt_date(day), bg=day_bg,
                             align=Qt.AlignmentFlag.AlignCenter,
                         )
                         self._put(
                             row, first + COL_KIND, KKM_KIND_TITLES[kind],
-                            bg=today_bg,
+                            bg=day_bg,
                         )
                         record = find_kkm_report(self.store.data, day_iso, slot)
                         amount = (
@@ -283,18 +298,63 @@ class KkmView(QWidget):
                         )
                         self._put(
                             row, first + COL_AMOUNT, _money_text(amount),
-                            bg=today_bg, editable=not self.read_only,
+                            bg=day_bg, editable=not self.read_only,
                             align=Qt.AlignmentFlag.AlignRight,
                         )
                         self.table.item(row, first + COL_AMOUNT).setData(
                             META_ROLE, f"{day_iso}|{slot}"
                         )
-            # Разделители: узкие колонки с заливкой, без данных и ввода.
+            # Разделители: колонки с заливкой, без данных и ввода.
             for column in SEPARATOR_COLUMNS:
                 for row in range(rows):
                     self._put(row, column, "", bg=styles.BORDER)
         finally:
             self._rebuilding = False
+        self._fit_columns()
+
+    def _fit_columns(self) -> None:
+        """Разложить колонки по ширине окна (v0.44.0).
+
+        «Дата» и «Отчет» — по содержимому; «Сумма» занимает **половину**
+        своей доли (колонка пустовала), а освободившееся место уходит
+        в поле между вертикальными рядами: разделитель не меньше
+        ``SEPARATOR_WIDTH`` (80 точек), поэтому ряды дней стоят
+        свободно, а справа не остаётся пустой полосы.
+        """
+
+        self.table.resizeColumnsToContents()
+        viewport = self.table.viewport().width()
+        if viewport <= 0:
+            return
+        fixed = 0
+        for block in range(BLOCKS):
+            first = _block_first_column(block)
+            fixed += self.table.columnWidth(first + COL_DATE)
+            fixed += self.table.columnWidth(first + COL_KIND)
+        gaps = len(SEPARATOR_COLUMNS)
+        # Доля одного ряда без разделителей; «Сумма» берёт её половину.
+        share = max(viewport - fixed, 0) / BLOCKS
+        amount = max(int(share * AMOUNT_WIDTH_RATIO), AMOUNT_MIN_WIDTH)
+        rest = int(viewport - fixed - amount * BLOCKS - SEPARATOR_WIDTH * gaps)
+        gap = SEPARATOR_WIDTH + (max(rest, 0) // gaps)
+        if fixed + amount * BLOCKS + gap * gaps > viewport:
+            # Окно совсем узкое: сначала сжимаем разделитель, потом сумму.
+            gap = max(8, (viewport - fixed - amount * BLOCKS) // gaps)
+        if fixed + amount * BLOCKS + gap * gaps > viewport:
+            amount = max(40, (viewport - fixed - 8 * gaps) // BLOCKS)
+            gap = max(8, (viewport - fixed - amount * BLOCKS) // gaps)
+        for block in range(BLOCKS):
+            self.table.setColumnWidth(
+                _block_first_column(block) + COL_AMOUNT, amount
+            )
+        for column in SEPARATOR_COLUMNS:
+            self.table.setColumnWidth(column, gap)
+
+    def resizeEvent(self, event) -> None:  # Qt API: имя задано Qt
+        super().resizeEvent(event)
+        # Ширины колонок считаются от ширины окна, поэтому пересчитываем
+        # их при каждом изменении размера.
+        self._fit_columns()
 
     def _put(
         self,
@@ -324,7 +384,7 @@ class KkmView(QWidget):
         )
         self.reports_label.setText(f"Отчеты ККМ: {fmt_money(reports)}")
         self.returns_label.setText(f"Возвраты: {fmt_money(returns)}")
-        self.diff_label.setText(f"Разница: {fmt_money(diff)}")
+        self.total_label.setText(f"Итого по Отчетам ККМ: {fmt_money(diff)}")
 
     # ------------------------------------------------------------------ ввод
     def _on_item_changed(self, item: QTableWidgetItem) -> None:

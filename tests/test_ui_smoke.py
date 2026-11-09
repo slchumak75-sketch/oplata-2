@@ -147,9 +147,12 @@ def test_main_window_all_pages(qt_app, store):
     assert summary.caption_text("funds") == "Остаток на счёте"
     assert summary.caption_text("debt_total") == "Всего задолженность"
     # v0.43.0: в блоке «Месяц» — итоги реестра ККМ, а не приход и оплаты.
-    assert summary.caption_text("month_kkm_reports") == "Итого по Отчетам ККМ"
-    assert summary.caption_text("month_kkm_returns") == "Итого Возврат покупателя"
+    # v0.44.0: в блоке три строки — ККМ за вычетом возвратов,
+    # реализация и общий итог; отдельной строки возвратов больше нет.
+    assert summary.caption_text("month_kkm_total") == "Итого по Отчетам ККМ"
+    assert summary.caption_text("month_sale_invoiced") == "Реализация Покупателям"
     assert summary.caption_text("month_total") == "Итого за месяц"
+    assert "month_kkm_returns" not in summary._values
     assert summary.caption_text("plan_1").startswith("Оплата ")
     # В покупателях справа «0»
     assert window.customers_view.right_value_label.text() == "0"
@@ -1905,16 +1908,16 @@ def test_summary_panel_shows_three_blocks_line_by_line(qt_app, store):
     assert view.caption_text("plan_4") == "Оплата 23.11 – 29.11"
     assert view.value_text("plan_4") == "0,00"
 
-    # Блок «Месяц» (v0.43.0): не приход и оплаты, а итоги реестра
-    # «Отчеты ККМ» за октябрь целиком. В этой базе записей ККМ нет.
-    assert view.value_text("month_kkm_reports") == "0,00"
-    assert view.value_text("month_kkm_returns") == "0,00"
-    assert view.value_text("month_total") == "0,00"
-    # «Реализация Покупателям» — с зелёным квадратиком «Выписано».
-    assert view.caption_text("month_sale_invoiced") == "Реализация Покупателям"
+    # Блок «Месяц» (v0.43.0/0.44.0): не приход и оплаты, а итоги
+    # реестра «Отчеты ККМ» за октябрь целиком. Записей ККМ в этой базе
+    # нет, поэтому все три строки нулевые.
+    assert view.value_text("month_kkm_total") == "0,00"
     assert view.value_text("month_sale_invoiced") == "0,00"
-    assert view.has_mark("month_sale_invoiced")
-    assert not view.has_mark("month_kkm_reports")
+    assert view.value_text("month_total") == "0,00"
+    # v0.44.0: строки «Итого Возврат покупателя» и зелёного квадратика
+    # у «Реализации» больше нет; подпись стоит в одну строчку.
+    assert "month_kkm_returns" not in view._values
+    assert not view._captions["month_sale_invoiced"].wordWrap()
     assert "month_income" not in view._values
     assert "month_payments" not in view._values
 
@@ -1922,8 +1925,9 @@ def test_summary_panel_shows_three_blocks_line_by_line(qt_app, store):
     assert view.panel.isVisible()
     # Блок поставщиков: всего, на неделе, просроченный платёж
     # (v0.16.0) + четыре недели оплаты (v0.22.1: без «на сегодня»).
-    # v0.43.0: в блоке «Месяц» четыре строки (три ККМ + реализация).
-    assert len(view._values) == len(view._captions) == 4 + 7 + 1 + 4
+    # v0.44.0: в блоке «Месяц» три строки (ККМ за вычетом возвратов,
+    # реализация и общий итог).
+    assert len(view._values) == len(view._captions) == 4 + 7 + 1 + 3
     # Блок «Задолженность покупателей» пока пуст (покупателей нет).
     assert view.value_text("cust_total") == "0,00"
     window.close()
@@ -2499,20 +2503,21 @@ def test_summary_panel_font_is_larger_others_unchanged(qt_app, store):
     window = MainWindow(store)
     summary = window.summary_view
     # Кегли блоков «Сводки» — крупнее обычных.
-    assert summary.panel.toggle.font().pixelSize() == styles.fs_summary(14)
+    assert summary.panel.toggle.font().pixelSize() == styles.fs_summary(15)
     caption = next(iter(summary._captions.values()))
     value = next(iter(summary._values.values()))
-    assert caption.font().pixelSize() == styles.fs_summary(11)
-    assert value.font().pixelSize() == styles.fs_summary(11)
-    assert styles.SUMMARY_FONT_SCALE == 1.05
+    assert caption.font().pixelSize() == styles.fs_summary(12)
+    assert value.font().pixelSize() == styles.fs_summary(12)
+    assert styles.SUMMARY_FONT_SCALE == 1.2
     assert styles.fs_summary(12) == int(
         round(12 * styles.FONT_SCALE * styles.SUMMARY_FONT_SCALE)
     )
     # Панель осталась крупнее остальной программы, но не слишком.
-    assert styles.fs_summary(11) > styles.fs(11)
-    # v0.31.0 было 20 и 19 (кегль 1,2); v0.43.0 — 20 и 16 (кегль 1,05).
-    assert styles.fs_summary(15) == 20
-    assert styles.fs_summary(12) == 16
+    assert styles.fs_summary(12) > styles.fs(12)
+    # v0.44.0: кегль снова 1,2 (в v0.43.0 временно был 1,05 — там в
+    # блоке «Месяц» было на строку больше).
+    assert styles.fs_summary(15) == 23
+    assert styles.fs_summary(12) == 19
 
     # Остальная программа осталась при обычном шрифте (общее +50% из
     # v0.23.2 отменено).
@@ -5186,11 +5191,11 @@ def test_customer_income_grows_day_and_month_totals(qt_app, store):
     assert view.value_text("income") == "1 500,00"
     assert view.value_text("payments") == "1 000,00"
     assert view.value_text("balance") == "500,00"
-    # Блок «Месяц» (v0.43.0): прихода и оплат там больше нет — только
-    # итоги реестра ККМ за октябрь; записей ККМ в этой базе нет, поэтому
-    # все три строки нулевые (деньги покупателя в блок не попадают).
-    assert view.value_text("month_kkm_reports") == "0,00"
-    assert view.value_text("month_kkm_returns") == "0,00"
+    # Блок «Месяц» (v0.43.0/0.44.0): прихода и оплат там больше нет —
+    # только итоги реестра ККМ за октябрь и выписанная реализация;
+    # денег покупателя в блоке не видно вовсе.
+    assert view.value_text("month_kkm_total") == "0,00"
+    assert view.value_text("month_sale_invoiced") == "0,00"
     assert view.value_text("month_total") == "0,00"
     # Задолженность покупателя уменьшилась: 5 000 − 1 500.
     assert view.value_text("cust_total") == "3 500,00"
@@ -5729,13 +5734,16 @@ def test_kkm_table_shows_month_with_repeating_days(qt_app, store):
     from oplata.app import IDX_KKM, MainWindow
     from oplata.models import KKM_DAY_KINDS
     from oplata.views.kkm_view import (
+        AMOUNT_MIN_WIDTH,
         BLOCKS,
         COLUMNS_PER_BLOCK,
+        COL_AMOUNT,
         COL_DATE,
         COL_KIND,
         DAYS_PER_BLOCK,
         HEADERS,
         SEPARATOR_COLUMNS,
+        SEPARATOR_WIDTH,
         _block_first_column,
     )
 
@@ -5759,8 +5767,11 @@ def test_kkm_table_shows_month_with_repeating_days(qt_app, store):
             for shift in range(COLUMNS_PER_BLOCK)
         ] == list(HEADERS)
     assert all(table.horizontalHeaderItem(c).text() == "" for c in SEPARATOR_COLUMNS)
-    # Между рядами — узкое поле (8 точек), а не полноценная колонка.
-    assert all(table.columnWidth(c) <= 10 for c in SEPARATOR_COLUMNS)
+    # v0.44.0: поле между рядами — не меньше 80 точек (было 8).
+    assert all(table.columnWidth(c) >= SEPARATOR_WIDTH for c in SEPARATOR_COLUMNS)
+    # v0.44.0: «Сумма» вдвое у́же своей доли — она у́же колонки «Отчет».
+    assert table.columnWidth(COL_AMOUNT) < table.columnWidth(COL_KIND)
+    assert table.columnWidth(COL_AMOUNT) >= AMOUNT_MIN_WIDTH
 
     # В ноябре 30 дней; МИР — по три строки на каждый день. Высота
     # таблицы = самому длинному ряду (10 дней), а не всему месяцу.
@@ -5829,7 +5840,7 @@ def test_kkm_month_totals_count_reports_returns_and_diff(qt_app, store):
     assert table.item(0, COL_AMOUNT).text() == "1 000,00"
     assert view.reports_label.text() == "Отчеты ККМ: 1 500,00 руб."
     assert view.returns_label.text() == "Возвраты: 400,00 руб."
-    assert view.diff_label.text() == "Разница: 1 100,00 руб."
+    assert view.total_label.text() == "Итого по Отчетам ККМ: 1 100,00 руб."
     saved = {(r.date, r.slot, r.kind, r.amount) for r in store.data.kkm_reports}
     assert ("2026-11-01", 0, "report", "1000.00") in saved
     assert ("2026-11-01", 2, "return", "300.00") in saved
@@ -5838,7 +5849,7 @@ def test_kkm_month_totals_count_reports_returns_and_diff(qt_app, store):
     enter(0, "")
     assert table.item(0, COL_AMOUNT).text() == ""
     assert view.reports_label.text() == "Отчеты ККМ: 500,00 руб."
-    assert view.diff_label.text() == "Разница: 100,00 руб."
+    assert view.total_label.text() == "Итого по Отчетам ККМ: 100,00 руб."
     assert len(store.data.kkm_reports) == 3
 
     # Переход по месяцам: другой месяц — свои записи и свой итог.
@@ -5904,18 +5915,76 @@ def test_summary_month_block_counts_kkm_and_invoiced_realization(qt_app, store):
     view.date_edit.setDate(QDate(2026, 10, 20))
     view.refresh()
 
-    assert view.value_text("month_kkm_reports") == "1 500,00"
-    assert view.value_text("month_kkm_returns") == "250,00"
-    assert view.value_text("month_total") == "1 250,00"   # ККМ − возвраты
+    # v0.44.0: «Итого по Отчетам ККМ» — за вычетом возвратов: 1 500 − 250.
+    assert view.value_text("month_kkm_total") == "1 250,00"
     # 4 000 + 600: выписанная реализация за весь месяц; 900 «в работе»
     # и ноябрьские 777 в строку не входят.
     assert view.value_text("month_sale_invoiced") == "4 600,00"
-    assert view.has_mark("month_sale_invoiced")
+    # «Итого за месяц» = ККМ за вычетом возвратов + реализация.
+    assert view.value_text("month_total") == "5 850,00"
+    # Зелёного квадратика у строки нет (v0.44.0).
+    assert not hasattr(view, "has_mark")
     # Другой месяц — свои цифры.
     view.date_edit.setDate(QDate(2026, 11, 10))
     view.refresh()
     assert view.value_text("month_sale_invoiced") == "777,00"
-    assert view.value_text("month_kkm_reports") == "0,00"
+    assert view.value_text("month_kkm_total") == "0,00"
+    assert view.value_text("month_total") == "777,00"
+    window.close()
+
+
+def test_kkm_table_zebra_paints_whole_day_one_color(qt_app, store):
+    """v0.44.0: зебра по дням — один день, один цвет (все строки дня)."""
+    from datetime import date
+
+    from oplata.app import IDX_KKM, MainWindow
+    from oplata.views.kkm_view import (
+        COLUMNS_PER_BLOCK,
+        ZEBRA_EVEN,
+        ZEBRA_ODD,
+        _block_first_column,
+    )
+
+    window = MainWindow(store)
+    window.resize(1600, 900)
+    window.show()
+    window.show_page(IDX_KKM)
+    qt_app.processEvents()
+    view = window.kkm_view
+    # Февраль 2026: 28 дней, сегодня (09.11) в месяц не попадает —
+    # значит, весь месяц раскрашен зеброй, без «сегодняшней» зелёной.
+    view.set_month(date(2026, 2, 1))
+    qt_app.processEvents()
+    table = view.table
+
+    def day_color(row: int) -> str:
+        return table.item(row, 0).background().color().name()
+
+    # У МИР на день три строки — все одного цвета.
+    first_day = {day_color(row) for row in range(3)}
+    second_day = {day_color(row) for row in range(3, 6)}
+    assert len(first_day) == 1 and len(second_day) == 1
+    # Соседние дни — разные цвета; тон светлый (из палитры программы).
+    assert first_day != second_day
+    assert (first_day | second_day) <= {ZEBRA_EVEN, ZEBRA_ODD}
+    # Цвет меняется по дням: через день — тот же.
+    assert day_color(0) == day_color(6)
+    assert day_color(0) != day_color(3)
+    # Заливка стоит и во втором, и в третьем ряду (колонки 4 и 8).
+    for block in (1, 2):
+        first = _block_first_column(block)
+        assert table.item(0, first).background().color().name() == day_color(0)
+        assert table.item(0, first + COLUMNS_PER_BLOCK - 1).background().color().name() == day_color(0)
+    # Сегодняшний день остаётся светло-зелёным, а не зеброй.
+    from oplata import styles
+
+    view.set_month(date.today())
+    qt_app.processEvents()
+    today_row = (date.today().day - 1) % 10 * 3
+    assert (
+        table.item(today_row, 0).background().color().name()
+        == styles.WEEK_TABLE_TODAY_GREEN_BODY
+    )
     window.close()
 
 
