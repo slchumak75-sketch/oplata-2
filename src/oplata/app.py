@@ -35,7 +35,14 @@ from PySide6.QtWidgets import (
 )
 
 from . import __app_name__, __version__, styles
-from .access import IDX_CUSTOMERS, Access
+from .access import (
+    IDX_CUSTOMERS,
+    IDX_DATA,
+    IDX_KKM,
+    IDX_RECEIPTS,
+    IDX_SUPPLIERS,
+    Access,
+)
 from .dialogs.counterparty_card import CounterpartyCardDialog
 from .dialogs.delivery_dialog import DeliveryDialog
 from .dialogs.operations_journal_dialog import OperationsJournalDialog
@@ -60,17 +67,20 @@ from .storage import (
     local_base_file,
 )
 from .views.data_view import DataView
+from .views.kkm_view import KkmView
 from .views.receipts_view import ReceiptsView
 from .views.summary_view import SummaryView
 from .views.week_view import WeekView
 
+# Порядок должен совпадать с access.PAGE_TITLES (там же индексы
+# IDX_*): в «Конфигурации» по ним ставятся галочки прав.
 NAV_TITLES = (
     "Поступление и оплаты",
+    "Отчеты ККМ",  # v0.42.0: реестр отчётов кассы за месяц
     "Поставщики",
     "Покупатели",
     "Конфигурация",  # v0.14.0: прежняя вкладка «Данные»
 )
-IDX_RECEIPTS, IDX_SUPPLIERS, IDX_CUSTOMERS, IDX_DATA = range(4)
 
 # v0.17.0: цвет шапки показывает, какая база открыта. v0.39.0:
 # «МИР» — зелёная, «КОРЕЛИЧИ» — вишнёвая (в v0.38.0 были песочная и
@@ -153,6 +163,8 @@ class MainWindow(QMainWindow):
             on_data_changed=self.refresh_after_operation_change,
             summary_widget=self.summary_view,
         )
+        # v0.42.0: реестр «Отчеты ККМ» — своя таблица на месяц.
+        self.kkm_view = KkmView(store)
         self.data_view = DataView(
             store,
             on_calendar_saved=self.refresh_after_calendar_change,
@@ -177,6 +189,7 @@ class MainWindow(QMainWindow):
         self.stack = QStackedWidget()
         for view in (
             self.receipts_view,
+            self.kkm_view,
             self.suppliers_view,
             self.customers_view,
             self.data_view,
@@ -707,6 +720,10 @@ class MainWindow(QMainWindow):
         # (добавленные «прочие»), поэтому сначала перечитываем строки.
         self.receipts_view.refresh_rows()
         self.receipts_view.refresh()
+        # v0.42.0: у «Отчетов ККМ» своя таблица на месяц; в другой базе
+        # на один день приходится другое число строк (3 у МИР, 2 у
+        # КОРЕЛИЧИ), поэтому перестраиваем её вместе с остальными.
+        self.kkm_view.refresh()
         self.suppliers_view.refresh()
         self.customers_view.refresh()
         self.summary_view.refresh()
@@ -739,6 +756,10 @@ class MainWindow(QMainWindow):
             # каждую плашку ставим на сегодня отдельно.
             self.receipts_view.set_date(today)
             self.summary_view.set_date(today)
+        elif index == IDX_KKM:
+            # v0.42.0: реестр открывается на текущем месяце, как
+            # недельные таблицы — на текущей неделе.
+            self.kkm_view.set_month(today)
         elif index == IDX_SUPPLIERS:
             self.suppliers_view.reset_to_today()
         elif index == IDX_CUSTOMERS:
@@ -830,7 +851,12 @@ class MainWindow(QMainWindow):
             self.refresh_all_views()
         # Ввод данных — только тем, у кого есть право ввода.
         read_only = not self.access.can_edit
-        for view in (self.receipts_view, self.suppliers_view, self.customers_view):
+        for view in (
+            self.receipts_view,
+            self.kkm_view,
+            self.suppliers_view,
+            self.customers_view,
+        ):
             view.set_read_only(read_only)
         self.data_view.set_read_only(read_only, can_admin=self.access.can_admin_data)
         # Текущая вкладка могла стать недоступной — показываем первую из разрешённых.

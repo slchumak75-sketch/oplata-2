@@ -133,12 +133,13 @@ libfontconfig1`) — в CI они ставятся шагом workflow.
 | Даты/недели/формат денег | `src/oplata/dates.py` |
 | Цвета/стили | `src/oplata/styles.py` |
 | Поле суммы без начальных нулей | `src/oplata/widgets.py` (`AmountLineEdit`, `make_amount_edit`) |
-| Шапка окна, навигация | `src/oplata/app.py` |
+| Шапка окна, навигация | `src/oplata/app.py` (порядок вкладок и их индексы — в `src/oplata/access.py`) |
 | Экран «Сводка» | `src/oplata/views/summary_view.py` (с v0.11.0 — панель справа на вкладке «Поступление и оплаты», отдельной вкладки нет) |
 | Печатная форма «Сводки» | `src/oplata/reports.py` (HTML без Qt) + предпросмотр в `summary_view.py` (ADR-011) |
 | Экраны «Поставщики»/«Покупатели» | `src/oplata/views/week_view.py` (один класс, параметр `kind`) |
 | Экран «Поступление и оплаты» | `src/oplata/views/receipts_view.py` (`MoneyBlock`, `AmountPopup`) |
 | Журнал операций (окно из карточки) | `src/oplata/views/operations_view.py` (`OperationsView`) + `src/oplata/dialogs/operations_journal_dialog.py` |
+| Экран «Отчеты ККМ» | `src/oplata/views/kkm_view.py` (v0.42.0) |
 | Экран «Данные» (календарь + администрирование) | `src/oplata/views/data_view.py` |
 | Раскрывающаяся плашка | `src/oplata/widgets.py` (`CollapsiblePanel`) |
 | Карточки поставщика/покупателя | `src/oplata/dialogs/counterparty_card.py` |

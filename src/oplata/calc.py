@@ -37,6 +37,7 @@ from decimal import ROUND_HALF_UP, Decimal, InvalidOperation
 
 from .dates import fmt_money_plain, week_monday
 from .models import (
+    KKM_KIND_RETURN,
     AppData,
     CASH_SOURCE,
     Counterparty,
@@ -816,6 +817,33 @@ def operation_due_date(
     except ValueError:
         return None
     return payment_due_date(delivery, counterparty, day_overrides)
+
+
+def kkm_month_totals(
+    data: AppData, year: int, month: int
+) -> tuple[Decimal, Decimal, Decimal]:
+    """Итог реестра ККМ за месяц: (отчёты ККМ, возвраты, разница).
+
+    v0.42.0: считаем по записям этого месяца — «Отчет ККМ» отдельно от
+    «Возврат покупателя», разница = отчёты минус возвраты. К денежным
+    расчётам программы реестр не относится.
+    """
+
+    prefix = f"{year:04d}-{month:02d}-"
+    reports = ZERO
+    returns = ZERO
+    for row in data.kkm_reports:
+        if not row.date.startswith(prefix):
+            continue
+        try:
+            amount = Decimal(row.amount or "0")
+        except InvalidOperation:
+            continue
+        if row.kind == KKM_KIND_RETURN:
+            returns += amount
+        else:
+            reports += amount
+    return reports, returns, reports - returns
 
 
 def find_counterparty(data: AppData, counterparty_id: str) -> Counterparty | None:

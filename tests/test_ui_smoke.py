@@ -94,11 +94,13 @@ def test_main_window_all_pages(qt_app, store):
     window = MainWindow(store)
     assert [button.text() for button in window.nav_buttons] == [
         "Поступление и оплаты",
+        "Отчеты ККМ",  # v0.42.0: между «Поступление…» и «Поставщики»
         "Поставщики",
         "Покупатели",
         "Конфигурация",  # v0.14.0: прежняя вкладка «Данные»
     ]
-    assert window.stack.count() == 4  # вкладки «Сводка» больше нет
+    # v0.42.0: пять вкладок — добавились «Отчеты ККМ».
+    assert window.stack.count() == 5
     # Вкладка «Поступление и оплаты»: два блока один под другим, в каждом
     # таблица с колонками дней недели (v0.38.0: колонки «Сумма» нет).
     view = window.receipts_view
@@ -3546,11 +3548,13 @@ def test_user_rights_limit_pages_base_and_input(qt_app, store, monkeypatch, tmp_
     qt_app.processEvents()
     assert [b.text() for b in window.nav_buttons if not b.isHidden()] == [
         "Поступление и оплаты",
+        "Отчеты ККМ",  # v0.42.0
         "Поставщики",
         "Покупатели",
         "Конфигурация",
     ]
     assert window.suppliers_view.read_only is False
+    assert window.kkm_view.read_only is False
     assert not window.data_view.admin_panel.isHidden()
     window.close()
 
@@ -3560,6 +3564,7 @@ def test_user_rights_limit_pages_base_and_input(qt_app, store, monkeypatch, tmp_
     # Руководитель видит все вкладки, но без права ввода.
     assert all(not b.isHidden() for b in window.nav_buttons)
     assert window.suppliers_view.read_only is True
+    assert window.kkm_view.read_only is True
     assert window.receipts_view.incoming.read_only is True
     # v0.23.1: «Администрирование» видно всем, кто открыл вкладку
     # «Конфигурация» — сама вкладка закрыта паролем (просьба
@@ -5690,3 +5695,162 @@ def test_clear_base_says_when_nothing_to_clear(qt_app, store, monkeypatch, tmp_p
     assert store.data.suppliers, "справочники остаются и без операций"
     assert notices and "нечего" in notices[-1]
     window.close()
+
+
+def test_kkm_table_shows_month_with_repeating_days(qt_app, store):
+    """v0.42.0: таблица на месяц, МИР — три строки на дату, КОРЕЛИЧИ — две."""
+    from datetime import date
+
+    from oplata.app import MainWindow
+    from oplata.models import KKM_DAY_KINDS
+    from oplata.views.kkm_view import COL_DATE, COL_KIND, HEADERS
+
+    window = MainWindow(store)
+    window.show()
+    qt_app.processEvents()
+    view = window.kkm_view
+    view.set_month(date(2026, 11, 1))
+    qt_app.processEvents()
+    table = view.table
+
+    assert [table.horizontalHeaderItem(c).text() for c in range(3)] == list(HEADERS)
+    # В ноябре 30 дней; МИР — по три строки на каждый день.
+    assert table.rowCount() == 30 * len(KKM_DAY_KINDS["mir"])
+    # Порядок строк внутри дня: ККМ, ККМ, Возврат покупателя.
+    assert [table.item(row, COL_KIND).text() for row in range(3)] == [
+        "Отчет ККМ",
+        "Отчет ККМ",
+        "Возврат покупателя",
+    ]
+    # Одна и та же дата повторяется три раза подряд.
+    assert [table.item(row, COL_DATE).text() for row in range(3)] == ["01.11.2026"] * 3
+    assert table.item(3, COL_DATE).text() == "02.11.2026"
+    # Горизонтальной прокрутки нет: сумма занимает всё оставшееся место.
+    assert table.horizontalScrollBarPolicy() is (
+        Qt.ScrollBarPolicy.ScrollBarAlwaysOff
+    ) or table.horizontalScrollBar().maximum() == 0
+
+    # В базе КОРЕЛИЧИ на день приходится две строки: ККМ и возврат.
+    window.base_button.click()
+    qt_app.processEvents()
+    view.refresh()
+    assert view.table.rowCount() == 30 * len(KKM_DAY_KINDS["korelichi"])
+    assert [view.table.item(row, COL_KIND).text() for row in range(2)] == [
+        "Отчет ККМ",
+        "Возврат покупателя",
+    ]
+    assert view.table.item(2, COL_DATE).text() == "02.11.2026"
+    # Реестр каждой базы лежит в её файле: суммы не пересекаются.
+    window.base_button.click()
+    qt_app.processEvents()
+    window.close()
+
+
+def test_kkm_month_totals_count_reports_returns_and_diff(qt_app, store):
+    """v0.42.0: ввод суммы сохраняется, итог месяца — ККМ, возвраты, разница."""
+    from datetime import date
+
+    from oplata.app import MainWindow
+    from oplata.views.kkm_view import COL_AMOUNT
+
+    window = MainWindow(store)
+    window.show()
+    qt_app.processEvents()
+    view = window.kkm_view
+    view.set_month(date(2026, 11, 1))
+    qt_app.processEvents()
+    table = view.table
+
+    def enter(row: int, text: str) -> None:
+        table.item(row, COL_AMOUNT).setText(text)
+        qt_app.processEvents()
+
+    enter(0, "1 000")     # 01.11, первый «Отчет ККМ»
+    enter(1, "500")       # 01.11, второй «Отчет ККМ»
+    enter(2, "300")       # 01.11, «Возврат покупателя»
+    enter(5, "100")       # 02.11, возврат
+
+    # В ячейке стоит отформатированная сумма, в файле — запись.
+    assert table.item(0, COL_AMOUNT).text() == "1 000,00"
+    assert view.reports_label.text() == "Отчеты ККМ: 1 500,00 руб."
+    assert view.returns_label.text() == "Возвраты: 400,00 руб."
+    assert view.diff_label.text() == "Разница: 1 100,00 руб."
+    saved = {(r.date, r.slot, r.kind, r.amount) for r in store.data.kkm_reports}
+    assert ("2026-11-01", 0, "report", "1000.00") in saved
+    assert ("2026-11-01", 2, "return", "300.00") in saved
+
+    # Пустая ячейка удаляет запись и пересчитывает итог.
+    enter(0, "")
+    assert table.item(0, COL_AMOUNT).text() == ""
+    assert view.reports_label.text() == "Отчеты ККМ: 500,00 руб."
+    assert view.diff_label.text() == "Разница: 100,00 руб."
+    assert len(store.data.kkm_reports) == 3
+
+    # Переход по месяцам: другой месяц — свои записи и свой итог.
+    view._next_month()
+    qt_app.processEvents()
+    assert "Декабрь 2026" in view.month_label.text()
+    assert view.reports_label.text() == "Отчеты ККМ: 0,00 руб."
+    assert view.table.rowCount() == 31 * 3  # в декабре 31 день, база МИР
+    view._prev_month()
+    qt_app.processEvents()
+    assert "Ноябрь 2026" in view.month_label.text()
+    assert view.reports_label.text() == "Отчеты ККМ: 500,00 руб."
+    window.close()
+
+
+def test_kkm_tab_is_in_rights_table_and_migrates_old_files(
+    qt_app, store, monkeypatch, tmp_path
+):
+    """v0.42.0: вкладку видно в правах; старые файлы пользователей читаются."""
+    from oplata import access as access_module
+    from oplata.app import MainWindow
+    from oplata.views.data_view import PAGE_TITLES
+
+    monkeypatch.setattr(access_module, "data_dir", lambda: tmp_path)
+
+    window = MainWindow(store)
+    window.show()
+    qt_app.processEvents()
+    window.data_view.users_panel.set_expanded(True)
+    qt_app.processEvents()
+
+    # В «Права и пользователи» для новой вкладки своя галочка.
+    table = window.data_view.users_table
+    headers = [table.horizontalHeaderItem(c).text() for c in range(table.columnCount())]
+    assert "Отчеты ККМ" in headers
+    # У администратора и руководителя она отмечена, у пользователей баз — нет.
+    kkm_col = headers.index("Отчеты ККМ")
+    for row in (0, 1):  # Администратор, Руководитель
+        assert table.item(row, kkm_col).checkState() is Qt.CheckState.Checked
+    for row in (2, 3):  # Пользователь МИР / КОРЕЛИЧИ
+        assert table.item(row, kkm_col).checkState() is Qt.CheckState.Unchecked
+    window.close()
+
+    # Прежний файл (номера вкладок 0..3) читается: «Покупатели» остаются
+    # «Покупателями», у полного доступа добавляется «Отчеты ККМ».
+    (tmp_path / "users.json").write_text(
+        '{"users": ['
+        '{"id": "old-full", "name": "Прежний администратор", '
+        '"pages": [0, 1, 2, 3], "base": null, "can_edit": true, '
+        '"can_switch_base": true},'
+        '{"id": "old-mir", "name": "Прежний пользователь МИР", '
+        '"pages": [2], "base": "mir", "can_edit": false, "can_switch_base": false}'
+        "]}",
+        encoding="utf-8",
+    )
+    users = access_module.load_users()
+    full = next(u for u in users if u.id == "old-full")
+    mir_user = next(u for u in users if u.id == "old-mir")
+    titles = {i: t for i, t in enumerate(PAGE_TITLES)}
+    assert [titles[p] for p in mir_user.pages] == ["Покупатели"]
+    assert "Отчеты ККМ" in [titles[p] for p in full.pages]
+    assert "Покупатели" in [titles[p] for p in full.pages]
+    # Теперь права пишутся именами вкладок: вставка новой не сдвинет их.
+    access_module.save_users(users)
+    import json
+
+    written = json.loads((tmp_path / "users.json").read_text(encoding="utf-8"))
+    saved = {u["id"]: u["pages"] for u in written["users"]}
+    assert saved["old-mir"] == ["customers"]
+    assert saved["old-full"] == ["receipts", "kkm", "suppliers", "customers", "data"]

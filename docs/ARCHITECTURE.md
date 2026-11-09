@@ -38,7 +38,7 @@ oplata-2/
     styles.py                   # цвета по макетам + QSS
     widgets.py                  # панели, цветные кнопки, поля даты/сумм, KPI-карточки
     dates.py       [без Qt]     # недели Пн–Вс, русские месяцы, формат сумм
-    models.py      [без Qt]     # Counterparty, Operation, CashReceipt, AppData, YearStart, seed_data()
+    models.py      [без Qt]     # Counterparty, Operation, CashReceipt, KkmReport (v0.42.0), AppData, YearStart, seed_data()
     storage.py     [без Qt]     # DataStore: JSON, две базы (МИР/КОРЕЛИЧИ)
     excelio.py     [без Qt]     # выгрузка/загрузка обеих баз в один xlsx (v0.20.0, ADR-030)
     styles.py      [без Qt]     # цвета и QSS; FONT_SCALE — шрифты интерфейса +30% (v0.12.0; +50% из v0.23.2 отменено в v0.23.6)
@@ -52,6 +52,7 @@ oplata-2/
                                  # v0.20.0: журнал вида по клику (JournalPopup), карточка нового вида оплаты
       operations_view.py        # Журнал операций (окно из карточки контрагента)
       summary_view.py            # Плашка «Сводка»: блоки построчно (средства, долги поставщиков и покупателей, месяц) + печать
+      kkm_view.py               # Отчеты ККМ (v0.42.0): таблица на месяц, строки дня по KKM_DAY_KINDS, итог тремя цифрами
       data_view.py              # Конфигурация: «Настройка календаря» + «Данные»
                               # (перенос остатков на 1 января, v0.14.0) + «Администрирование»
     dialogs/
@@ -106,7 +107,11 @@ data.json ──DataStore──> AppData ──> экраны (views) ──кл
     {"kind": "Приход", "counterparty_id": "a1b2c3d4e5f6", "date": "2026-10-26",
      "amount": "88888.88", "document": "", "comment": "", "due_date": "2026-11-05"}
   ],
-  "day_overrides": {"2026-07-18": "off"}
+  "day_overrides": {"2026-07-18": "off"},
+  "kkm_reports": [
+    {"id": "c7d8e9f0", "date": "2026-10-26", "kind": "report",
+     "slot": 0, "amount": "150.00"}
+  ]
 }
 ```
 
@@ -117,6 +122,8 @@ data.json ──DataStore──> AppData ──> экраны (views) ──кл
 ## Контракт calc.py
 
 Заглушки «Сводки»: `summary_totals`, `supplier_debt_row`, `overdue_payments`.
+Реестр ККМ (v0.42.0, своих денежных расчётов не имеет):
+`kkm_month_totals(data, year, month) -> (reports, returns, diff)`.
 Формулы поставщиков (v0.3.0): `payment_due_date(delivery, counterparty,
 day_overrides)` (дата + отсрочка, режимы без отсрочки, перенос с выходного),
 `debt_by_due_date(data, counterparty)` (архивные суммы поставок по срокам;
