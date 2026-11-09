@@ -61,8 +61,6 @@ class SummaryView(QWidget):
         # Подписи и значения строк: ключ -> (подпись, значение).
         self._captions: dict[str, QLabel] = {}
         self._values: dict[str, QLabel] = {}
-        # v0.43.0: цветные квадратики-метки у строк («Выписано»).
-        self._marks: dict[str, QLabel] = {}
 
         root = QVBoxLayout(self)
         root.setContentsMargins(10, 10, 10, 10)
@@ -105,7 +103,7 @@ class SummaryView(QWidget):
         self.panel.toggle.setStyleSheet(
             "QPushButton{background:transparent;border:none;text-align:left;"
             # v0.23.6: шрифт панели «Сводка» крупнее обычного на 50%.
-            f"padding:2px 0;font-weight:800;font-size:{styles.fs_summary(14)}px;"
+            f"padding:2px 0;font-weight:800;font-size:{styles.fs_summary(15)}px;"
             f"color:{styles.TEXT}}}"
             "QPushButton:hover{background:transparent}"
         )
@@ -158,14 +156,13 @@ class SummaryView(QWidget):
             [
                 # v0.43.0: вместо прихода и оплат с начала месяца —
                 # итоги реестра «Отчеты ККМ» за весь месяц.
-                ("month_kkm_reports", "Итого по Отчетам ККМ"),
-                ("month_kkm_returns", "Итого Возврат покупателя"),
+                # v0.44.0: возврат отдельной строкой не показывается —
+                # «Итого по Отчетам ККМ» уже за вычетом возвратов.
+                ("month_kkm_total", "Итого по Отчетам ККМ"),
                 ("month_sale_invoiced", "Реализация Покупателям"),
                 ("month_total", "Итого за месяц"),
             ],
-            # Зелёный квадратик — пометка «Выписано»: в строке только
-            # реализация с зелёной меткой (v0.43.0).
-            marked=("month_sale_invoiced",),
+            nowrap=("month_sale_invoiced",),
         )
         root.addWidget(self.panel)
 
@@ -216,32 +213,18 @@ class SummaryView(QWidget):
         line.setStyleSheet(f"color:{styles.BORDER}")
         layout.addWidget(line)
 
-    def _green_mark(self) -> QLabel:
-        """Зелёный квадратик «Выписано» рядом с подписью (v0.43.0)."""
-
-        mark = QLabel()
-        mark.setFixedSize(12, 12)
-        mark.setToolTip(
-            "Выписано: реализация с зелёной меткой (документы выписаны). "
-            "Без метки реализация считается «в работе» и в эту строку "
-            "не входит"
-        )
-        mark.setStyleSheet(
-            f"background:{styles.GREEN};border-radius:2px;border:none;"
-        )
-        return mark
-
     def _add_section(
         self,
         layout: QVBoxLayout,
         title: str,
         rows: list[tuple[str, str]],
-        marked: tuple[str, ...] = (),
+        nowrap: tuple[str, ...] = (),
     ) -> None:
         """Блок строк: жирный подзаголовок и сетка «подпись — значение».
 
-        ``marked`` — ключи строк, у которых рядом с подписью стоит
-        цветной квадратик (v0.43.0: зелёный «Выписано»).
+        ``nowrap`` — ключи строк, подпись которых **не переносится** на
+        вторую строку (v0.44.0: «Реализация Покупателям» стоит в одну
+        строчку).
         """
 
         caption = QLabel(title)
@@ -261,7 +244,7 @@ class SummaryView(QWidget):
             bold = key in {"balance", "month_total"}
             label = QLabel(text)
             label.setStyleSheet(
-                f"font-size:{styles.fs_summary(11)}px;"
+                f"font-size:{styles.fs_summary(12)}px;"
                 f"{'font-weight:800;' if bold else ''}"
             )
             label.setSizePolicy(
@@ -269,41 +252,23 @@ class SummaryView(QWidget):
             )
             # v0.22.0: панель «Сводка» вдвое у́же, поэтому длинные
             # подписи («Задолженность покупателей») переносятся на
-            # вторую строку, а не обрезаются.
-            label.setWordWrap(True)
+            # вторую строку, а не обрезаются. v0.44.0: подписи из
+            # ``nowrap`` («Реализация Покупателям») стоят в одну строчку.
+            label.setWordWrap(key not in nowrap)
             value = QLabel(fmt_money_plain(Decimal("0")))
             value.setAlignment(
                 Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter
             )
             value.setStyleSheet(
-                f"font-size:{styles.fs_summary(11)}px;"
+                f"font-size:{styles.fs_summary(12)}px;"
                 f"{'font-weight:800;' if bold else ''}"
             )
             self._captions[key] = label
             self._values[key] = value
-            if key in marked:
-                # Подпись и квадратик — в одной ячейке сетки, чтобы
-                # метка всегда стояла сразу за текстом подписи.
-                cell = QWidget()
-                cell_layout = QHBoxLayout(cell)
-                cell_layout.setContentsMargins(0, 0, 0, 0)
-                cell_layout.setSpacing(4)
-                cell_layout.addWidget(label)
-                mark = self._green_mark()
-                cell_layout.addWidget(mark)
-                cell_layout.addStretch(1)
-                self._marks[key] = mark
-                grid.addWidget(cell, row, 0)
-            else:
-                grid.addWidget(label, row, 0)
+            grid.addWidget(label, row, 0)
             grid.addWidget(value, row, 1)
         grid.setColumnStretch(0, 1)
         layout.addLayout(grid)
-
-    def has_mark(self, key: str) -> bool:
-        """Стоит ли у строки цветной квадратик (удобно для тестов)."""
-
-        return key in self._marks
 
     def value_text(self, key: str) -> str:
         """Показанное значение строки (удобно для тестов)."""
@@ -403,8 +368,10 @@ class SummaryView(QWidget):
         self._set_value("cust_total", customers.total)
         # v0.43.0: итоги ККМ за весь месяц выбранной даты (с 1-го по
         # последнее число) — реестр «Отчеты ККМ» активной базы.
-        self._set_value("month_kkm_reports", month.kkm_reports)
-        self._set_value("month_kkm_returns", month.kkm_returns)
+        # v0.44.0: «Итого по Отчетам ККМ» — за вычетом возвратов.
+        self._set_value("month_kkm_total", month.kkm_total)
         # v0.43.0: только выписанная реализация (зелёная метка).
         self._set_value("month_sale_invoiced", month.sale_invoiced)
-        self._set_value("month_total", month.kkm_total)
+        # «Итого за месяц» (v0.44.0) = ККМ за вычетом возвратов +
+        # выписанная реализация покупателям.
+        self._set_value("month_total", month.month_total)

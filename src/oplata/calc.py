@@ -194,12 +194,18 @@ class MonthTotals:
     месяц (с 1-го по последнее число), а не приход и оплаты: строки
     «Приход с начала месяца» и «Оплаты с начала месяца» убраны по
     просьбе пользователя.
+
+    v0.44.0: отдельной строки «Итого Возврат покупателя» больше нет —
+    «Итого по Отчетам ККМ» показывается **за вычетом возвратов**, а
+    «Итого за месяц» = эта сумма плюс выписанная реализация покупателям.
     """
 
-    kkm_reports: Decimal = ZERO  # «Итого по Отчетам ККМ»
-    kkm_returns: Decimal = ZERO  # «Итого Возврат покупателя»
-    kkm_total: Decimal = ZERO    # «Итого за месяц» = отчеты − возвраты
+    kkm_reports: Decimal = ZERO    # сумма строк «Отчет ККМ»
+    kkm_returns: Decimal = ZERO    # сумма строк «Возврат покупателя»
+    kkm_total: Decimal = ZERO      # «Итого по Отчетам ККМ» = отчеты − возвраты
     sale_invoiced: Decimal = ZERO  # «Реализация Покупателям» (выписанная)
+    # v0.44.0: «Итого за месяц» = ККМ за вычетом возвратов + реализация.
+    month_total: Decimal = ZERO
 
 
 def _iso_day(value: str) -> date | None:
@@ -759,14 +765,14 @@ def month_totals(data: AppData, on_date: date) -> MonthTotals:
     КОРЕЛИЧИ свои цифры.
     """
 
-    reports, returns, total = kkm_month_totals(data, on_date.year, on_date.month)
+    reports, returns, net = kkm_month_totals(data, on_date.year, on_date.month)
+    sale = month_realization_invoiced(data, on_date.year, on_date.month)
     return MonthTotals(
         kkm_reports=reports,
         kkm_returns=returns,
-        kkm_total=total,
-        sale_invoiced=month_realization_invoiced(
-            data, on_date.year, on_date.month
-        ),
+        kkm_total=net,
+        sale_invoiced=sale,
+        month_total=net + sale,
     )
 
 
