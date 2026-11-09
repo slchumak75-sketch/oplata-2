@@ -12,6 +12,8 @@ from oplata.models import (
     CASH_SOURCE,
     KIND_INCOME,
     KIND_PAYMENT,
+    KKM_KIND_REPORT,
+    KKM_KIND_RETURN,
     AppData,
     CashReceipt,
     Counterparty,
@@ -19,11 +21,13 @@ from oplata.models import (
     add_cash_receipt,
     add_customer_receipt,
     add_delivery,
+    add_realization,
     add_supplier_payment,
     cash_receipt_amount,
     daily_operation_total,
     seed_data,
     set_daily_operation,
+    set_kkm_amount,
 )
 from oplata.storage import DataStore
 
@@ -696,13 +700,13 @@ def test_payments_summary_rows_keep_vat_rate_of_the_kind():
     assert summary.total.total == Decimal("1540.00")
 
 
-def test_customer_payment_is_income_in_funds_and_month():
+def test_customer_payment_is_income_in_funds_only():
     """v0.35.0: деньги покупателя — поступление (плюс), поставщику — оплата.
 
     Правило пользователя: сумма, внесённая в блоке «Поступление» по
     строке «Покупатели», идёт **плюсом** — в «Поступление за день» и
-    в остаток. В «Приход с начала месяца» (v0.37.0) она **не** идёт:
-    там считается только пришедший товар.
+    в остаток. В блок «Месяц» деньги покупателя не попадают: с v0.43.0
+    там итоги реестра «Отчеты ККМ», а не приход и оплаты.
     """
 
     data = AppData()
@@ -721,11 +725,11 @@ def test_customer_payment_is_income_in_funds_and_month():
     # Оплата покупателя уменьшает его задолженность (Реализация − Оплата).
     assert calc.customer_debt_amount(data, customer) == Decimal("-1500")
 
-    # v0.37.0: «Приход с начала месяца» — только пришедший товар: здесь
-    # поставок нет, поэтому 0; деньги покупателя (1500) не считаются.
+    # v0.43.0: в блоке «Месяц» — итоги ККМ; записей нет, поэтому нули.
     month = calc.month_totals(data, date(2026, 10, 27))
-    assert month.income == Decimal("0")
-    assert month.payments == Decimal("1000")    # «Оплаты с начала месяца»
+    assert month.kkm_reports == Decimal("0")
+    assert month.kkm_returns == Decimal("0")
+    assert month.kkm_total == Decimal("0")
 
     # Оплата без контрагента (старые данные) остаётся оплатой.
     data.operations.append(
@@ -736,39 +740,83 @@ def test_customer_payment_is_income_in_funds_and_month():
     assert extra.payments == Decimal("1100")
 
 
-def test_month_income_counts_only_deliveries():
-    """v0.37.0: «Приход с начала месяца» — только пришедший товар.
+def test_month_totals_count_kkm_reports_for_whole_month():
+    """v0.43.0: блок «Месяц» — итоги реестра ККМ за весь месяц.
 
-    Поставка (операция «Приход») входит в приход; деньги, пришедшие
-    от покупателя, — нет (v0.35.0 их прибавляла, из-за чего в одной
-    цифре смешивались товар и деньги).
+    Считаются **все** дни календарного месяца выбранной даты — с 1-го
+    по последнее число, а не «с начала месяца по выбранный день»:
+    запись 31.10 видна и тогда, когда в «Сводке» выбрано 5.10.
     """
 
     data = AppData()
+    # Отчеты ККМ: 1 000 первым числом и 500 — последним (31.10).
+    set_kkm_amount(data, "2026-10-01", 0, KKM_KIND_REPORT, Decimal("1000"))
+    set_kkm_amount(data, "2026-10-31", 0, KKM_KIND_REPORT, Decimal("500"))
+    # Возврат покупателя — отдельная строка дня (МИР: слот 2).
+    set_kkm_amount(data, "2026-10-31", 2, KKM_KIND_RETURN, Decimal("120"))
+    # Соседний месяц не должен попасть в итог.
+    set_kkm_amount(data, "2026-11-01", 0, KKM_KIND_REPORT, Decimal("7000"))
+    set_kkm_amount(data, "2026-09-30", 0, KKM_KIND_REPORT, Decimal("8000"))
+
+    for day in (1, 5, 27, 31):
+        month = calc.month_totals(data, date(2026, 10, day))
+        assert month.kkm_reports == Decimal("1500")   # 1 000 + 500
+        assert month.kkm_returns == Decimal("120")
+        assert month.kkm_total == Decimal("1380")     # отчеты − возвраты
+
+    # Ноябрь — только своя запись.
+    november = calc.month_totals(data, date(2026, 11, 15))
+    assert november.kkm_reports == Decimal("7000")
+    assert november.kkm_returns == Decimal("0")
+    assert november.kkm_total == Decimal("7000")
+
+    # Деньги операций в блок «Месяц» больше не попадают (v0.43.0).
     supplier = Counterparty(name="Поставщик")
-    customer = Counterparty(name="Покупатель")
     data.suppliers = [supplier]
-    data.customers = [customer]
-    # Поставка на 3 000 — это пришедший товар.
     add_delivery(data, supplier.id, "2026-10-27", "2026-11-03", Decimal("3000"))
-    # Деньги покупателя — поступление, но не приход месяца.
-    add_customer_receipt(data, customer.id, "2026-10-27", Decimal("1500"))
-    # Оплата поставщику — расход.
     add_supplier_payment(data, supplier.id, "2026-10-27", Decimal("1000"))
-
     month = calc.month_totals(data, date(2026, 10, 27))
-    assert month.income == Decimal("3000")    # только товар
-    assert month.payments == Decimal("1000")
-
-    # День покупателя всё равно идёт плюсом в «Средства» (v0.35.0).
+    assert month.kkm_reports == Decimal("1500")   # поставка не прибавилась
+    assert month.kkm_returns == Decimal("120")
+    # Поставка и оплата по-прежнему видны в блоке «Средства» (v0.35.0).
     funds = calc.funds_totals(data, date(2026, 10, 27))
-    assert funds.income == Decimal("1500")
     assert funds.payments == Decimal("1000")
 
-    # За пределами месяца поставка не считается.
-    add_delivery(data, supplier.id, "2026-09-30", "2026-10-07", Decimal("500"))
-    month = calc.month_totals(data, date(2026, 10, 27))
-    assert month.income == Decimal("3000")
+
+def test_month_realization_invoiced_counts_only_green_marked_sales():
+    """v0.43.0: «Реализация Покупателям» — только выписанная реализация.
+
+    В строку идут операции «Реализация» с зелёной меткой
+    (``invoiced=True``) за весь календарный месяц: реализация «в
+    работе», соседний месяц, приход поставщика и оплата покупателя в
+    сумму не входят.
+    """
+
+    data = AppData()
+    customer = Counterparty(name="Покупатель")
+    supplier = Counterparty(name="Поставщик")
+    data.customers = [customer]
+    data.suppliers = [supplier]
+
+    def sale(day: str, amount: str, invoiced: bool) -> None:
+        op = add_realization(data, customer.id, day, Decimal(amount))
+        op.invoiced = invoiced
+
+    sale("2026-10-01", "4000", True)     # выписано, первое число
+    sale("2026-10-31", "600", True)      # выписано, последнее число
+    sale("2026-10-15", "900", False)     # в работе — не считается
+    sale("2026-11-05", "777", True)      # другой месяц
+    # Приход поставщика и оплата покупателя в реализацию не входят.
+    add_delivery(data, supplier.id, "2026-10-10", "2026-10-20", Decimal("3000"))
+    add_customer_receipt(data, customer.id, "2026-10-20", Decimal("1500"))
+
+    assert calc.month_realization_invoiced(data, 2026, 10) == Decimal("4600")
+    assert calc.month_realization_invoiced(data, 2026, 11) == Decimal("777")
+    assert calc.month_realization_invoiced(data, 2026, 12) == Decimal("0")
+
+    # Строка есть и в блоке «Месяц» целиком.
+    totals = calc.month_totals(data, date(2026, 10, 20))
+    assert totals.sale_invoiced == Decimal("4600")
 
 
 def test_funds_movement_puts_customer_payment_into_income_column():

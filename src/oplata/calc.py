@@ -188,10 +188,18 @@ class CustomerDebtTotals:
 
 @dataclass(frozen=True)
 class MonthTotals:
-    """Блок «Месяц» плашки «Сводка»."""
+    """Блок «Месяц» плашки «Сводка» (v0.43.0).
 
-    income: Decimal = ZERO       # приход с начала месяца
-    payments: Decimal = ZERO     # оплаты с начала месяца
+    С v0.43.0 в блоке — **итоги реестра ККМ** за весь календарный
+    месяц (с 1-го по последнее число), а не приход и оплаты: строки
+    «Приход с начала месяца» и «Оплаты с начала месяца» убраны по
+    просьбе пользователя.
+    """
+
+    kkm_reports: Decimal = ZERO  # «Итого по Отчетам ККМ»
+    kkm_returns: Decimal = ZERO  # «Итого Возврат покупателя»
+    kkm_total: Decimal = ZERO    # «Итого за месяц» = отчеты − возвраты
+    sale_invoiced: Decimal = ZERO  # «Реализация Покупателям» (выписанная)
 
 
 def _iso_day(value: str) -> date | None:
@@ -708,39 +716,58 @@ def customer_debt_totals(
     return CustomerDebtTotals(total=total, week=week)
 
 
-def month_totals(data: AppData, on_date: date) -> MonthTotals:
-    """Блок «Месяц»: приход и оплаты с 1-го числа месяца по ``on_date``.
+def month_realization_invoiced(data: AppData, year: int, month: int) -> Decimal:
+    """Строка «Реализация Покупателям»: выписанная реализация за месяц.
 
-    v0.37.0: «Приход с начала месяца» — это **только пришедший товар**:
-    сумма операций «Приход» (поставки поставщиков). Деньги, пришедшие
-    от покупателей, сюда **не** входят — в v0.35.0 они прибавлялись, и
-    в одной цифре смешивались товар и деньги. Правило v0.35.0 про
-    **день** («Поступление за день», «Итого остаток») не изменилось.
+    v0.43.0, правило пользователя: в блоке «Месяц» показывается сумма
+    **всей реализации покупателям за месяц с зелёной меткой**
+    («Выписано»). Считаются операции «Реализация» с ``invoiced=True``
+    за весь календарный месяц — с 1-го по последнее число.
+
+    Реализация без метки («в работе») сюда **не** входит, оплаты **не**
+    вычитаются: строка показывает оборот по выписанным документам, а не
+    долг покупателей (он по-прежнему в блоке «Задолженность
+    покупателей»).
     """
 
-    start = on_date.replace(day=1)
-    income = ZERO
-    payments = ZERO
+    prefix = f"{year:04d}-{month:02d}-"
     customer_ids = {item.id for item in data.customers}
+    total = ZERO
     for op in data.operations:
-        day = _iso_day(op.date)
-        if day is None or not (start <= day <= on_date):
+        if op.kind != KIND_SALE or not op.invoiced:
             continue
-        if op.kind == KIND_INCOME:
-            income += operation_amount(op)
-        elif op.kind == KIND_PAYMENT:
-            # v0.37.0: деньги покупателя в блоке «Месяц» не считаются
-            # ни приходом (там только товар), ни оплатой (это деньги,
-            # которые ушли). Оплаты — поставщикам и без контрагента.
-            if op.counterparty_id not in customer_ids:
-                payments += operation_amount(op)
-    for payment in data.other_payments:
-        day = _iso_day(payment.date)
-        if day is None or not (start <= day <= on_date):
+        # Считаем только покупателей: у поставщиков «Реализации» нет.
+        if op.counterparty_id not in customer_ids:
             continue
-        if payment.direction != INCOMING:
-            payments += other_payment_amount(payment)
-    return MonthTotals(income=income, payments=payments)
+        if not (op.date or "").startswith(prefix):
+            continue
+        total += operation_amount(op)
+    return total
+
+
+def month_totals(data: AppData, on_date: date) -> MonthTotals:
+    """Блок «Месяц» плашки «Сводка»: итоги ККМ за месяц ``on_date``.
+
+    **v0.43.0:** в блоке больше нет «Приход с начала месяца» и «Оплаты с
+    начала месяца» (убраны по просьбе пользователя). Теперь это итоги
+    реестра «Отчеты ККМ» за **весь календарный месяц** — с 1-го по
+    последнее число, независимо от выбранного дня:
+    ``Итого по Отчетам ККМ``, ``Итого Возврат покупателя`` и
+    ``Итого за месяц`` (отчеты минус возвраты).
+
+    Считает :func:`kkm_month_totals` по записям активной базы: у МИР и
+    КОРЕЛИЧИ свои цифры.
+    """
+
+    reports, returns, total = kkm_month_totals(data, on_date.year, on_date.month)
+    return MonthTotals(
+        kkm_reports=reports,
+        kkm_returns=returns,
+        kkm_total=total,
+        sale_invoiced=month_realization_invoiced(
+            data, on_date.year, on_date.month
+        ),
+    )
 
 
 # ---------------------------------------------------------------------------

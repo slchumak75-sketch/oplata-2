@@ -44,6 +44,32 @@ from ..widgets import AmountLineEdit, arrow_button
 
 COL_DATE, COL_KIND, COL_AMOUNT = range(3)
 HEADERS = ("Дата", "Отчет", "Сумма")
+# v0.43.0: таблица стоит **тремя вертикальными рядами** по 10 дней —
+# так весь месяц виден сразу, без вертикальной прокрутки. Между
+# рядами — узкое вертикальное поле-разделитель (колонка без данных).
+BLOCKS = 3
+DAYS_PER_BLOCK = 10
+COLUMNS_PER_BLOCK = len(HEADERS)
+SEPARATOR_WIDTH = 8
+COLUMN_COUNT = BLOCKS * COLUMNS_PER_BLOCK + (BLOCKS - 1)
+SEPARATOR_COLUMNS = tuple(
+    block * (COLUMNS_PER_BLOCK + 1) + COLUMNS_PER_BLOCK
+    for block in range(BLOCKS - 1)
+)
+
+
+def _block_first_column(block: int) -> int:
+    """Первая колонка вертикального ряда ``block``."""
+
+    return block * (COLUMNS_PER_BLOCK + 1)
+
+
+def _is_amount_column(column: int) -> bool:
+    """Колонка «Сумма» одного из трёх рядов (v0.43.0)."""
+
+    return column not in SEPARATOR_COLUMNS and (
+        column % (COLUMNS_PER_BLOCK + 1) == COL_AMOUNT
+    )
 # v0.42.0: данные ячейки — «дата|номер строки»; по ним обработчик
 # находит запись, которую надо сохранить.
 META_ROLE = Qt.ItemDataRole.UserRole
@@ -80,19 +106,48 @@ class KkmView(QWidget):
         root.addLayout(self._build_toolbar())
 
         self.table = QTableWidget()
-        self.table.setColumnCount(len(HEADERS))
-        self.table.setHorizontalHeaderLabels(list(HEADERS))
+        self.table.setColumnCount(COLUMN_COUNT)
+        # Подписи повторяются для каждого ряда; у разделителей их нет.
+        self.table.setHorizontalHeaderLabels(
+            [
+                HEADERS[column % (COLUMNS_PER_BLOCK + 1)]
+                if column not in SEPARATOR_COLUMNS
+                else ""
+                for column in range(COLUMN_COUNT)
+            ]
+        )
         self.table.verticalHeader().setVisible(False)
         self.table.setStyleSheet(
             f"QTableWidget{{font-size:{styles.fs(12)}px}}"
             f"{styles.WIDE_SCROLLBAR_ON_TABLE}"
         )
-        # Горизонтальной прокрутки нет: дата и вид — по содержимому,
-        # а колонка «Сумма» занимает всё оставшееся место.
+        # Прокрутки нет ни по вертикали, ни по горизонтали: месяц
+        # делится на три ряда по 10 дней, а высота строк растягивается
+        # под размер окна (v0.43.0).
+        self.table.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        self.table.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        rows_header = self.table.verticalHeader()
+        rows_header.setSectionResizeMode(QHeaderView.ResizeMode.Stretch)
+        rows_header.setMinimumSectionSize(14)
         header = self.table.horizontalHeader()
-        header.setSectionResizeMode(COL_DATE, QHeaderView.ResizeMode.ResizeToContents)
-        header.setSectionResizeMode(COL_KIND, QHeaderView.ResizeMode.ResizeToContents)
-        header.setSectionResizeMode(COL_AMOUNT, QHeaderView.ResizeMode.Stretch)
+        for block in range(BLOCKS):
+            first = _block_first_column(block)
+            header.setSectionResizeMode(
+                first + COL_DATE, QHeaderView.ResizeMode.ResizeToContents
+            )
+            header.setSectionResizeMode(
+                first + COL_KIND, QHeaderView.ResizeMode.ResizeToContents
+            )
+            header.setSectionResizeMode(
+                first + COL_AMOUNT, QHeaderView.ResizeMode.Stretch
+            )
+        for column in SEPARATOR_COLUMNS:
+            header.setSectionResizeMode(column, QHeaderView.ResizeMode.Fixed)
+        # Разделитель — узкая полоска: шире минимума по умолчанию не
+        # пускаем, иначе вместо линии получается широкая колонка.
+        header.setMinimumSectionSize(SEPARATOR_WIDTH)
+        for column in SEPARATOR_COLUMNS:
+            self.table.setColumnWidth(column, SEPARATOR_WIDTH)
         self.table.setEditTriggers(QAbstractItemView.EditTrigger.AllEditTriggers)
         self.table.setItemDelegate(_AmountDelegate(self.table))
         self.table.itemChanged.connect(self._on_item_changed)
@@ -175,38 +230,69 @@ class KkmView(QWidget):
         last = calendar.monthrange(year, month)[1]
         return [date(year, month, day) for day in range(1, last + 1)]
 
+    def _day_blocks(self, days: list[date]) -> list[list[date]]:
+        """Разбить дни месяца на ``BLOCKS`` вертикальных рядов по 10 дней.
+
+        v0.43.0: весь месяц должен быть виден сразу, поэтому дни идут не
+        одним столбцом, а тремя: 1–10, 11–20, 21–31 (в последнем ряду
+        остаток — 8–11 дней в зависимости от месяца).
+        """
+
+        size = len(days)
+        per_block = min(DAYS_PER_BLOCK, size)
+        blocks = [
+            days[start : start + per_block]
+            for start in range(0, size, per_block)
+        ]
+        # Месяц в 31 день: третий ряд забирает остаток (11-й день).
+        if len(blocks) > BLOCKS:
+            blocks = blocks[: BLOCKS - 1] + [
+                days[(BLOCKS - 1) * per_block :]
+            ]
+        return blocks
+
     def _fill_table(self) -> None:
         days = self._month_days()
+        blocks = self._day_blocks(days)
         kinds = self._day_kinds()
         today = date.today()
+        rows = max((len(block) for block in blocks), default=0) * len(kinds)
         self._rebuilding = True
         try:
-            self.table.setRowCount(len(days) * len(kinds))
-            row = 0
-            for day in days:
-                day_iso = day.isoformat()
-                today_bg = (
-                    styles.WEEK_TABLE_TODAY_GREEN_BODY if day == today else None
-                )
-                for slot, kind in enumerate(kinds):
-                    self._put(
-                        row, COL_DATE, fmt_date(day), bg=today_bg,
-                        align=Qt.AlignmentFlag.AlignCenter,
+            self.table.setRowCount(rows)
+            for block_index, block in enumerate(blocks):
+                first = _block_first_column(block_index)
+                for day_index, day in enumerate(block):
+                    day_iso = day.isoformat()
+                    today_bg = (
+                        styles.WEEK_TABLE_TODAY_GREEN_BODY if day == today else None
                     )
-                    self._put(
-                        row, COL_KIND, KKM_KIND_TITLES[kind], bg=today_bg,
-                    )
-                    record = find_kkm_report(self.store.data, day_iso, slot)
-                    amount = Decimal(record.amount) if record is not None else ZERO
-                    self._put(
-                        row, COL_AMOUNT, _money_text(amount), bg=today_bg,
-                        editable=not self.read_only,
-                        align=Qt.AlignmentFlag.AlignRight,
-                    )
-                    self.table.item(row, COL_AMOUNT).setData(
-                        META_ROLE, f"{day_iso}|{slot}"
-                    )
-                    row += 1
+                    for slot, kind in enumerate(kinds):
+                        row = day_index * len(kinds) + slot
+                        self._put(
+                            row, first + COL_DATE, fmt_date(day), bg=today_bg,
+                            align=Qt.AlignmentFlag.AlignCenter,
+                        )
+                        self._put(
+                            row, first + COL_KIND, KKM_KIND_TITLES[kind],
+                            bg=today_bg,
+                        )
+                        record = find_kkm_report(self.store.data, day_iso, slot)
+                        amount = (
+                            Decimal(record.amount) if record is not None else ZERO
+                        )
+                        self._put(
+                            row, first + COL_AMOUNT, _money_text(amount),
+                            bg=today_bg, editable=not self.read_only,
+                            align=Qt.AlignmentFlag.AlignRight,
+                        )
+                        self.table.item(row, first + COL_AMOUNT).setData(
+                            META_ROLE, f"{day_iso}|{slot}"
+                        )
+            # Разделители: узкие колонки с заливкой, без данных и ввода.
+            for column in SEPARATOR_COLUMNS:
+                for row in range(rows):
+                    self._put(row, column, "", bg=styles.BORDER)
         finally:
             self._rebuilding = False
 
@@ -244,7 +330,7 @@ class KkmView(QWidget):
     def _on_item_changed(self, item: QTableWidgetItem) -> None:
         """Сохранить введённую сумму (v0.42.0)."""
 
-        if self._rebuilding or item.column() != COL_AMOUNT:
+        if self._rebuilding or not _is_amount_column(item.column()):
             return
         meta = item.data(META_ROLE)
         if not isinstance(meta, str) or "|" not in meta:
