@@ -52,7 +52,7 @@ oplata-2/
                                  # v0.20.0: журнал вида по клику (JournalPopup), карточка нового вида оплаты
       operations_view.py        # Журнал операций (окно из карточки контрагента)
       summary_view.py            # Плашка «Сводка»: блоки построчно (средства, долги поставщиков и покупателей, месяц) + печать
-      kkm_view.py               # Отчеты ККМ (v0.42.0): таблица на месяц, строки дня по KKM_DAY_KINDS, итог тремя цифрами
+      kkm_view.py               # Отчеты ККМ (v0.42.0): три вертикальных ряда по 10 дней (v0.43.0), строки дня по KKM_DAY_KINDS, итог тремя цифрами
       data_view.py              # Конфигурация: «Настройка календаря» + «Данные»
                               # (перенос остатков на 1 января, v0.14.0) + «Администрирование»
     dialogs/
@@ -124,6 +124,9 @@ data.json ──DataStore──> AppData ──> экраны (views) ──кл
 Заглушки «Сводки»: `summary_totals`, `supplier_debt_row`, `overdue_payments`.
 Реестр ККМ (v0.42.0, своих денежных расчётов не имеет):
 `kkm_month_totals(data, year, month) -> (reports, returns, diff)`.
+Блок «Месяц» плашки «Сводка» (v0.43.0): `month_totals(data, on_date)`
+собирает итоги ККМ за весь месяц и `month_realization_invoiced(data,
+year, month)` — выписанную реализацию покупателям за месяц.
 Формулы поставщиков (v0.3.0): `payment_due_date(delivery, counterparty,
 day_overrides)` (дата + отсрочка, режимы без отсрочки, перенос с выходного),
 `debt_by_due_date(data, counterparty)` (архивные суммы поставок по срокам;

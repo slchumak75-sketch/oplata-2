@@ -146,7 +146,10 @@ def test_main_window_all_pages(qt_app, store):
     summary = window.summary_view
     assert summary.caption_text("funds") == "Остаток на счёте"
     assert summary.caption_text("debt_total") == "Всего задолженность"
-    assert summary.caption_text("month_income") == "Приход с начала месяца"
+    # v0.43.0: в блоке «Месяц» — итоги реестра ККМ, а не приход и оплаты.
+    assert summary.caption_text("month_kkm_reports") == "Итого по Отчетам ККМ"
+    assert summary.caption_text("month_kkm_returns") == "Итого Возврат покупателя"
+    assert summary.caption_text("month_total") == "Итого за месяц"
     assert summary.caption_text("plan_1").startswith("Оплата ")
     # В покупателях справа «0»
     assert window.customers_view.right_value_label.text() == "0"
@@ -1902,15 +1905,25 @@ def test_summary_panel_shows_three_blocks_line_by_line(qt_app, store):
     assert view.caption_text("plan_4") == "Оплата 23.11 – 29.11"
     assert view.value_text("plan_4") == "0,00"
 
-    # Блок «Месяц»: приход 05.10 + 10.10 + 20.10, оплаты 27.10 + аренда.
-    assert view.value_text("month_income") == "2 100,00"
-    assert view.value_text("month_payments") == "1 450,00"
+    # Блок «Месяц» (v0.43.0): не приход и оплаты, а итоги реестра
+    # «Отчеты ККМ» за октябрь целиком. В этой базе записей ККМ нет.
+    assert view.value_text("month_kkm_reports") == "0,00"
+    assert view.value_text("month_kkm_returns") == "0,00"
+    assert view.value_text("month_total") == "0,00"
+    # «Реализация Покупателям» — с зелёным квадратиком «Выписано».
+    assert view.caption_text("month_sale_invoiced") == "Реализация Покупателям"
+    assert view.value_text("month_sale_invoiced") == "0,00"
+    assert view.has_mark("month_sale_invoiced")
+    assert not view.has_mark("month_kkm_reports")
+    assert "month_income" not in view._values
+    assert "month_payments" not in view._values
 
     # Все значения построчно: подписи и числа лежат в сетке блоками.
     assert view.panel.isVisible()
     # Блок поставщиков: всего, на неделе, просроченный платёж
     # (v0.16.0) + четыре недели оплаты (v0.22.1: без «на сегодня»).
-    assert len(view._values) == len(view._captions) == 4 + 7 + 1 + 2
+    # v0.43.0: в блоке «Месяц» четыре строки (три ККМ + реализация).
+    assert len(view._values) == len(view._captions) == 4 + 7 + 1 + 4
     # Блок «Задолженность покупателей» пока пуст (покупателей нет).
     assert view.value_text("cust_total") == "0,00"
     window.close()
@@ -2474,6 +2487,10 @@ def test_summary_panel_font_is_larger_others_unchanged(qt_app, store):
     v0.31.0: панель уменьшена на 20% по просьбе пользователя — кегли
     считаются от ``SUMMARY_FONT_SCALE`` (1,5 → 1,2), а остальная
     программа по-прежнему при обычном шрифте.
+
+    v0.43.0: в блоке «Месяц» стало три строки вместо двух, и плашка
+    перестала влезать на экран целиком — кегль уменьшили ещё
+    (1,2 → 1,05), заголовок панели и строки стали мельче.
     """
 
     from oplata import styles
@@ -2482,19 +2499,20 @@ def test_summary_panel_font_is_larger_others_unchanged(qt_app, store):
     window = MainWindow(store)
     summary = window.summary_view
     # Кегли блоков «Сводки» — крупнее обычных.
-    assert summary.panel.toggle.font().pixelSize() == styles.fs_summary(15)
+    assert summary.panel.toggle.font().pixelSize() == styles.fs_summary(14)
     caption = next(iter(summary._captions.values()))
     value = next(iter(summary._values.values()))
-    assert caption.font().pixelSize() == styles.fs_summary(12)
-    assert value.font().pixelSize() == styles.fs_summary(12)
-    assert styles.SUMMARY_FONT_SCALE == 1.2
+    assert caption.font().pixelSize() == styles.fs_summary(11)
+    assert value.font().pixelSize() == styles.fs_summary(11)
+    assert styles.SUMMARY_FONT_SCALE == 1.05
     assert styles.fs_summary(12) == int(
         round(12 * styles.FONT_SCALE * styles.SUMMARY_FONT_SCALE)
     )
     # Панель осталась крупнее остальной программы, но не слишком.
-    assert styles.fs_summary(12) > styles.fs(12)
-    assert styles.fs_summary(15) == 23
-    assert styles.fs_summary(12) == 19
+    assert styles.fs_summary(11) > styles.fs(11)
+    # v0.31.0 было 20 и 19 (кегль 1,2); v0.43.0 — 20 и 16 (кегль 1,05).
+    assert styles.fs_summary(15) == 20
+    assert styles.fs_summary(12) == 16
 
     # Остальная программа осталась при обычном шрифте (общее +50% из
     # v0.23.2 отменено).
@@ -5129,8 +5147,8 @@ def test_incoming_summary_has_no_vat_column(qt_app, store):
 def test_customer_income_grows_day_and_month_totals(qt_app, store):
     """v0.35.0: поступление покупателя идёт плюсом в «Средства».
 
-    v0.37.0: в «Приход с начала месяца» деньги покупателя больше
-    **не** входят — там только пришедший товар.
+    v0.43.0: в блоке «Месяц» вместо прихода и оплат — итоги реестра
+    «Отчеты ККМ», поэтому деньги покупателя там не показываются вовсе.
     """
     from datetime import date
     from decimal import Decimal
@@ -5168,10 +5186,12 @@ def test_customer_income_grows_day_and_month_totals(qt_app, store):
     assert view.value_text("income") == "1 500,00"
     assert view.value_text("payments") == "1 000,00"
     assert view.value_text("balance") == "500,00"
-    # Блок «Месяц» (v0.37.0): «Приход» — только товар, поставок нет,
-    # поэтому 0,00; деньги покупателя туда не входят. Оплаты — 1 000.
-    assert view.value_text("month_income") == "0,00"
-    assert view.value_text("month_payments") == "1 000,00"
+    # Блок «Месяц» (v0.43.0): прихода и оплат там больше нет — только
+    # итоги реестра ККМ за октябрь; записей ККМ в этой базе нет, поэтому
+    # все три строки нулевые (деньги покупателя в блок не попадают).
+    assert view.value_text("month_kkm_reports") == "0,00"
+    assert view.value_text("month_kkm_returns") == "0,00"
+    assert view.value_text("month_total") == "0,00"
     # Задолженность покупателя уменьшилась: 5 000 − 1 500.
     assert view.value_text("cust_total") == "3 500,00"
     window.close()
@@ -5698,24 +5718,59 @@ def test_clear_base_says_when_nothing_to_clear(qt_app, store, monkeypatch, tmp_p
 
 
 def test_kkm_table_shows_month_with_repeating_days(qt_app, store):
-    """v0.42.0: таблица на месяц, МИР — три строки на дату, КОРЕЛИЧИ — две."""
+    """v0.42.0: таблица на месяц, МИР — три строки на дату, КОРЕЛИЧИ — две.
+
+    v0.43.0: месяц стоит **тремя вертикальными рядами по 10 дней**
+    (1–10, 11–20, 21–…), ряды разделены узким вертикальным полем,
+    прокрутки нет.
+    """
     from datetime import date
 
-    from oplata.app import MainWindow
+    from oplata.app import IDX_KKM, MainWindow
     from oplata.models import KKM_DAY_KINDS
-    from oplata.views.kkm_view import COL_DATE, COL_KIND, HEADERS
+    from oplata.views.kkm_view import (
+        BLOCKS,
+        COLUMNS_PER_BLOCK,
+        COL_DATE,
+        COL_KIND,
+        DAYS_PER_BLOCK,
+        HEADERS,
+        SEPARATOR_COLUMNS,
+        _block_first_column,
+    )
 
     window = MainWindow(store)
+    # Размер как у рабочего окна: три ряда по 10 дней должны влезать
+    # по высоте без прокрутки.
+    window.resize(1600, 900)
     window.show()
+    window.show_page(IDX_KKM)
     qt_app.processEvents()
     view = window.kkm_view
     view.set_month(date(2026, 11, 1))
     qt_app.processEvents()
     table = view.table
 
-    assert [table.horizontalHeaderItem(c).text() for c in range(3)] == list(HEADERS)
-    # В ноябре 30 дней; МИР — по три строки на каждый день.
-    assert table.rowCount() == 30 * len(KKM_DAY_KINDS["mir"])
+    # Подписи повторяются в каждом ряду; у разделителей их нет.
+    for block in range(BLOCKS):
+        first = _block_first_column(block)
+        assert [
+            table.horizontalHeaderItem(first + shift).text()
+            for shift in range(COLUMNS_PER_BLOCK)
+        ] == list(HEADERS)
+    assert all(table.horizontalHeaderItem(c).text() == "" for c in SEPARATOR_COLUMNS)
+    # Между рядами — узкое поле (8 точек), а не полноценная колонка.
+    assert all(table.columnWidth(c) <= 10 for c in SEPARATOR_COLUMNS)
+
+    # В ноябре 30 дней; МИР — по три строки на каждый день. Высота
+    # таблицы = самому длинному ряду (10 дней), а не всему месяцу.
+    assert table.rowCount() == DAYS_PER_BLOCK * len(KKM_DAY_KINDS["mir"])
+    # Первый ряд — 1–10, второй — 11–20, третий — 21–30.
+    for block, first_day in enumerate((1, 11, 21)):
+        first = _block_first_column(block)
+        assert table.item(0, first + COL_DATE).text() == f"{first_day:02d}.11.2026"
+        assert table.item(3, first + COL_DATE).text() == f"{first_day + 1:02d}.11.2026"
+
     # Порядок строк внутри дня: ККМ, ККМ, Возврат покупателя.
     assert [table.item(row, COL_KIND).text() for row in range(3)] == [
         "Отчет ККМ",
@@ -5724,17 +5779,17 @@ def test_kkm_table_shows_month_with_repeating_days(qt_app, store):
     ]
     # Одна и та же дата повторяется три раза подряд.
     assert [table.item(row, COL_DATE).text() for row in range(3)] == ["01.11.2026"] * 3
-    assert table.item(3, COL_DATE).text() == "02.11.2026"
-    # Горизонтальной прокрутки нет: сумма занимает всё оставшееся место.
-    assert table.horizontalScrollBarPolicy() is (
-        Qt.ScrollBarPolicy.ScrollBarAlwaysOff
-    ) or table.horizontalScrollBar().maximum() == 0
+    # Прокрутки нет ни по вертикали, ни по горизонтали (просьба v0.43.0).
+    assert table.verticalScrollBarPolicy() is Qt.ScrollBarPolicy.ScrollBarAlwaysOff
+    assert table.verticalScrollBar().maximum() == 0
+    assert table.horizontalScrollBarPolicy() is Qt.ScrollBarPolicy.ScrollBarAlwaysOff
+    assert table.horizontalScrollBar().maximum() == 0
 
     # В базе КОРЕЛИЧИ на день приходится две строки: ККМ и возврат.
     window.base_button.click()
     qt_app.processEvents()
     view.refresh()
-    assert view.table.rowCount() == 30 * len(KKM_DAY_KINDS["korelichi"])
+    assert view.table.rowCount() == DAYS_PER_BLOCK * len(KKM_DAY_KINDS["korelichi"])
     assert [view.table.item(row, COL_KIND).text() for row in range(2)] == [
         "Отчет ККМ",
         "Возврат покупателя",
@@ -5791,11 +5846,76 @@ def test_kkm_month_totals_count_reports_returns_and_diff(qt_app, store):
     qt_app.processEvents()
     assert "Декабрь 2026" in view.month_label.text()
     assert view.reports_label.text() == "Отчеты ККМ: 0,00 руб."
-    assert view.table.rowCount() == 31 * 3  # в декабре 31 день, база МИР
+    # v0.43.0: три ряда по 10 дней, в декабре третий ряд — 11 дней.
+    assert view.table.rowCount() == 11 * 3
+    # Сумма, введённая в третьем ряду, попадает в свои даты: первая
+    # строка третьего ряда — 21.12 (колонка 10 — «Сумма» этого ряда).
+    view.table.item(0, 10).setText("250")
+    qt_app.processEvents()
+    assert ("2026-12-21", 0, "report", "250.00") in {
+        (r.date, r.slot, r.kind, r.amount) for r in store.data.kkm_reports
+    }
+    assert view.reports_label.text() == "Отчеты ККМ: 250,00 руб."
+    view.table.item(0, 10).setText("")
+    qt_app.processEvents()
     view._prev_month()
     qt_app.processEvents()
     assert "Ноябрь 2026" in view.month_label.text()
     assert view.reports_label.text() == "Отчеты ККМ: 500,00 руб."
+    window.close()
+
+
+def test_summary_month_block_counts_kkm_and_invoiced_realization(qt_app, store):
+    """v0.43.0: блок «Месяц» — итоги ККМ и выписанная реализация.
+
+    Считается **весь календарный месяц** (с 1-го по последнее число),
+    а у реализации — только суммы с зелёной меткой «Выписано».
+    """
+    from datetime import date
+    from decimal import Decimal
+
+    from PySide6.QtCore import QDate
+
+    from oplata.app import MainWindow
+    from oplata.models import Counterparty, add_realization, set_kkm_amount
+
+    buyer = Counterparty(name="Покупатель Д")
+    store.data.customers.append(buyer)
+    # Выписанная реализация (зелёная метка) — 1-е и последнее число.
+    invoiced_first = add_realization(store.data, buyer.id, "2026-10-01", Decimal("4000"))
+    invoiced_first.invoiced = True
+    invoiced_last = add_realization(store.data, buyer.id, "2026-10-31", Decimal("600"))
+    invoiced_last.invoiced = True
+    # Реализация «в работе» (без метки) в строку не входит.
+    in_work = add_realization(store.data, buyer.id, "2026-10-15", Decimal("900"))
+    in_work.invoiced = False
+    # Соседний месяц не считается.
+    other = add_realization(store.data, buyer.id, "2026-11-05", Decimal("777"))
+    other.invoiced = True
+
+    # Отчеты ККМ и возврат за октябрь.
+    set_kkm_amount(store.data, "2026-10-01", 0, "report", Decimal("1500"))
+    set_kkm_amount(store.data, "2026-10-31", 2, "return", Decimal("250"))
+
+    window = MainWindow(store)
+    window.show()
+    qt_app.processEvents()
+    view = window.summary_view
+    view.date_edit.setDate(QDate(2026, 10, 20))
+    view.refresh()
+
+    assert view.value_text("month_kkm_reports") == "1 500,00"
+    assert view.value_text("month_kkm_returns") == "250,00"
+    assert view.value_text("month_total") == "1 250,00"   # ККМ − возвраты
+    # 4 000 + 600: выписанная реализация за весь месяц; 900 «в работе»
+    # и ноябрьские 777 в строку не входят.
+    assert view.value_text("month_sale_invoiced") == "4 600,00"
+    assert view.has_mark("month_sale_invoiced")
+    # Другой месяц — свои цифры.
+    view.date_edit.setDate(QDate(2026, 11, 10))
+    view.refresh()
+    assert view.value_text("month_sale_invoiced") == "777,00"
+    assert view.value_text("month_kkm_reports") == "0,00"
     window.close()
 
 

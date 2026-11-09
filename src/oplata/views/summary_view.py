@@ -6,7 +6,7 @@
   итого остаток;
 * «Задолженность поставщикам» — всего, на неделе, на сегодня,
   просрочено и оплата понедельно на три недели вперёд;
-* «Месяц» — приход и оплаты с начала месяца.
+* «Месяц» — итоги реестра «Отчеты ККМ» за весь месяц (v0.43.0).
 
 Цифры считает ``calc`` простыми суммами по сохранённым данным; долг
 берётся архивным графиком сроков (оплата долг не уменьшает —
@@ -61,6 +61,8 @@ class SummaryView(QWidget):
         # Подписи и значения строк: ключ -> (подпись, значение).
         self._captions: dict[str, QLabel] = {}
         self._values: dict[str, QLabel] = {}
+        # v0.43.0: цветные квадратики-метки у строк («Выписано»).
+        self._marks: dict[str, QLabel] = {}
 
         root = QVBoxLayout(self)
         root.setContentsMargins(10, 10, 10, 10)
@@ -103,12 +105,12 @@ class SummaryView(QWidget):
         self.panel.toggle.setStyleSheet(
             "QPushButton{background:transparent;border:none;text-align:left;"
             # v0.23.6: шрифт панели «Сводка» крупнее обычного на 50%.
-            f"padding:2px 0;font-weight:800;font-size:{styles.fs_summary(15)}px;"
+            f"padding:2px 0;font-weight:800;font-size:{styles.fs_summary(14)}px;"
             f"color:{styles.TEXT}}}"
             "QPushButton:hover{background:transparent}"
         )
         content = self.panel.content_layout
-        content.setSpacing(8)
+        content.setSpacing(4)  # v0.43.0: плашка целиком на экране
 
         self._add_section(
             content,
@@ -154,9 +156,16 @@ class SummaryView(QWidget):
             content,
             "МЕСЯЦ",
             [
-                ("month_income", "Приход с начала месяца"),
-                ("month_payments", "Оплаты с начала месяца"),
+                # v0.43.0: вместо прихода и оплат с начала месяца —
+                # итоги реестра «Отчеты ККМ» за весь месяц.
+                ("month_kkm_reports", "Итого по Отчетам ККМ"),
+                ("month_kkm_returns", "Итого Возврат покупателя"),
+                ("month_sale_invoiced", "Реализация Покупателям"),
+                ("month_total", "Итого за месяц"),
             ],
+            # Зелёный квадратик — пометка «Выписано»: в строке только
+            # реализация с зелёной меткой (v0.43.0).
+            marked=("month_sale_invoiced",),
         )
         root.addWidget(self.panel)
 
@@ -165,7 +174,10 @@ class SummaryView(QWidget):
         # кнопки сводок стояли в самом верху (v0.32.0), а журнал — в
         # шапке рядом с переключателем архивных. ---
         summaries = QVBoxLayout()
-        summaries.setSpacing(6)
+        summaries.setSpacing(4)
+        # v0.43.0: кнопки стоят плотнее — плашка должна влезть целиком
+        # на экран 768 точек по высоте.
+        summaries.setContentsMargins(0, 2, 0, 0)
         self.incoming_summary_button = QPushButton("Сводка поступлений")
         self.incoming_summary_button.setCursor(Qt.CursorShape.PointingHandCursor)
         self.incoming_summary_button.setToolTip(
@@ -204,13 +216,33 @@ class SummaryView(QWidget):
         line.setStyleSheet(f"color:{styles.BORDER}")
         layout.addWidget(line)
 
+    def _green_mark(self) -> QLabel:
+        """Зелёный квадратик «Выписано» рядом с подписью (v0.43.0)."""
+
+        mark = QLabel()
+        mark.setFixedSize(12, 12)
+        mark.setToolTip(
+            "Выписано: реализация с зелёной меткой (документы выписаны). "
+            "Без метки реализация считается «в работе» и в эту строку "
+            "не входит"
+        )
+        mark.setStyleSheet(
+            f"background:{styles.GREEN};border-radius:2px;border:none;"
+        )
+        return mark
+
     def _add_section(
         self,
         layout: QVBoxLayout,
         title: str,
         rows: list[tuple[str, str]],
+        marked: tuple[str, ...] = (),
     ) -> None:
-        """Блок строк: жирный подзаголовок и сетка «подпись — значение»."""
+        """Блок строк: жирный подзаголовок и сетка «подпись — значение».
+
+        ``marked`` — ключи строк, у которых рядом с подписью стоит
+        цветной квадратик (v0.43.0: зелёный «Выписано»).
+        """
 
         caption = QLabel(title)
         caption.setStyleSheet(
@@ -222,12 +254,14 @@ class SummaryView(QWidget):
         grid = QGridLayout()
         grid.setContentsMargins(0, 0, 0, 0)
         grid.setHorizontalSpacing(12)
-        grid.setVerticalSpacing(4)
+        # v0.43.0: между строками теснее — плашка должна влезть целиком.
+        grid.setVerticalSpacing(1)
         for row, (key, text) in enumerate(rows):
-            bold = key in {"balance"}
+            # v0.43.0: «Итого за месяц» — как «Итого остаток»: жирным.
+            bold = key in {"balance", "month_total"}
             label = QLabel(text)
             label.setStyleSheet(
-                f"font-size:{styles.fs_summary(12)}px;"
+                f"font-size:{styles.fs_summary(11)}px;"
                 f"{'font-weight:800;' if bold else ''}"
             )
             label.setSizePolicy(
@@ -242,15 +276,34 @@ class SummaryView(QWidget):
                 Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter
             )
             value.setStyleSheet(
-                f"font-size:{styles.fs_summary(12)}px;"
+                f"font-size:{styles.fs_summary(11)}px;"
                 f"{'font-weight:800;' if bold else ''}"
             )
             self._captions[key] = label
             self._values[key] = value
-            grid.addWidget(label, row, 0)
+            if key in marked:
+                # Подпись и квадратик — в одной ячейке сетки, чтобы
+                # метка всегда стояла сразу за текстом подписи.
+                cell = QWidget()
+                cell_layout = QHBoxLayout(cell)
+                cell_layout.setContentsMargins(0, 0, 0, 0)
+                cell_layout.setSpacing(4)
+                cell_layout.addWidget(label)
+                mark = self._green_mark()
+                cell_layout.addWidget(mark)
+                cell_layout.addStretch(1)
+                self._marks[key] = mark
+                grid.addWidget(cell, row, 0)
+            else:
+                grid.addWidget(label, row, 0)
             grid.addWidget(value, row, 1)
         grid.setColumnStretch(0, 1)
         layout.addLayout(grid)
+
+    def has_mark(self, key: str) -> bool:
+        """Стоит ли у строки цветной квадратик (удобно для тестов)."""
+
+        return key in self._marks
 
     def value_text(self, key: str) -> str:
         """Показанное значение строки (удобно для тестов)."""
@@ -348,5 +401,10 @@ class SummaryView(QWidget):
                 f" – {week.sunday.strftime('%d.%m')}"
             )
         self._set_value("cust_total", customers.total)
-        self._set_value("month_income", month.income)
-        self._set_value("month_payments", month.payments)
+        # v0.43.0: итоги ККМ за весь месяц выбранной даты (с 1-го по
+        # последнее число) — реестр «Отчеты ККМ» активной базы.
+        self._set_value("month_kkm_reports", month.kkm_reports)
+        self._set_value("month_kkm_returns", month.kkm_returns)
+        # v0.43.0: только выписанная реализация (зелёная метка).
+        self._set_value("month_sale_invoiced", month.sale_invoiced)
+        self._set_value("month_total", month.kkm_total)
