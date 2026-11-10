@@ -785,6 +785,9 @@ class MainWindow(QMainWindow):
             index == IDX_DATA and self._config_unlocked
         ):
             return
+        # v0.51.0: права внутри «Конфигурации» зависят от пароля: принят
+        # — работаем полностью, нет (или ушли с вкладки) — по роли.
+        self._apply_config_rights()
         self.stack.setCurrentIndex(index)
         self.nav_buttons[index].setChecked(True)
         # v0.23.1: на любой вкладке дата начинается с сегодняшнего дня —
@@ -811,6 +814,28 @@ class MainWindow(QMainWindow):
             self.customers_view.reset_to_today()
         # v0.26.0: плашка «Данные» (перенос остатков) удалена — на
         # вкладке «Конфигурация» раскрывать больше нечего.
+
+    def _apply_config_rights(self) -> None:
+        """Права на вкладке «Конфигурация» (v0.51.0).
+
+        Пароль на раздел принят — внутри вкладки работаем **с полными
+        правами**, независимо от роли. Иначе у пользователя без права
+        ввода (Руководитель, Пользователь МИР / КОРЕЛИЧИ) раздел
+        открывался, но кнопки «Сохранить пользователей», «Добавить»,
+        «Удалить», «Сменить пароль» и «Сохранить» календаря в нём
+        пропадали (замечание пользователя).
+
+        Остальные вкладки это не затрагивает: право ввода данных там
+        по-прежнему даёт только роль.
+        """
+
+        if self._config_unlocked:
+            self.data_view.set_read_only(False, can_admin=True)
+        else:
+            self.data_view.set_read_only(
+                not self.access.can_edit,
+                can_admin=self.access.can_admin_data,
+            )
 
     def _ask_config_password(self) -> bool:
         """Пароль на вкладку «Конфигурация» (v0.18.0)."""
@@ -907,7 +932,9 @@ class MainWindow(QMainWindow):
             self.customers_view,
         ):
             view.set_read_only(read_only)
-        self.data_view.set_read_only(read_only, can_admin=self.access.can_admin_data)
+        # v0.51.0: внутри «Конфигурации» права даёт пароль на раздел,
+        # поэтому права этой вкладки считаем отдельно.
+        self._apply_config_rights()
         # Текущая вкладка могла стать недоступной — показываем первую из
         # разрешённых. v0.50.0: с открытой по паролю «Конфигурацией»
         # этого не делаем, иначе смена пользователя выкидывала бы с неё.
