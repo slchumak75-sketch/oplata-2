@@ -17,8 +17,8 @@ from pathlib import Path
 
 from datetime import date
 
-from PySide6.QtCore import QTimer, Qt
-from PySide6.QtGui import QCloseEvent
+from PySide6.QtCore import QRect, QTimer, Qt
+from PySide6.QtGui import QCloseEvent, QGuiApplication
 from PySide6.QtWidgets import (
     QApplication,
     QButtonGroup,
@@ -91,6 +91,38 @@ BASE_HEADER_COLORS = {
 }
 
 
+# v0.46.0: окно открывается ровно в **половину экрана по горизонтали**
+# (просьба пользователя): вся доступная высота и половина доступной
+# ширины, левым верхним углом — в левый верхний угол экрана. Раньше
+# размер был фиксированным (1600×860) — на экране 1920 это почти весь
+# экран. Ниже ``MIN_WINDOW_WIDTH`` таблицы «Отчеты ККМ» и «Оплата»
+# уже не влезают без горизонтальной прокрутки.
+MIN_WINDOW_WIDTH = 940
+MIN_WINDOW_HEIGHT = 600
+
+
+def half_screen_geometry(free: QRect | None = None) -> QRect:
+    """Прямоугольник окна: **половина экрана по ширине**, вся высота.
+
+    Считается по доступной области экрана (без панели задач), поэтому
+    на экране 1920×1080 окно выходит 960 на ~1040. ``free`` — готовая
+    область экрана: её удобно передать в проверках (в headless-прогоне
+    свой размер экрана). Ширину не даём уйти ниже ``MIN_WINDOW_WIDTH``
+    и шире самого экрана.
+    """
+
+    if free is None:
+        screen = QGuiApplication.primaryScreen()
+        free = (
+            screen.availableGeometry()
+            if screen is not None
+            else QRect(0, 0, MIN_WINDOW_WIDTH * 2, 860)
+        )
+    width = min(max(free.width() // 2, MIN_WINDOW_WIDTH), free.width())
+    height = max(free.height(), MIN_WINDOW_HEIGHT)
+    return QRect(free.left(), free.top(), width, height)
+
+
 class MainWindow(QMainWindow):
     def __init__(self, store: DataStore, access: Access | None = None) -> None:
         super().__init__()
@@ -113,10 +145,14 @@ class MainWindow(QMainWindow):
         self.autosave_on_exit = True
         self._exit_export_done = False
         self.setWindowTitle(f"{__app_name__}  v{__version__}")
-        # v0.40.0: 1440 -> 1600 — в шапке три кнопки базы вместо двух,
-        # им нужно место (шрифт кнопок стал как у вкладок).
-        self.resize(1600, 860)
-        self.setMinimumSize(1100, 640)
+        # v0.46.0: размер больше не фиксированный — окно занимает
+        # **половину экрана по горизонтали** (см. ``half_screen_geometry``).
+        # Раньше было resize(1600, 860) и минимум 1100×640: на экране
+        # 1920 окно занимало почти весь экран, а у́же 1100 его нельзя
+        # было сдвинуть вовсе (v0.40.0 поднял 1440 -> 1600 ради трёх
+        # кнопок базы в шапке — место им теперь считает раскладка).
+        self.setMinimumSize(MIN_WINDOW_WIDTH, MIN_WINDOW_HEIGHT)
+        self.setGeometry(half_screen_geometry())
 
         root = QWidget()
         root.setObjectName("PageRoot")

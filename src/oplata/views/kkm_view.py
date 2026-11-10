@@ -38,7 +38,14 @@ from PySide6.QtWidgets import (
 
 from .. import calc, styles
 from ..dates import fmt_date, fmt_money, fmt_money_plain, month_title, parse_money
-from ..models import KKM_DAY_KINDS, KKM_KIND_TITLES, find_kkm_report, set_kkm_amount
+from ..models import (
+    KKM_DAY_KINDS,
+    KKM_KIND_REPORT,
+    KKM_KIND_RETURN,
+    KKM_KIND_TITLES,
+    find_kkm_report,
+    set_kkm_amount,
+)
 from ..storage import DataStore
 from ..widgets import AmountLineEdit, arrow_button
 
@@ -59,6 +66,16 @@ SEPARATOR_WIDTH = 16
 # сжимаем: иначе длинная сумма обрезалась бы многоточием.
 AMOUNT_WIDTH_RATIO = 1 / 2
 AMOUNT_MIN_WIDTH = 110
+# v0.46.0: в узком окне (половина экрана — 960 точек) три ряда по три
+# колонки полными подписями не влезают: только «Отчет» съедает 179
+# точек («Возврат покупателя»), а «Дата» — 99 («01.11.2026»). В
+# компактном виде дата идёт без года (месяц и год стоят в заголовке
+# над таблицей), а вид называется коротко — «Возврат».
+COMPACT_DATE_FORMAT = "%d.%m"
+COMPACT_KIND_TITLES = {
+    KKM_KIND_REPORT: "Отчет ККМ",
+    KKM_KIND_RETURN: "Возврат",
+}
 # v0.44.0: зебра для читаемости — **один день — один цвет**: все строки
 # дня (у МИР их три, у КОРЕЛИЧИ две) залиты одинаково, соседние дни
 # отличаются. v0.45.0: контраст был слишком сильным — оба тона стали
@@ -145,7 +162,13 @@ class KkmView(QWidget):
         self.store = store
         # v0.18.0: без права ввода данных таблица только для просмотра.
         self.read_only = False
-        self._rebuilding = False  # True, пока таблицу меняет код, а не человек
+        self._rebuilding = False
+        # v0.46.0: компактный вид таблицы (дата без года, «Возврат»
+        # вместо «Возврат покупателя») включается, когда три ряда не
+        # влезают в окно; ``_compact_at`` — ширина, на которой полный
+        # вид последний раз не поместился.
+        self._compact = False
+        self._compact_at = 0
         self._month = date.today().replace(day=1)
 
         root = QVBoxLayout(self)
@@ -320,12 +343,22 @@ class KkmView(QWidget):
                         day_bg = ZEBRA_ODD if day.day % 2 else ZEBRA_EVEN
                     for slot, kind in enumerate(kinds):
                         row = day_index * len(kinds) + slot
+                        # v0.46.0: в компактном виде дата без года и
+                        # короткое имя вида (см. COMPACT_*).
+                        date_text = (
+                            day.strftime(COMPACT_DATE_FORMAT)
+                            if self._compact
+                            else fmt_date(day)
+                        )
+                        kind_titles = (
+                            COMPACT_KIND_TITLES if self._compact else KKM_KIND_TITLES
+                        )
                         self._put(
-                            row, first + COL_DATE, fmt_date(day), bg=day_bg,
+                            row, first + COL_DATE, date_text, bg=day_bg,
                             align=Qt.AlignmentFlag.AlignCenter,
                         )
                         self._put(
-                            row, first + COL_KIND, KKM_KIND_TITLES[kind],
+                            row, first + COL_KIND, kind_titles[kind],
                             bg=day_bg,
                         )
                         record = find_kkm_report(self.store.data, day_iso, slot)
@@ -358,6 +391,9 @@ class KkmView(QWidget):
         ровно ``SEPARATOR_WIDTH``.
         v0.45.0: таблица **не растягивается** на всю ширину экрана —
         свободное место остаётся справа, поля между рядами не растут.
+        v0.46.0: пока «Сумма» не влезает хотя бы в ``AMOUNT_MIN_WIDTH``,
+        таблица строится **компактно** (дата без года, «Возврат» вместо
+        «Возврат покупателя») — так колонка суммы остаётся читаемой.
         """
 
         self.table.resizeColumnsToContents()
@@ -371,6 +407,17 @@ class KkmView(QWidget):
             fixed += self.table.columnWidth(first + COL_KIND)
         gaps = len(SEPARATOR_COLUMNS)
         gap = SEPARATOR_WIDTH
+        # v0.46.0: полными подписями три ряда требуют 834 точки только
+        # под «Дату» и «Отчет» — в окне в половину экрана (960) им
+        # просто не хватает места. Уходим в компактный вид заранее,
+        # пока «Сумма» не ужалась бы ниже читаемого минимума.
+        if not self._compact and (
+            fixed + AMOUNT_MIN_WIDTH * BLOCKS + gap * gaps > viewport
+        ):
+            self._compact = True
+            self._compact_at = viewport
+            self._fill_table()
+            return
         # Доля одного ряда без полей; «Сумма» — вдвое у́же (v0.46.0).
         share = max(viewport - fixed, 0) / BLOCKS
         amount = max(int(share * AMOUNT_WIDTH_RATIO), AMOUNT_MIN_WIDTH)
@@ -378,8 +425,11 @@ class KkmView(QWidget):
             # Окно узкое: сначала сжимаем поле, потом «Сумму».
             gap = max(4, (viewport - fixed - amount * BLOCKS) // gaps)
         if fixed + amount * BLOCKS + gap * gaps > viewport:
-            amount = max(60, (viewport - fixed - 4 * gaps) // BLOCKS)
+            amount = max(60, (viewport - fixed - gap * gaps) // BLOCKS)
             gap = max(4, (viewport - fixed - amount * BLOCKS) // gaps)
+        if fixed + amount * BLOCKS + gap * gaps > viewport:
+            # Совсем тесно: поле урезается до нуля.
+            gap = max(0, (viewport - fixed - amount * BLOCKS) // gaps)
         for block in range(BLOCKS):
             self.table.setColumnWidth(
                 _block_first_column(block) + COL_AMOUNT, amount
@@ -387,8 +437,40 @@ class KkmView(QWidget):
         for column in SEPARATOR_COLUMNS:
             self.table.setColumnWidth(column, gap)
 
+    def _reconsider_compact(self) -> bool:
+        """Вернуть полные подписи, если для них появилось место (v0.46.0).
+
+        Компактный вид запоминает ширину, на которой полный вид не
+        влез (``_compact_at``): пока окно не станет заметно шире,
+        таблицу не перестраиваем. ``True`` — таблица перестроена,
+        ``_fit_columns`` вызывать не нужно (он уже прошёл внутри).
+        """
+
+        if not self._compact:
+            return False
+        viewport = self.table.viewport().width()
+        if viewport <= self._compact_at + 24:
+            return False
+        self._compact = False
+        self._fill_table()
+        return True
+
+    def showEvent(self, event) -> None:  # Qt API: имя задано Qt
+        super().showEvent(event)
+        # v0.46.0: страницу могли построить в узком окне, а показать —
+        # уже в широком (и наоборот), поэтому вид пересматриваем и тут.
+        if self._reconsider_compact():
+            return
+        self._fit_columns()
+
     def resizeEvent(self, event) -> None:  # Qt API: имя задано Qt
         super().resizeEvent(event)
+        # v0.46.0: если окно стало заметно шире того, где полный вид не
+        # влез, пробуем вернуть полные подписи («01.11.2026»,
+        # «Возврат покупателя»). Не влезет — ``_fit_columns`` снова
+        # включит компактный вид и перестроит таблицу.
+        if self._reconsider_compact():
+            return
         # Ширины колонок считаются от ширины окна, поэтому пересчитываем
         # их при каждом изменении размера.
         self._fit_columns()
