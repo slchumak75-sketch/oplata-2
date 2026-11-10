@@ -34,7 +34,7 @@ oplata-2/
   src/oplata/
     __init__.py                 # __version__ (синхронно с pyproject.toml!)
     main.py                     # QApplication, --self-test
-    app.py                      # MainWindow: шапка + QStackedWidget из 5 экранов; размер окна — половина экрана по горизонтали (v0.47.0, half_screen_geometry)
+    app.py                      # MainWindow: шапка + QStackedWidget из 5 экранов; размер окна — половина экрана по горизонтали (v0.47.0), нижняя половина (v0.49.0, half_screen_geometry)
     styles.py                   # цвета по макетам + QSS
     widgets.py                  # панели, цветные кнопки, поля даты/сумм, KPI-карточки
     dates.py       [без Qt]     # недели Пн–Вс, русские месяцы, формат сумм
