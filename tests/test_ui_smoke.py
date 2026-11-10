@@ -5780,8 +5780,8 @@ def test_kkm_table_shows_month_with_repeating_days(qt_app, store):
         table.item(0, c).background().style() is Qt.BrushStyle.NoBrush
         for c in SEPARATOR_COLUMNS
     )
-    # v0.46.0: «Сумма» вдвое у́же своей доли (в v0.45.0 — в полтора) —
-    # она у́же колонки «Отчет», но не у́же разумного минимума.
+    # v0.45.0: «Сумма» в полтора раза у́же своей доли — она у́же колонки
+    # «Отчет», но не у́же разумного минимума.
     assert table.columnWidth(COL_AMOUNT) < table.columnWidth(COL_KIND)
     assert table.columnWidth(COL_AMOUNT) >= AMOUNT_MIN_WIDTH
     # Обводку каждого ряда рисует делегат таблицы.
@@ -5804,8 +5804,11 @@ def test_kkm_table_shows_month_with_repeating_days(qt_app, store):
     ]
     # Одна и та же дата повторяется три раза подряд.
     assert [table.item(row, COL_DATE).text() for row in range(3)] == ["01.11.2026"] * 3
-    # Прокрутки нет ни по вертикали, ни по горизонтали (просьба v0.43.0).
-    assert table.verticalScrollBarPolicy() is Qt.ScrollBarPolicy.ScrollBarAlwaysOff
+    # Горизонтальной прокрутки нет (просьба v0.43.0). По вертикали —
+    # v0.47.0: полоса включается по необходимости, а не всегда выключена,
+    # иначе в окне в половину экрана конец месяца пропадал бы совсем.
+    # Здесь месяц влезает целиком, поэтому полосы не видно.
+    assert table.verticalScrollBarPolicy() is Qt.ScrollBarPolicy.ScrollBarAsNeeded
     assert table.verticalScrollBar().maximum() == 0
     assert table.horizontalScrollBarPolicy() is Qt.ScrollBarPolicy.ScrollBarAlwaysOff
     assert table.horizontalScrollBar().maximum() == 0
@@ -6045,12 +6048,56 @@ def test_kkm_table_blocks_have_their_own_frame(qt_app, store):
     window.close()
 
 
-def test_kkm_amount_column_is_half_of_its_share(qt_app, store):
-    """v0.46.0: «Сумма» **вдвое у́же** своей доли (но не у́же минимума).
+def test_window_opens_at_half_of_the_screen(qt_app):
+    """v0.47.0: окно — **половина экрана по горизонтали**.
 
-    v0.45.0 делало колонку уже в полтора раза — она вышла широкой.
-    Проверяем сам расчёт: от ширины окна отнимаем «Дату» и «Отчет»
-    всех трёх рядов, долю одного ряда делим пополам.
+    Экран делится линией по горизонтали: программа занимает верхнюю
+    половину — **всю ширину** экрана и **половину его высоты**. На
+    экране 1920×1040 это 1920×520. (В v0.46.0 я перепутал направление
+    и делил экран по вертикали — половина ширины и вся высота.)
+    """
+    from PySide6.QtCore import QRect
+
+    from oplata.app import MIN_WINDOW_HEIGHT, half_screen_geometry
+
+    rect = half_screen_geometry(QRect(0, 0, 1920, 1040))
+    assert (rect.width(), rect.height()) == (1920, 520)
+    assert (rect.left(), rect.top()) == (0, 0)
+    # Доступная область сдвинута (панель задач сверху) — окно за ней.
+    shifted = half_screen_geometry(QRect(0, 40, 1920, 1000))
+    assert (shifted.top(), shifted.height()) == (40, 500)
+    # Ниже разумного минимума высоту не роняем.
+    low = half_screen_geometry(QRect(0, 0, 1920, 500))
+    assert low.height() == max(500 // 2, MIN_WINDOW_HEIGHT)
+
+
+def test_main_window_uses_half_screen_geometry(qt_app, store, monkeypatch):
+    """v0.47.0: MainWindow ставит себя в половину экрана при запуске."""
+    from PySide6.QtCore import QRect
+
+    from oplata import app as app_module
+    from oplata.app import MIN_WINDOW_HEIGHT, MIN_WINDOW_WIDTH, MainWindow
+
+    monkeypatch.setattr(
+        app_module, "half_screen_geometry", lambda: QRect(0, 0, 1920, 520)
+    )
+    window = MainWindow(store)
+    window.show()
+    qt_app.processEvents()
+    assert (window.width(), window.height()) == (1920, 520)
+    assert (window.minimumWidth(), window.minimumHeight()) == (
+        MIN_WINDOW_WIDTH,
+        MIN_WINDOW_HEIGHT,
+    )
+    window.close()
+
+
+def test_kkm_amount_column_is_half_of_v045_width(qt_app, store):
+    """v0.47.0: «Сумма» ровно вдвое у́же, чем была в v0.45.0.
+
+    В v0.45.0 колонка занимала 1/1,5 доли ряда (при окне 1920 — 236
+    точек), теперь — 1/3 доли (118 точек). Пол ``AMOUNT_MIN_WIDTH``
+    страхует только узкие окна: там точная половина обрезала бы сумму.
     """
     from datetime import date
 
@@ -6059,18 +6106,14 @@ def test_kkm_amount_column_is_half_of_its_share(qt_app, store):
         AMOUNT_MIN_WIDTH,
         AMOUNT_WIDTH_RATIO,
         BLOCKS,
-        COLUMNS_PER_BLOCK,
         COL_AMOUNT,
         COL_DATE,
         COL_KIND,
-        SEPARATOR_COLUMNS,
-        SEPARATOR_WIDTH,
         _block_first_column,
     )
 
-    assert AMOUNT_WIDTH_RATIO == 1 / 2
     window = MainWindow(store)
-    window.resize(1600, 900)
+    window.resize(1920, 1040)
     window.show()
     window.show_page(IDX_KKM)
     qt_app.processEvents()
@@ -6085,89 +6128,34 @@ def test_kkm_amount_column_is_half_of_its_share(qt_app, store):
         fixed += table.columnWidth(first + COL_DATE)
         fixed += table.columnWidth(first + COL_KIND)
     share = (table.viewport().width() - fixed) / BLOCKS
-    expected = max(int(share * AMOUNT_WIDTH_RATIO), AMOUNT_MIN_WIDTH)
+    # Половина от ширины v0.45.0 (доля / 1,5) — это доля / 3.
+    expected = max(int(share / 1.5 / 2), AMOUNT_MIN_WIDTH)
+    assert AMOUNT_WIDTH_RATIO == 1 / 3
     for block in range(BLOCKS):
         assert table.columnWidth(_block_first_column(block) + COL_AMOUNT) == expected
-    # Колонка заметно у́же «Отчета», но не теснее разумного минимума.
-    assert expected < table.columnWidth(_block_first_column(0) + COL_KIND)
-    assert expected >= AMOUNT_MIN_WIDTH
-    # Поля между рядами остались узкими: таблица не расползается.
-    assert all(table.columnWidth(c) == SEPARATOR_WIDTH for c in SEPARATOR_COLUMNS)
-    assert sum(table.columnWidth(c) for c in range(table.columnCount())) < (
+    assert expected == 118  # при окне 1920: было 236, стало 118
+    assert expected < table.columnWidth(COL_KIND)
+    # Горизонтальной прокрутки нет.
+    assert sum(table.columnWidth(c) for c in range(table.columnCount())) <= (
         table.viewport().width()
     )
     window.close()
 
 
-def test_window_opens_at_half_of_the_screen(qt_app):
-    """v0.46.0: окно — ровно половина экрана по горизонтали.
+def test_kkm_table_scrolls_vertically_in_half_screen(qt_app, store):
+    """v0.47.0: в половину экрана месяц не влезает — появляется прокрутка.
 
-    Считаем по доступной области (без панели задач): на экране
-    1920×1040 окно выходит 960×1040, левым верхним углом в левый
-    верхний угол экрана. Уже ``MIN_WINDOW_WIDTH`` не сжимаемся: там
-    таблицы «Отчеты ККМ» и «Оплата» не влезают без прокрутки.
-    """
-    from PySide6.QtCore import QRect
-
-    from oplata.app import MIN_WINDOW_WIDTH, half_screen_geometry
-
-    rect = half_screen_geometry(QRect(0, 0, 1920, 1040))
-    assert (rect.width(), rect.height()) == (960, 1040)
-    assert (rect.left(), rect.top()) == (0, 0)
-    # Сдвинутая доступная область (панель задач слева) учитывается.
-    shifted = half_screen_geometry(QRect(0, 40, 1920, 1000))
-    assert (shifted.left(), shifted.top()) == (0, 40)
-    assert shifted.height() == 1000
-    # На узком экране ниже минимума не уходим, но и шире экрана — тоже.
-    narrow = half_screen_geometry(QRect(0, 0, 1200, 700))
-    assert narrow.width() == MIN_WINDOW_WIDTH
-    assert MIN_WINDOW_WIDTH <= 960
-
-
-def test_main_window_uses_half_screen_geometry(qt_app, store, monkeypatch):
-    """v0.46.0: MainWindow ставит себя в половину экрана при запуске."""
-    from PySide6.QtCore import QRect
-
-    from oplata import app as app_module
-    from oplata.app import MIN_WINDOW_HEIGHT, MIN_WINDOW_WIDTH, MainWindow
-
-    monkeypatch.setattr(
-        app_module, "half_screen_geometry", lambda: QRect(0, 0, 960, 1040)
-    )
-    window = MainWindow(store)
-    window.show()
-    qt_app.processEvents()
-    assert window.width() == 960
-    assert window.height() == 1040
-    assert (window.minimumWidth(), window.minimumHeight()) == (
-        MIN_WINDOW_WIDTH,
-        MIN_WINDOW_HEIGHT,
-    )
-    window.close()
-
-
-def test_kkm_table_goes_compact_in_half_screen_window(qt_app, store):
-    """v0.46.0: в окне в половину экрана таблица ККМ строится компактно.
-
-    Три ряда по три колонки полными подписями требуют 1196 точек, а
-    в половине экрана есть 938. Поэтому дата идёт без года (месяц и
-    год стоят в заголовке), а вид называется «Возврат». Широкому окну
-    полные подписи возвращаются.
+    В полном экране всё как прежде: 30 строк растягиваются по высоте,
+    прокрутки нет. В окне в половину экрана строки остаются читаемыми
+    (не ниже ``MIN_ROW_HEIGHT``), а до конца месяца можно докрутить.
     """
     from datetime import date
 
     from oplata.app import IDX_KKM, MainWindow
-    from oplata.views.kkm_view import (
-        BLOCKS,
-        COLUMNS_PER_BLOCK,
-        COL_AMOUNT,
-        COL_DATE,
-        COL_KIND,
-        _block_first_column,
-    )
+    from oplata.views.kkm_view import MIN_ROW_HEIGHT
 
     window = MainWindow(store)
-    window.resize(960, 1040)
+    window.resize(1920, 1040)
     window.show()
     window.show_page(IDX_KKM)
     qt_app.processEvents()
@@ -6175,59 +6163,21 @@ def test_kkm_table_goes_compact_in_half_screen_window(qt_app, store):
     view.set_month(date(2026, 11, 1))
     qt_app.processEvents()
     table = view.table
+    assert table.rowCount() == 30
+    # Полный экран: месяц целиком, прокрутки нет (как было и раньше).
+    assert table.verticalScrollBar().isVisible() is False
+    assert table.rowHeight(0) >= MIN_ROW_HEIGHT
 
-    assert view._compact is True
-    # Дата без года; вид — коротко.
-    assert table.item(0, COL_DATE).text() == "01.11"
-    assert table.item(2, COL_KIND).text() == "Возврат"
-    # Всё влезает: горизонтальной прокрутки нет.
-    total = sum(table.columnWidth(c) for c in range(table.columnCount()))
-    assert total <= table.viewport().width()
-    # «Сумма» осталась читаемой (не ужалась до минимума-60).
-    for block in range(BLOCKS):
-        assert table.columnWidth(_block_first_column(block) + COL_AMOUNT) >= 110
-
-    # Окно расширили — вернулись полные подписи.
-    window.resize(1600, 900)
+    # Половина экрана: строки встают по минимуму, появляется прокрутка.
+    window.resize(1920, 520)
     qt_app.processEvents()
-    assert view._compact is False
-    assert table.item(0, COL_DATE).text() == "01.11.2026"
-    assert table.item(2, COL_KIND).text() == "Возврат покупателя"
-    assert COLUMNS_PER_BLOCK == 3
-    window.close()
-
-
-def test_receipts_day_columns_shrink_in_half_screen_window(qt_app, store):
-    """v0.46.0: колонки дней блока «Оплата» влезают в половину экрана.
-
-    Прежде шесть колонок по 96 точек требовали 744 точки, а в половине
-    экрана у блока было 640 — появлялась горизонтальная прокрутка.
-    """
-    from oplata.app import MainWindow
-    from oplata.views.receipts_view import (
-        COLUMN_COUNT,
-        DAY_COLUMN_WIDTH,
-        FIRST_DAY_COL,
-        MIN_DAY_COLUMN_WIDTH,
+    assert table.rowHeight(0) >= MIN_ROW_HEIGHT
+    assert table.verticalScrollBar().isVisible() is True
+    assert table.verticalScrollBar().maximum() > 0
+    # По горизонтали прокрутки по-прежнему нет.
+    assert sum(table.columnWidth(c) for c in range(table.columnCount())) <= (
+        table.viewport().width()
     )
-
-    window = MainWindow(store)
-    window.resize(960, 1040)
-    window.show()
-    qt_app.processEvents()
-    for block in window.receipts_view.blocks:
-        table = block.table
-        total = sum(table.columnWidth(c) for c in range(table.columnCount()))
-        assert total <= table.viewport().width()
-        for column in range(FIRST_DAY_COL, COLUMN_COUNT):
-            assert MIN_DAY_COLUMN_WIDTH <= table.columnWidth(column) <= DAY_COLUMN_WIDTH
-    # В широком окне колонки дней остаются полными (96 точек).
-    window.resize(1600, 900)
-    qt_app.processEvents()
-    for block in window.receipts_view.blocks:
-        table = block.table
-        for column in range(FIRST_DAY_COL, COLUMN_COUNT):
-            assert table.columnWidth(column) == DAY_COLUMN_WIDTH
     window.close()
 
 
