@@ -6383,3 +6383,51 @@ def test_config_tab_button_is_always_on_the_top_bar(qt_app, store, monkeypatch, 
     qt_app.processEvents()
     assert window.stack.currentIndex() == IDX_DATA
     window.close()
+
+
+def test_config_password_gives_full_rights_inside_the_tab(qt_app, store, monkeypatch, tmp_path):
+    """v0.51.0: внутри «Конфигурации» права даёт пароль, а не только роль.
+
+    Замечание пользователя: «В конфигурации пользователи и права
+    пропала кнопка "сохранить изменения"». Раньше права внутри раздела
+    считала роль, и у Руководителя, Пользователя МИР и Пользователя
+    КОРЕЛИЧИ пропадали «Сохранить пользователей», «Добавить»,
+    «Удалить», «Сменить пароль» и кнопки календаря: раздел открывался,
+    а править в нём было нельзя.
+    """
+    from oplata import access as access_module
+    from oplata.app import IDX_CUSTOMERS, IDX_DATA, MainWindow
+
+    monkeypatch.setattr(access_module, "data_dir", lambda: tmp_path)
+    access_module.set_password("1234")
+    _admin, manager, _user_mir, user_kor = access_module.default_users()
+
+    for user in (manager, user_kor):
+        window = MainWindow(store, access_module.Access(user))
+        window.show()
+        qt_app.processEvents()
+        view = window.data_view
+        # Без пароля раздел для правки закрыт.
+        assert view.users_save_btn.isHidden()
+        assert view.save_button.isHidden()
+        # Пароль принят — внутри «Конфигурации» работаем полностью.
+        _ask_password_as(monkeypatch, ("1234", True))
+        window.nav_buttons[IDX_DATA].click()
+        qt_app.processEvents()
+        assert window.stack.currentIndex() == IDX_DATA  # v0.50.0: пускает любого
+        assert not view.users_save_btn.isHidden()
+        assert not view.users_add_btn.isHidden()
+        assert not view.users_remove_btn.isHidden()
+        assert not view.users_password_btn.isHidden()
+        # Календарь праздников на этой же вкладке — тоже доступен.
+        assert not view.save_button.isHidden()
+        assert not view.cancel_button.isHidden()
+        # Остальные вкладки по-прежнему только для просмотра: право
+        # ввода данных даёт роль, а не пароль на раздел.
+        assert window.suppliers_view.read_only is True
+        assert window.receipts_view.incoming.read_only is True
+        # Ушли с вкладки — пароль снят, права снова по роли.
+        window.show_page(IDX_CUSTOMERS)
+        qt_app.processEvents()
+        assert view.users_save_btn.isHidden()
+        window.close()
