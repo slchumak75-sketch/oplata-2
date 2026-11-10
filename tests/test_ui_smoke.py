@@ -5744,6 +5744,7 @@ def test_kkm_table_shows_month_with_repeating_days(qt_app, store):
         HEADERS,
         SEPARATOR_COLUMNS,
         SEPARATOR_WIDTH,
+        _AmountDelegate,
         _block_first_column,
     )
 
@@ -5767,11 +5768,24 @@ def test_kkm_table_shows_month_with_repeating_days(qt_app, store):
             for shift in range(COLUMNS_PER_BLOCK)
         ] == list(HEADERS)
     assert all(table.horizontalHeaderItem(c).text() == "" for c in SEPARATOR_COLUMNS)
-    # v0.44.0: поле между рядами — не меньше 80 точек (было 8).
-    assert all(table.columnWidth(c) >= SEPARATOR_WIDTH for c in SEPARATOR_COLUMNS)
-    # v0.44.0: «Сумма» вдвое у́же своей доли — она у́же колонки «Отчет».
+    # v0.45.0: поле между рядами — 16 точек и **не растягивается** на
+    # всю ширину окна (в v0.44.0 было 80 и всё свободное место уходило
+    # в поля, из-за чего таблица расползалась).
+    assert all(table.columnWidth(c) == SEPARATOR_WIDTH for c in SEPARATOR_COLUMNS)
+    assert sum(table.columnWidth(c) for c in range(table.columnCount())) < (
+        table.viewport().width()
+    )
+    # v0.45.0: поле между рядами **не закрашено** — кисти у ячейки нет.
+    assert all(
+        table.item(0, c).background().style() is Qt.BrushStyle.NoBrush
+        for c in SEPARATOR_COLUMNS
+    )
+    # v0.45.0: «Сумма» в полтора раза у́же своей доли — она у́же колонки
+    # «Отчет», но не у́же разумного минимума.
     assert table.columnWidth(COL_AMOUNT) < table.columnWidth(COL_KIND)
     assert table.columnWidth(COL_AMOUNT) >= AMOUNT_MIN_WIDTH
+    # Обводку каждого ряда рисует делегат таблицы.
+    assert isinstance(table.itemDelegate(), _AmountDelegate)
 
     # В ноябре 30 дней; МИР — по три строки на каждый день. Высота
     # таблицы = самому длинному ряду (10 дней), а не всему месяцу.
@@ -5985,6 +5999,49 @@ def test_kkm_table_zebra_paints_whole_day_one_color(qt_app, store):
         table.item(today_row, 0).background().color().name()
         == styles.WEEK_TABLE_TODAY_GREEN_BODY
     )
+    window.close()
+
+
+def test_kkm_table_blocks_have_their_own_frame(qt_app, store):
+    """v0.45.0: у каждого ряда дней своя обводка, поле между ними пустое."""
+    from PySide6.QtGui import QColor
+
+    from oplata.app import IDX_KKM, MainWindow
+    from oplata.views.kkm_view import (
+        BLOCK_FRAME,
+        COLUMNS_PER_BLOCK,
+        SEPARATOR_COLUMNS,
+        _block_first_column,
+    )
+
+    window = MainWindow(store)
+    window.resize(1600, 900)
+    window.show()
+    window.show_page(IDX_KKM)
+    qt_app.processEvents()
+    table = window.kkm_view.table
+
+    image = table.grab().toImage()
+    widths = [table.columnWidth(c) for c in range(table.columnCount())]
+    y = table.rowViewportPosition(2) + table.rowHeight(2) // 2
+    border = QColor(BLOCK_FRAME).name()
+
+    def color(x: int) -> str:
+        return image.pixelColor(x, y).name()
+
+    # Левая граница первого ряда и правая граница каждого ряда — рамка.
+    assert color(0) == border
+    right_edges = [
+        sum(widths[: _block_first_column(block) + COLUMNS_PER_BLOCK]) - 2
+        for block in range(3)
+    ]
+    for x in right_edges:
+        assert color(x) == border
+    # Поле между рядами не закрашено: там фон панели, а не рамка.
+    gap_start = sum(widths[: _block_first_column(1)]) - len(SEPARATOR_COLUMNS) * 0
+    middle_of_gap = sum(widths[: SEPARATOR_COLUMNS[0]]) + widths[SEPARATOR_COLUMNS[0]] // 2
+    assert color(middle_of_gap) != border
+    assert gap_start > 0
     window.close()
 
 

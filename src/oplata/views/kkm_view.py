@@ -23,7 +23,7 @@ from datetime import date
 from decimal import Decimal
 
 from PySide6.QtCore import Qt
-from PySide6.QtGui import QColor
+from PySide6.QtGui import QColor, QPen
 from PySide6.QtWidgets import (
     QAbstractItemView,
     QHBoxLayout,
@@ -50,19 +50,24 @@ HEADERS = ("Дата", "Отчет", "Сумма")
 BLOCKS = 3
 DAYS_PER_BLOCK = 10
 COLUMNS_PER_BLOCK = len(HEADERS)
-# v0.44.0: поле между вертикальными рядами — в 10 раз шире прежних
-# 8 точек, чтобы ряды дней читались раздельно.
-SEPARATOR_WIDTH = 80
-# v0.44.0: «Сумма» вдвое у́же своей доли — колонка пустовала, а цифры
-# в ней всё равно короткие. У́же ``AMOUNT_MIN_WIDTH`` не сжимаем: иначе
+# v0.45.0: поле между вертикальными рядами — 16 точек (в v0.44.0 было
+# 80, оказалось слишком много). Таблица **не растягивается** на всю
+# ширину экрана: справа остаётся свободное место.
+SEPARATOR_WIDTH = 16
+# v0.45.0: «Сумма» в полтора раза у́же своей доли (в v0.44.0 — вдвое,
+# колонка стала тесной). У́же ``AMOUNT_MIN_WIDTH`` не сжимаем: иначе
 # длинная сумма обрезалась бы многоточием.
-AMOUNT_WIDTH_RATIO = 0.5
+AMOUNT_WIDTH_RATIO = 1 / 1.5
 AMOUNT_MIN_WIDTH = 110
 # v0.44.0: зебра для читаемости — **один день — один цвет**: все строки
 # дня (у МИР их три, у КОРЕЛИЧИ две) залиты одинаково, соседние дни
-# отличаются. Тона светлые, из палитры программы.
+# отличаются. v0.45.0: контраст был слишком сильным — оба тона стали
+# светлее (почти белый и очень светлый песок).
 ZEBRA_EVEN = styles.PANEL_BG      # почти белый
-ZEBRA_ODD = styles.WORKDAY_GREY   # светлый песок
+ZEBRA_ODD = styles.PAGE_BG        # очень светлый песок
+# v0.45.0: у каждого вертикального ряда своя обводка (цвет границы
+# программы); поля между рядами не закрашиваются.
+BLOCK_FRAME = styles.BORDER
 COLUMN_COUNT = BLOCKS * COLUMNS_PER_BLOCK + (BLOCKS - 1)
 SEPARATOR_COLUMNS = tuple(
     block * (COLUMNS_PER_BLOCK + 1) + COLUMNS_PER_BLOCK
@@ -89,10 +94,41 @@ ZERO = Decimal("0")
 
 
 class _AmountDelegate(QStyledItemDelegate):
-    """Редактор суммы в ячейке: без мешающих нулей (AmountLineEdit)."""
+    """Редактор суммы в ячейке: без мешающих нулей (AmountLineEdit).
+
+    v0.45.0: тот же делегат рисует **обводку вертикального ряда**: у
+    каждого из трёх рядов дней своя рамка, а поля между рядами
+    остаются пустыми (не закрашиваются).
+    """
 
     def createEditor(self, parent, option, index):  # Qt API: имя задано Qt
         return AmountLineEdit(parent=parent)
+
+    def paint(self, painter, option, index):  # Qt API: имя задано Qt
+        super().paint(painter, option, index)
+        column = index.column()
+        if column in SEPARATOR_COLUMNS:
+            return
+        block = column // (COLUMNS_PER_BLOCK + 1)
+        first = _block_first_column(block)
+        rows = index.model().rowCount()
+        pen = QPen(QColor(BLOCK_FRAME))
+        pen.setWidth(1)
+        painter.setPen(pen)
+        rect = option.rect
+        left = rect.left() + 0.5
+        right = rect.right() - 0.5
+        top = rect.top() + 0.5
+        bottom = rect.bottom() - 0.5
+        # Внешние стороны рамки — у крайних колонок и крайних строк.
+        if column == first:
+            painter.drawLine(left, top, left, bottom)
+        if column == first + COLUMNS_PER_BLOCK - 1:
+            painter.drawLine(right, top, right, bottom)
+        if index.row() == 0:
+            painter.drawLine(left, top, right, top)
+        if index.row() == rows - 1:
+            painter.drawLine(left, bottom, right, bottom)
 
 
 def _money_text(amount: Decimal) -> str:
@@ -304,22 +340,23 @@ class KkmView(QWidget):
                         self.table.item(row, first + COL_AMOUNT).setData(
                             META_ROLE, f"{day_iso}|{slot}"
                         )
-            # Разделители: колонки с заливкой, без данных и ввода.
+            # v0.45.0: поля между рядами **не закрашиваются** — это
+            # пустые колонки без данных и без ввода; ряды разделяет
+            # обводка, которую рисует делегат.
             for column in SEPARATOR_COLUMNS:
                 for row in range(rows):
-                    self._put(row, column, "", bg=styles.BORDER)
+                    self._put(row, column, "")
         finally:
             self._rebuilding = False
         self._fit_columns()
 
     def _fit_columns(self) -> None:
-        """Разложить колонки по ширине окна (v0.44.0).
+        """Разложить колонки по ширине окна (v0.44.0, переделано v0.45.0).
 
-        «Дата» и «Отчет» — по содержимому; «Сумма» занимает **половину**
-        своей доли (колонка пустовала), а освободившееся место уходит
-        в поле между вертикальными рядами: разделитель не меньше
-        ``SEPARATOR_WIDTH`` (80 точек), поэтому ряды дней стоят
-        свободно, а справа не остаётся пустой полосы.
+        «Дата» и «Отчет» — по содержимому; «Сумма» занимает **1/1,5**
+        своей доли; поле между рядами — ровно ``SEPARATOR_WIDTH``.
+        v0.45.0: таблица **не растягивается** на всю ширину экрана —
+        свободное место остаётся справа, поля между рядами не растут.
         """
 
         self.table.resizeColumnsToContents()
@@ -332,17 +369,16 @@ class KkmView(QWidget):
             fixed += self.table.columnWidth(first + COL_DATE)
             fixed += self.table.columnWidth(first + COL_KIND)
         gaps = len(SEPARATOR_COLUMNS)
-        # Доля одного ряда без разделителей; «Сумма» берёт её половину.
+        gap = SEPARATOR_WIDTH
+        # Доля одного ряда без полей; «Сумма» — в полтора раза у́же.
         share = max(viewport - fixed, 0) / BLOCKS
         amount = max(int(share * AMOUNT_WIDTH_RATIO), AMOUNT_MIN_WIDTH)
-        rest = int(viewport - fixed - amount * BLOCKS - SEPARATOR_WIDTH * gaps)
-        gap = SEPARATOR_WIDTH + (max(rest, 0) // gaps)
         if fixed + amount * BLOCKS + gap * gaps > viewport:
-            # Окно совсем узкое: сначала сжимаем разделитель, потом сумму.
-            gap = max(8, (viewport - fixed - amount * BLOCKS) // gaps)
+            # Окно узкое: сначала сжимаем поле, потом «Сумму».
+            gap = max(4, (viewport - fixed - amount * BLOCKS) // gaps)
         if fixed + amount * BLOCKS + gap * gaps > viewport:
-            amount = max(40, (viewport - fixed - 8 * gaps) // BLOCKS)
-            gap = max(8, (viewport - fixed - amount * BLOCKS) // gaps)
+            amount = max(60, (viewport - fixed - 4 * gaps) // BLOCKS)
+            gap = max(4, (viewport - fixed - amount * BLOCKS) // gaps)
         for block in range(BLOCKS):
             self.table.setColumnWidth(
                 _block_first_column(block) + COL_AMOUNT, amount
