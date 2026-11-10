@@ -6005,6 +6005,84 @@ def test_kkm_table_zebra_paints_whole_day_one_color(qt_app, store):
     window.close()
 
 
+def test_receipts_page_scrolls_in_half_screen(qt_app, store):
+    """v0.48.0: страница «Поступление и оплата» прокручивается по вертикали.
+
+    Замечание пользователя: в половине экрана «вертикальной прокрутки
+    нет и всё сбивается в кучу». Раньше страница не прокручивалась
+    вовсе: рамка «Поступления» сжималась (235 точек при содержимом
+    249) и его таблица с фиксированной высотой вылезала наружу,
+    наезжая на блок «Оплата», а «Оплата» схлопывалась до двух строк.
+    """
+
+    from oplata.app import IDX_RECEIPTS, MainWindow
+    from oplata.views.receipts_view import MIN_STRETCH_ROWS, ROW_HEIGHT
+
+    window = MainWindow(store)
+    window.resize(1920, 1040)
+    window.show()
+    window.show_page(IDX_RECEIPTS)
+    qt_app.processEvents()
+    view = window.receipts_view
+    scroll = view.scroll_area
+    # Полоса — по необходимости: в полном экране её не видно.
+    assert scroll.verticalScrollBarPolicy() is Qt.ScrollBarPolicy.ScrollBarAsNeeded
+    assert scroll.verticalScrollBar().maximum() == 0
+    # Горизонтальной прокрутки нет (общее правило таблиц).
+    assert scroll.horizontalScrollBarPolicy() is Qt.ScrollBarPolicy.ScrollBarAlwaysOff
+    assert scroll.horizontalScrollBar().maximum() == 0
+
+    # Половина экрана: место кончилось — появляется вертикальная прокрутка.
+    window.resize(1920, 520)
+    qt_app.processEvents()
+    assert scroll.verticalScrollBar().maximum() > 0
+    incoming, outgoing = view.blocks
+    # Блоки стоят целиком: рамка не сжимается ниже своего содержимого,
+    # поэтому таблица из неё не вылезает и на «Оплату» не наезжает.
+    for block in (incoming, outgoing):
+        assert block.height() >= block.minimumHeight()
+        assert block.minimumHeight() >= block.layout().minimumSize().height()
+    # «Оплата» не схлопывается до двух строк.
+    assert outgoing.table.height() >= (
+        outgoing.table.horizontalHeader().height() + MIN_STRETCH_ROWS * ROW_HEIGHT
+    )
+    for table in (incoming.table, outgoing.table):
+        assert table.horizontalScrollBar().maximum() == 0
+    window.close()
+
+
+def test_money_block_content_stays_inside_its_frame(qt_app, store):
+    """v0.48.0: содержимое блока не вылезает за его рамку в тесном окне.
+
+    У «Поступления» высота таблицы фиксирована (v0.14.0), поэтому
+    раньше при нехватке места сжималась только рамка: таблица
+    выполняла наружу и наезжала на блок «Оплата».
+    """
+
+    from oplata.app import MainWindow
+    from oplata.models import OUTGOING, add_other_payment
+
+    for name in ("Аренда", "Зарплата", "Налоги", "Связь", "Транспорт"):
+        add_other_payment(store.data, name, "2026-11-10", OUTGOING)
+    window = MainWindow(store)
+    window.resize(1920, 520)
+    window.show()
+    qt_app.processEvents()
+    view = window.receipts_view
+    incoming, outgoing = view.blocks
+    # «Поставщики» + пять своих видов оплаты.
+    assert outgoing.table.rowCount() == 6
+    # Прокрутка страницы подбирает то, что не влезло по высоте.
+    assert view.scroll_area.verticalScrollBar().maximum() > 0
+    for block in (incoming, outgoing):
+        table = block.table
+        margins = block.contentsMargins()
+        needed = margins.top() + table.y() + table.height() + margins.bottom()
+        assert block.height() >= needed - 1
+    window.close()
+
+
+
 def test_kkm_table_blocks_have_their_own_frame(qt_app, store):
     """v0.45.0: у каждого ряда дней своя обводка, поле между ними пустое."""
     from PySide6.QtGui import QColor

@@ -129,6 +129,11 @@ NEW_ROW_NAME = {
 NEW_PAYMENT_NAME = NEW_ROW_NAME[OUTGOING]  # короткий псевдоним
 # Сколько строк видно в блоке без прокрутки; дальше включается скроллбар.
 MAX_VISIBLE_ROWS = 8
+# v0.48.0: блок «Оплата» тянется до низа окна, но не сжимается ниже
+# этого числа строк — иначе в окне в половину экрана от него остаются
+# две строки, а остальные пропадают без всякой прокрутки (замечание
+# пользователя). Нехватку места теперь гасит прокрутка страницы.
+MIN_STRETCH_ROWS = 5
 
 def other_row_key(name: str) -> str:
     return f"{OTHER_PREFIX}{name}"
@@ -1431,7 +1436,13 @@ class MoneyBlock(QFrame):
             self.table.setSizePolicy(
                 QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding
             )
-            self.table.setMinimumHeight(header_height + row_height * 2 + 2)
+            # v0.48.0: не две строки, а MIN_STRETCH_ROWS — см. комментарий
+            # к константе: в половину экрана блок не должен схлопываться.
+            self.table.setMinimumHeight(
+                header_height
+                + min(rows, MIN_STRETCH_ROWS) * row_height
+                + 2
+            )
             self.table.setMaximumHeight(16777215)
             self.table.setVerticalScrollBarPolicy(
                 Qt.ScrollBarPolicy.ScrollBarAlwaysOn
@@ -1463,6 +1474,12 @@ class MoneyBlock(QFrame):
             )
         for column, width in COLUMN_WIDTHS.items():
             self.table.setColumnWidth(column, width)
+        # v0.48.0: рамка блока не сжимается ниже своего содержимого.
+        # Раньше при нехватке места рамка сжималась, а таблица внутри
+        # (у «Поступления» высота фиксирована) — нет, и вылезала наружу,
+        # наезжая на соседний блок. Теперь лишнее гасит прокрутка
+        # страницы, а блоки стоят целиком.
+        self.setMinimumHeight(self.layout().minimumSize().height())
 
     @staticmethod
     def _row_title(key: str) -> str:
@@ -1746,7 +1763,29 @@ class ReceiptsView(QWidget):
         self.summary_widget = summary_widget
         self._popup: AmountPopup | None = None
 
-        root = QHBoxLayout(self)
+        # v0.48.0: страница прокручивается по вертикали, когда блоки не
+        # влезают по высоте (окно в половину экрана). Раньше содержимое
+        # просто обрезалось краем окна: блок «Поступление» с
+        # фиксированной высотой таблицы вылезал из своей рамки и наезжал
+        # на блок «Оплата», а «Оплата» сжималась до двух строк.
+        outer = QVBoxLayout(self)
+        outer.setContentsMargins(0, 0, 0, 0)
+        outer.setSpacing(0)
+        scroll = QScrollArea(self)
+        scroll.setWidgetResizable(True)
+        scroll.setFrameShape(QFrame.Shape.NoFrame)
+        # Горизонтальной прокрутки нет (общее правило таблиц).
+        scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        # Полоса появляется только когда место кончилось: в полном экране
+        # всё встаёт целиком, и прокрутки нет — как было и раньше.
+        scroll.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
+        scroll.setStyleSheet(styles.WIDE_SCROLLBAR_ON_AREA)
+        content = QWidget()
+        scroll.setWidget(content)
+        outer.addWidget(scroll)
+        self.scroll_area = scroll
+
+        root = QHBoxLayout(content)
         root.setContentsMargins(10, 10, 10, 10)
         root.setSpacing(12)
 
