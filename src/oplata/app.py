@@ -778,7 +778,12 @@ class MainWindow(QMainWindow):
                 return  # пароль не принят — остаёмся на прежней вкладке
         if index != IDX_DATA:
             self._config_unlocked = False  # выход из «Конфигурации» = снова по паролю
-        if index not in self.access.pages:
+        # v0.50.0: «Конфигурация» открывается по паролю любому
+        # пользователю, даже если его роль этой вкладки не دارد
+        # (просьба пользователя: кнопка видна на плашке всегда).
+        if index not in self.access.pages and not (
+            index == IDX_DATA and self._config_unlocked
+        ):
             return
         self.stack.setCurrentIndex(index)
         self.nav_buttons[index].setChecked(True)
@@ -872,8 +877,12 @@ class MainWindow(QMainWindow):
         """Применить права пользователя: вкладки, база, ввод (v0.18.0)."""
 
         # Видны только разрешённые вкладки.
+        # v0.50.0: «Конфигурация» — исключение: кнопка видна **всегда**,
+        # независимо от прав (просьба пользователя). Сама вкладка
+        # по-прежнему открывается по паролю, поэтому права она не
+        # расширяет: что можно править внутри, решают права роли.
         for index, btn in enumerate(self.nav_buttons):
-            btn.setVisible(index in self.access.pages)
+            btn.setVisible(index in self.access.pages or index == IDX_DATA)
         # Переключатель базы — только тем, кому доступны обе базы.
         self.base_button.setVisible(self.access.can_switch_base)
         # Выгрузка и загрузка баз — только администратору (v0.20.0).
@@ -899,8 +908,12 @@ class MainWindow(QMainWindow):
         ):
             view.set_read_only(read_only)
         self.data_view.set_read_only(read_only, can_admin=self.access.can_admin_data)
-        # Текущая вкладка могла стать недоступной — показываем первую из разрешённых.
-        if self.stack.currentIndex() not in self.access.pages:
+        # Текущая вкладка могла стать недоступной — показываем первую из
+        # разрешённых. v0.50.0: с открытой по паролю «Конфигурацией»
+        # этого не делаем, иначе смена пользователя выкидывала бы с неё.
+        if self.stack.currentIndex() not in self.access.pages and not (
+            self.stack.currentIndex() == IDX_DATA and self._config_unlocked
+        ):
             first = self.access.pages[0]
             self.stack.setCurrentIndex(first)
             self.nav_buttons[first].setChecked(True)
