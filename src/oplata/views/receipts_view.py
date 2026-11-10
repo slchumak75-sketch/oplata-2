@@ -264,15 +264,6 @@ COLUMN_WIDTHS = {COL_VAT: 68}
 # Колонки дней уже итогов «Неделя/Месяц/Квартал/Год»: в них день и сумма
 # за день («88 888,88» влезает и в 92 px).
 DAY_COLUMN_WIDTH = 96
-# v0.46.0: окно в половину экрана (960 точек) — шесть колонок дней по
-# 96 точек в блок «Оплата» уже не влезают (нужно 744, есть 640), и
-# появлялась горизонтальная прокрутка. Теперь ширина колонки дня
-# считается по свободному месту, но не у́же ``MIN_DAY_COLUMN_WIDTH``:
-# в 74 точки влезает «88 888,88», а в 96 — и «1 234 567,89».
-MIN_DAY_COLUMN_WIDTH = 74
-# Запас на поля ячейки в колонке названия (перенос по словам): самая
-# длинная строка блока «Оплата» — «Поставщики».
-NAME_COLUMN_PADDING = 16
 # Высота строки: с запасом под перенос длинного названия строки на две
 # строки (wordWrap включён, колонка названия ограничена пятью
 # числовыми колонками).
@@ -1224,13 +1215,6 @@ class MoneyBlock(QFrame):
 
         self.set_rows(self.row_keys)
 
-    def resizeEvent(self, event) -> None:  # Qt API: имя задано Qt
-        super().resizeEvent(event)
-        # v0.46.0: ширина колонок дней считается от ширины окна, поэтому
-        # пересчитываем её при каждом изменении размера (иначе в узком
-        # окне блок «Оплата» вылезал за край и появлялась прокрутка).
-        self._apply_column_widths()
-
     # ------------------------------------------------------------------ вид
     def week_days(self) -> list[date]:
         """Шесть дней недели выбранной даты: Пн–Сб (без воскресенья)."""
@@ -1274,41 +1258,13 @@ class MoneyBlock(QFrame):
                 )
         self._apply_column_widths()
 
-    def _day_column_width(self) -> int:
-        """Ширина колонки дня: 96 точек, но уже — если место кончилось.
-
-        v0.46.0: колонка названия растягивается и сама занимает остаток,
-        поэтому считаем по её минимуму (самое длинное **слово** строки:
-        длинные названия переносятся). Остаток делим на шесть дней.
-        """
-
-        viewport = self.table.viewport().width()
-        if viewport <= 0:
-            return DAY_COLUMN_WIDTH
-        metrics = QFontMetrics(self.table.font())
-        longest_word = 0
-        for row in range(self.table.rowCount()):
-            item = self.table.item(row, COL_NAME)
-            if item is None:
-                continue
-            longest_word = max(
-                longest_word,
-                *(metrics.horizontalAdvance(word) for word in item.text().split()),
-            )
-        name_min = longest_word + NAME_COLUMN_PADDING
-        vat = 0 if self.table.isColumnHidden(COL_VAT) else COLUMN_WIDTHS[COL_VAT]
-        free = viewport - vat - name_min
-        width = free // (COLUMN_COUNT - FIRST_DAY_COL)
-        return max(MIN_DAY_COLUMN_WIDTH, min(DAY_COLUMN_WIDTH, width))
-
     def _apply_column_widths(self) -> None:
-        """Ширины колонок: дни — по месту (v0.46.0); шапка — по центру."""
+        """Ширины колонок фиксированы; шапка — по центру (v0.23.9)."""
 
-        day_width = self._day_column_width()
         for column in range(COL_VAT, COLUMN_COUNT):
             self.table.setColumnWidth(
                 column,
-                COLUMN_WIDTHS.get(column, day_width),
+                COLUMN_WIDTHS.get(column, DAY_COLUMN_WIDTH),
             )
             header_item = self.table.horizontalHeaderItem(column)
             if header_item is not None:
