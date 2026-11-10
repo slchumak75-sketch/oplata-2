@@ -5736,7 +5736,6 @@ def test_kkm_table_shows_month_with_repeating_days(qt_app, store):
     from oplata.views.kkm_view import (
         AMOUNT_MIN_WIDTH,
         BLOCKS,
-        COLUMNS_PER_BLOCK,
         COL_AMOUNT,
         COL_DATE,
         COL_KIND,
@@ -5780,8 +5779,8 @@ def test_kkm_table_shows_month_with_repeating_days(qt_app, store):
         table.item(0, c).background().style() is Qt.BrushStyle.NoBrush
         for c in SEPARATOR_COLUMNS
     )
-    # v0.45.0: «Сумма» в полтора раза у́же своей доли — она у́же колонки
-    # «Отчет», но не у́же разумного минимума.
+    # v0.46.0: «Сумма» вдвое у́же своей доли (в v0.45.0 — в полтора) —
+    # она у́же колонки «Отчет», но не у́же разумного минимума.
     assert table.columnWidth(COL_AMOUNT) < table.columnWidth(COL_KIND)
     assert table.columnWidth(COL_AMOUNT) >= AMOUNT_MIN_WIDTH
     # Обводку каждого ряда рисует делегат таблицы.
@@ -6042,6 +6041,60 @@ def test_kkm_table_blocks_have_their_own_frame(qt_app, store):
     middle_of_gap = sum(widths[: SEPARATOR_COLUMNS[0]]) + widths[SEPARATOR_COLUMNS[0]] // 2
     assert color(middle_of_gap) != border
     assert gap_start > 0
+    window.close()
+
+
+def test_kkm_amount_column_is_half_of_its_share(qt_app, store):
+    """v0.46.0: «Сумма» **вдвое у́же** своей доли (но не у́же минимума).
+
+    v0.45.0 делало колонку уже в полтора раза — она вышла широкой.
+    Проверяем сам расчёт: от ширины окна отнимаем «Дату» и «Отчет»
+    всех трёх рядов, долю одного ряда делим пополам.
+    """
+    from datetime import date
+
+    from oplata.app import IDX_KKM, MainWindow
+    from oplata.views.kkm_view import (
+        AMOUNT_MIN_WIDTH,
+        AMOUNT_WIDTH_RATIO,
+        BLOCKS,
+        COLUMNS_PER_BLOCK,
+        COL_AMOUNT,
+        COL_DATE,
+        COL_KIND,
+        SEPARATOR_COLUMNS,
+        SEPARATOR_WIDTH,
+        _block_first_column,
+    )
+
+    assert AMOUNT_WIDTH_RATIO == 1 / 2
+    window = MainWindow(store)
+    window.resize(1600, 900)
+    window.show()
+    window.show_page(IDX_KKM)
+    qt_app.processEvents()
+    view = window.kkm_view
+    view.set_month(date(2026, 11, 1))
+    qt_app.processEvents()
+    table = view.table
+
+    fixed = 0
+    for block in range(BLOCKS):
+        first = _block_first_column(block)
+        fixed += table.columnWidth(first + COL_DATE)
+        fixed += table.columnWidth(first + COL_KIND)
+    share = (table.viewport().width() - fixed) / BLOCKS
+    expected = max(int(share * AMOUNT_WIDTH_RATIO), AMOUNT_MIN_WIDTH)
+    for block in range(BLOCKS):
+        assert table.columnWidth(_block_first_column(block) + COL_AMOUNT) == expected
+    # Колонка заметно у́же «Отчета», но не теснее разумного минимума.
+    assert expected < table.columnWidth(_block_first_column(0) + COL_KIND)
+    assert expected >= AMOUNT_MIN_WIDTH
+    # Поля между рядами остались узкими: таблица не расползается.
+    assert all(table.columnWidth(c) == SEPARATOR_WIDTH for c in SEPARATOR_COLUMNS)
+    assert sum(table.columnWidth(c) for c in range(table.columnCount())) < (
+        table.viewport().width()
+    )
     window.close()
 
 
