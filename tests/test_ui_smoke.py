@@ -3599,7 +3599,12 @@ def test_user_rights_limit_pages_base_and_input(qt_app, store, monkeypatch, tmp_
     window.show()
     qt_app.processEvents()
     # Пользователь МИР: только «Покупатели», база МИР, только просмотр.
-    assert [b.text() for b in window.nav_buttons if not b.isHidden()] == ["Покупатели"]
+    # v0.50.0: кнопка «Конфигурация» видна и у него (просьба
+    # пользователя) — вкладка по-прежнему за паролем.
+    assert [b.text() for b in window.nav_buttons if not b.isHidden()] == [
+        "Покупатели",
+        "Конфигурация",
+    ]
     assert window.base_button.isHidden()
     assert store.base_key == "mir"
     assert window.customers_view.read_only is True
@@ -3609,7 +3614,10 @@ def test_user_rights_limit_pages_base_and_input(qt_app, store, monkeypatch, tmp_
     window.show()
     qt_app.processEvents()
     assert store.base_key == "korelichi"
-    assert [b.text() for b in window.nav_buttons if not b.isHidden()] == ["Покупатели"]
+    assert [b.text() for b in window.nav_buttons if not b.isHidden()] == [
+        "Покупатели",
+        "Конфигурация",  # v0.50.0: видна всегда
+    ]
     window.close()
 
 
@@ -6340,3 +6348,38 @@ def test_kkm_tab_is_in_rights_table_and_migrates_old_files(
     saved = {u["id"]: u["pages"] for u in written["users"]}
     assert saved["old-mir"] == ["customers"]
     assert saved["old-full"] == ["receipts", "kkm", "suppliers", "customers", "data"]
+
+
+def test_config_tab_button_is_always_on_the_top_bar(qt_app, store, monkeypatch, tmp_path):
+    """v0.50.0: кнопка «Конфигурация» видна на плашке у любого пользователя.
+
+    Просьба пользователя: «независимо от того кто пользователь кнопка
+    конфигурация должна быть всегда на верхней плашке». Роли это не
+    отменяет: вкладка по-прежнему открывается паролем, и что можно
+    править внутри, решают права пользователя.
+    """
+    from oplata import access as access_module
+    from oplata.app import IDX_DATA, MainWindow
+
+    monkeypatch.setattr(access_module, "data_dir", lambda: tmp_path)
+    access_module.set_password("1234")
+    _admin, _manager, user_mir, _user_kor = access_module.default_users()
+
+    window = MainWindow(store, access_module.Access(user_mir))
+    window.show()
+    qt_app.processEvents()
+    # У пользователя МИР из вкладок только «Покупатели», но кнопка
+    # «Конфигурация» на плашке есть.
+    assert window.nav_buttons[IDX_DATA].isVisible()
+    assert window.stack.currentIndex() != IDX_DATA
+    # Пароль спрашивают по-прежнему: с неверным вкладка не открывается.
+    _ask_password_as(monkeypatch, ("0000", True))
+    window.nav_buttons[IDX_DATA].click()
+    qt_app.processEvents()
+    assert window.stack.currentIndex() != IDX_DATA
+    # С верным паролем вкладка открывается и у пользователя МИР.
+    _ask_password_as(monkeypatch, ("1234", True))
+    window.nav_buttons[IDX_DATA].click()
+    qt_app.processEvents()
+    assert window.stack.currentIndex() == IDX_DATA
+    window.close()
