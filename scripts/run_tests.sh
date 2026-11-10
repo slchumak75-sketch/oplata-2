@@ -7,17 +7,22 @@
 # процессом pytest. Количество частей задаётся переменной TEST_PARTS
 # (по умолчанию 4); при небольшом наборе тестов деление безвредно.
 #
-# Отдельно учитывается известный крах САМОГО ВЫХОДА из процесса:
-# PySide6 в offscreen-режиме иногда роняет интерпретатор уже после того,
-# как все тесты части прошли («Fatal Python error: none_dealloc», код
-# 134/SIGABRT). Тесты к этому не относятся, поэтому такая часть
-# считается пройденной, если в её выводе есть «passed» и нет «failed».
+# Отдельно учитывается известный крах PySide6 в offscreen-режиме:
+# интерпретатор падает с «Fatal Python error: none_dealloc» (код
+# 134/SIGABRT). Если это случилось **после** того, как все тесты части
+# выполнились (в выводе есть «passed» и нет «failed»), часть считается
+# пройденной — тесты тут ни при чём. Если крах случился **в середине**
+# части, часть доигрывается: каждый её тест запускается отдельным
+# процессом. Так гарантируется, что все тесты действительно выполнены,
+# а настоящий провал теста не теряется среди падений интерпретатора
+# (иначе крах середины части выглядел бы как провал всего прогона).
 set -euo pipefail
 
 PARTS="${TEST_PARTS:-4}"
 LOG_FILE="${TEST_LOG_FILE:-$(mktemp)}"
 
-mapfile -t NAMES < <(python -m pytest --collect-only -q -p no:cacheprovider 2>/dev/null | grep '::' | sed 's/.*:://')
+mapfile -t IDS < <(python -m pytest --collect-only -q -p no:cacheprovider 2>/dev/null | grep '::')
+NAMES=("${IDS[@]##*::}")
 
 if [ "${#NAMES[@]}" -eq 0 ]; then
   echo "Тесты не найдены" >&2
@@ -55,15 +60,37 @@ for ((part = 0; part < PARTS; part++)); do
   set -e
 
   cat "$LOG_FILE"
-  if [ "$code" -ne 0 ]; then
-    # Крах на выходе из процесса после успешного прогона (см. шапку).
-    if [ "$code" -eq 134 ] \
-      && grep -q "passed" "$LOG_FILE" \
-      && ! grep -qE "[0-9]+ failed|FAILED|ERROR" "$LOG_FILE"; then
-      echo "--- часть $((part + 1)): тесты прошли, процесс упал на выходе (none_dealloc) — не считаем провалом"
-    else
-      status=1
+  if [ "$code" -eq 0 ]; then
+    continue
+  fi
+  # Крах на выходе из процесса после успешного прогона (см. шапку).
+  if [ "$code" -eq 134 ] \
+    && grep -q "passed" "$LOG_FILE" \
+    && ! grep -qE "[0-9]+ failed|FAILED|ERROR" "$LOG_FILE"; then
+    echo "--- часть $((part + 1)): тесты прошли, процесс упал на выходе (none_dealloc) — не считаем провалом"
+    continue
+  fi
+  # Крах случился **в середине** части: часть из тестов не выполнилась.
+  # До игрываем их по одному — так каждый тест будет выполнен, а
+  # настоящий провал теста не потеряется среди падений интерпретатора.
+  echo "--- часть $((part + 1)): процесс упал внутри прогона, доигрываем тесты по одному"
+  part_status=0
+  index=$start
+  for _name in "${chunk[@]}"; do
+    test_id="${IDS[$index]}"
+    index=$((index + 1))
+    set +e
+    python -m pytest "$test_id" -q -p no:cacheprovider >"$LOG_FILE" 2>&1
+    test_code=$?
+    set -e
+    if [ "$test_code" -ne 0 ] && ! grep -q "passed" "$LOG_FILE"; then
+      echo "--- ПРОВАЛ: $test_id"
+      cat "$LOG_FILE"
+      part_status=1
     fi
+  done
+  if [ "$part_status" -ne 0 ]; then
+    status=1
   fi
 done
 
