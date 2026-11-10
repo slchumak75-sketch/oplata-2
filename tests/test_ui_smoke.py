@@ -6129,10 +6129,10 @@ def test_kkm_table_blocks_have_their_own_frame(qt_app, store):
 def test_window_opens_at_half_of_the_screen(qt_app):
     """v0.47.0: окно — **половина экрана по горизонтали**.
 
-    Экран делится линией по горизонтали: программа занимает верхнюю
-    половину — **всю ширину** экрана и **половину его высоты**. На
-    экране 1920×1040 это 1920×520. (В v0.46.0 я перепутал направление
-    и делил экран по вертикали — половина ширины и вся высота.)
+    Экран делится линией по горизонтали: программа занимает **всю
+    ширину** экрана и **половину его высоты**. На экране 1920×1040 это
+    1920×520. (В v0.46.0 я перепутал направление и делил экран по
+    вертикали — половина ширины и вся высота.)
     """
     from PySide6.QtCore import QRect
 
@@ -6140,13 +6140,39 @@ def test_window_opens_at_half_of_the_screen(qt_app):
 
     rect = half_screen_geometry(QRect(0, 0, 1920, 1040))
     assert (rect.width(), rect.height()) == (1920, 520)
-    assert (rect.left(), rect.top()) == (0, 0)
-    # Доступная область сдвинута (панель задач сверху) — окно за ней.
+    assert rect.left() == 0
+    # v0.49.0: половина — **нижняя** (просьба пользователя): низ окна
+    # стоит у нижнего края доступной области.
+    assert rect.top() == 520
+    assert rect.bottom() == 1039
+
+
+def test_window_stays_in_the_bottom_half_when_area_is_shifted(qt_app):
+    """v0.49.0: окно стоит в нижней половине при любой доступной области.
+
+    Панель задач может быть и сверху, и снизу — окно всё равно
+    занимает нижнюю половину **доступной** области и не вылезает за её
+    пределы.
+    """
+    from PySide6.QtCore import QRect
+
+    from oplata.app import MIN_WINDOW_HEIGHT, half_screen_geometry
+
+    # Доступная область сдвинута вниз (панель задач сверху): окно — в
+    # нижней половине этой области, а не экрана.
     shifted = half_screen_geometry(QRect(0, 40, 1920, 1000))
-    assert (shifted.top(), shifted.height()) == (40, 500)
-    # Ниже разумного минимума высоту не роняем.
+    assert (shifted.top(), shifted.height()) == (540, 500)
+    assert shifted.bottom() == 1039
+    # Панель задач снизу: доступная область укорочена, окно над ней.
+    taskbar = half_screen_geometry(QRect(0, 0, 1920, 1000))
+    assert (taskbar.top(), taskbar.height()) == (500, 500)
+    assert taskbar.bottom() == 999
+    # Ниже разумного минимума высоту не роняем: окно прижато к низу и
+    # занимает минимум (400 точек), а не половину (250).
     low = half_screen_geometry(QRect(0, 0, 1920, 500))
     assert low.height() == max(500 // 2, MIN_WINDOW_HEIGHT)
+    assert low.top() == 100
+    assert low.bottom() == 499
 
 
 def test_main_window_uses_half_screen_geometry(qt_app, store, monkeypatch):
