@@ -6005,9 +6005,16 @@ def test_kkm_table_zebra_paints_whole_day_one_color(qt_app, store):
 
     view.set_month(date.today())
     qt_app.processEvents()
-    today_row = (date.today().day - 1) % 10 * 3
+    today = date.today()
+    # Строка дня — внутри своего ряда (1–10, 11–20, 21+), поэтому и
+    # столбец берём из того же ряда: иначе с 11-го по 30-е число тест
+    # смотрел бы в чужой ряд и не видел зелёную заливку.
+    today_block = (today.day - 1) // 10
+    today_row = (today.day - 1) % 10 * 3
     assert (
-        table.item(today_row, 0).background().color().name()
+        table.item(
+            today_row, _block_first_column(today_block)
+        ).background().color().name()
         == styles.WEEK_TABLE_TODAY_GREEN_BODY
     )
     window.close()
@@ -6400,9 +6407,9 @@ def test_config_password_gives_full_rights_inside_the_tab(qt_app, store, monkeyp
 
     monkeypatch.setattr(access_module, "data_dir", lambda: tmp_path)
     access_module.set_password("1234")
-    _admin, manager, _user_mir, user_kor = access_module.default_users()
+    _admin, manager, user_mir, _user_kor = access_module.default_users()
 
-    for user in (manager, user_kor):
+    for user in (manager, user_mir):
         window = MainWindow(store, access_module.Access(user))
         window.show()
         qt_app.processEvents()
@@ -6431,3 +6438,135 @@ def test_config_password_gives_full_rights_inside_the_tab(qt_app, store, monkeyp
         qt_app.processEvents()
         assert view.users_save_btn.isHidden()
         window.close()
+
+
+def test_operations_journal_is_open_for_users_without_edit_rights(qt_app, store):
+    """v0.52.0: журнал операций доступен всем, у кого стоит галочка вкладки.
+
+    Просьба пользователя: «В режиме "покупатель" режим Журнал операций
+    должен быть доступен всегда для всех пользователей для кого
+    доступен (стоит галочка). В режиме "поставщик" — так же». Раньше
+    ``_on_item_clicked`` при ``read_only`` просто выходил, и журнал не
+    открывался ни кликом, ни правой кнопкой: у Руководителя,
+    Пользователя МИР и Пользователя КОРЕЛИЧИ доступа к нему не было.
+
+    Журнал только показывает операции: окно открывается без кнопок
+    «Добавить/Изменить/Удалить» (v0.23.1).
+    """
+    from oplata import access as access_module
+    from oplata.app import IDX_CUSTOMERS, MainWindow
+    from oplata.models import Counterparty
+    from oplata.views.week_view import FIRST_DATA_ROW
+
+    store.data.customers[:] = [Counterparty(name="Покупатель 01")]
+    admin, manager, user_mir, _user_kor = access_module.default_users()
+
+    for user in (manager, user_mir):
+        window = MainWindow(store, access_module.Access(user))
+        window.show()
+        qt_app.processEvents()
+        opened: list[str] = []
+        window.open_operations_journal = lambda kind, _cid: opened.append(kind)
+        window.show_page(IDX_CUSTOMERS)
+        qt_app.processEvents()
+        view = window.customers_view
+        assert view.read_only is True
+        item = view.table.item(FIRST_DATA_ROW, 0)
+        # Клик по имени открывает журнал.
+        view._on_item_clicked(item)  # noqa: SLF001 - вызываем обработчик
+        qt_app.processEvents()
+        assert opened == ["customer"]
+        # Правый клик — тоже журнал: «Реализация» меняет данные и без
+        # права ввода недоступна.
+        opened.clear()
+        view.on_open_realization = lambda _cid, _d=None: opened.append("реализация")
+        view._on_context_menu(  # noqa: SLF001 - вызываем обработчик
+            view.table.visualItemRect(item).center()
+        )
+        qt_app.processEvents()
+        assert opened == ["customer"]
+        window.close()
+
+    # У администратора как прежде: клик — журнал, правый клик — окно
+    # «Реализация».
+    window = MainWindow(store, access_module.Access(admin))
+    window.show()
+    qt_app.processEvents()
+    opened = []
+    window.open_operations_journal = lambda kind, _cid: opened.append(kind)
+    window.show_page(IDX_CUSTOMERS)
+    qt_app.processEvents()
+    view = window.customers_view
+    assert view.read_only is False
+    item = view.table.item(FIRST_DATA_ROW, 0)
+    view._on_item_clicked(item)  # noqa: SLF001 - вызываем обработчик
+    qt_app.processEvents()
+    assert opened == ["customer"]
+    opened.clear()
+    view.on_open_realization = lambda _cid, _d=None: opened.append("реализация")
+    view._on_context_menu(  # noqa: SLF001 - вызываем обработчик
+        view.table.visualItemRect(item).center()
+    )
+    qt_app.processEvents()
+    assert opened == ["реализация"]
+    window.close()
+
+
+def test_amount_input_is_closed_without_edit_rights(qt_app, store):
+    """v0.52.0: без права ввода на вкладке «Поступление и оплата» ввод закрыт.
+
+    Замечание пользователя: «На вкладке поступления и оплата для
+    пользователя у которого нет доступа для ввода данных всё равно
+    сохранилась возможность ввода данных». Окно со списком
+    контрагентов и полями сумм открывалось по клику по строке и
+    сохраняло введённое.
+    """
+    from oplata import access as access_module
+    from oplata.app import MainWindow
+    from oplata.models import OUTGOING, Counterparty, add_other_payment
+    from oplata.views.receipts_view import CUSTOMERS_ROW
+
+    # Покупатель нужен, чтобы окно ввода (у администратора) открылось,
+    # а не показало сообщение «Нет покупателей».
+    store.data.customers[:] = [Counterparty(name="Покупатель 01")]
+    add_other_payment(store.data, "Аренда", "2026-11-10", OUTGOING)
+    admin, manager, user_mir, _user_kor = access_module.default_users()
+
+    for user in (manager, user_mir):
+        window = MainWindow(store, access_module.Access(user))
+        window.show()
+        qt_app.processEvents()
+        view = window.receipts_view
+        block = view.incoming
+        assert block.read_only is True
+        # Окно ввода сумм по строке «Покупатели» не открывается.
+        block._on_cell_clicked(  # noqa: SLF001 - вызываем обработчик
+            block.row_keys.index(CUSTOMERS_ROW), 0
+        )
+        qt_app.processEvents()
+        assert view._popup is None  # noqa: SLF001 - окно справа от строки
+        # Журнал строки (касса) — окно только для просмотра, он доступен.
+        block._on_cell_clicked(0, 0)  # noqa: SLF001 - вызываем обработчик
+        qt_app.processEvents()
+        assert view._popup is not None  # noqa: SLF001 - окно справа от строки
+        assert type(view._popup).__name__ == "JournalPopup"  # noqa: SLF001
+        # И сохранение суммы закрыто, откуда бы ввод ни пришёл.
+        before = len(store.data.operations)
+        view.save_direct_amount(CUSTOMERS_ROW, "1500")
+        qt_app.processEvents()
+        assert len(store.data.operations) == before
+        window.close()
+
+    # У администратора окно ввода открывается, как и раньше.
+    window = MainWindow(store, access_module.Access(admin))
+    window.show()
+    qt_app.processEvents()
+    view = window.receipts_view
+    block = view.incoming
+    assert block.read_only is False
+    block._on_cell_clicked(  # noqa: SLF001 - вызываем обработчик
+        block.row_keys.index(CUSTOMERS_ROW), 0
+    )
+    qt_app.processEvents()
+    assert view._popup is not None  # noqa: SLF001 - окно справа от строки
+    window.close()

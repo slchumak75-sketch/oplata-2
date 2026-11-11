@@ -1658,6 +1658,10 @@ class MoneyBlock(QFrame):
     def _open_card_for_row(self, row: int) -> None:
         """Двойной клик: открыть карточку своего вида (v0.25.1)."""
 
+        # v0.52.0: карточка меняет название, даты и НДС вида — без
+        # права ввода её не открываем.
+        if self.read_only:
+            return
         if row < 0 or row >= len(self.row_keys) or self.on_edit_card is None:
             return
         key = self.row_keys[row]
@@ -1669,7 +1673,9 @@ class MoneyBlock(QFrame):
     def _show_row_menu(self, position) -> None:
         """Правая кнопка по своему виду: «Дублировать» (v0.25.1)."""
 
-        if self.on_duplicate_card is None:
+        # v0.52.0: «Дублировать» добавляет строку — без права ввода
+        # меню не показываем.
+        if self.read_only or self.on_duplicate_card is None:
             return
         row = self.table.indexAt(position).row()
         if row < 0 or row >= len(self.row_keys):
@@ -1693,6 +1699,13 @@ class MoneyBlock(QFrame):
 
         key = self.row_keys[row]
         day = self.day_for_column(column)
+        # v0.52.0: без права ввода окно со списком контрагентов и
+        # полями сумм не открываем — иначе суммы сохранялись и у
+        # пользователя «только просмотр» (замечание пользователя).
+        # Журналы строк (касса, карты, свои виды) открываются: они
+        # только показывают операции.
+        if self.read_only and key in POPUP_ROWS:
+            return
         if key in POPUP_ROWS:
             self.on_open_popup(key, self.table, row, day)
             return
@@ -2088,6 +2101,9 @@ class ReceiptsView(QWidget):
     ) -> None:
         """Новое название строки, введённое прямо в ячейку."""
 
+        # v0.52.0: без права ввода строку не переименовываем.
+        if self._block(direction).read_only:
+            return
         old_name = other_row_name(row_key)
         cleaned = (new_name or "").strip()
         if not cleaned or cleaned == old_name:
@@ -2128,6 +2144,10 @@ class ReceiptsView(QWidget):
             direction = block.direction
         else:
             block = self.incoming
+        # v0.52.0: без права ввода сумму не сохраняем, откуда бы ввод ни
+        # пришёл (окно контрагентов, ячейка дня, клавиатура).
+        if block.read_only:
+            return
         # v0.38.0: день берём из колонки, в которую вводили сумму.
         day_iso = (day or block.current_date()).isoformat()
         cleaned = (text or "").strip()
@@ -2176,6 +2196,10 @@ class ReceiptsView(QWidget):
 
         # v0.20.0: блок определяем по строке — «прочие» бывают в обоих.
         block = self.incoming if row_key in self.incoming.row_keys else self.outgoing
+        # v0.52.0: без права ввода окно ввода сумм не открываем ниоткуда
+        # (клик по строке, отложенный журнал своего вида, клавиатура).
+        if block.read_only and row_key in POPUP_ROWS:
+            return None
         table = block.table
         if row is None:
             row = block.row_keys.index(row_key) if row_key in block.row_keys else 0
