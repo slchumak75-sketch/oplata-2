@@ -491,8 +491,30 @@ class WeekView(QWidget):
         self.goto_date(today)
         set_date_edit(self.date_edit, today)
 
+    def _open_journal_for_item(self, item: QTableWidgetItem) -> None:
+        """Журнал операций контрагента из строки (v0.52.0).
+
+        Журнал только **показывает** операции — менять их в нём нельзя
+        (окно открывается без кнопок «Добавить/Изменить/Удалить»),
+        поэтому он доступен любому пользователю, у которого стоит
+        галочка на вкладку (просьба пользователя).
+        """
+
+        if item is None or item.column() != 0 or item.row() < FIRST_DATA_ROW:
+            return
+        counterparty_id = item.data(Qt.ItemDataRole.UserRole)
+        if not counterparty_id:
+            return
+        if self.on_open_operations is not None:
+            self.on_open_operations(str(counterparty_id))
+
     def _on_item_clicked(self, item: QTableWidgetItem) -> None:
-        if self.read_only:  # v0.18.0: без права ввода окна ввода не открываем
+        # v0.52.0: без права ввода клик по имени открывает **журнал
+        # операций** — он доступен всем, у кого есть вкладка (просьба
+        # пользователя). Ввод сумм и метки «в работе/выписано» меняют
+        # данные, поэтому без права ввода они закрыты, как и раньше.
+        if self.read_only:
+            self._open_journal_for_item(item)
             return
         # v0.29.0: клик по узкой колонке метки переключает цвет
         # (красная «в работе» <-> зелёная «выписано»).
@@ -539,8 +561,6 @@ class WeekView(QWidget):
         двойной клик по имени.
         """
 
-        if self.read_only:  # v0.18.0: только просмотр
-            return
         item = self.table.itemAt(position)
         if item is None or item.row() < FIRST_DATA_ROW:
             return
@@ -549,6 +569,12 @@ class WeekView(QWidget):
             return
         counterparty_id = name_item.data(Qt.ItemDataRole.UserRole)
         if not counterparty_id:
+            return
+        # v0.52.0: «Поставка»/«Реализация» меняют данные, поэтому без
+        # права ввода (v0.18.0) правый клик открывает журнал операций —
+        # он доступен всем, у кого есть вкладка.
+        if self.read_only:
+            self._open_journal_for_item(name_item)
             return
         if self.kind == "supplier" and self.on_open_delivery is not None:
             self.on_open_delivery(str(counterparty_id), None)
