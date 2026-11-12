@@ -94,11 +94,11 @@ def alphabetical_key(item) -> str:
 
 
 NAME_FONT_SIZE = styles.fs(10)   # названия контрагентов
-LEAD_FONT_SIZE = styles.fs(11)   # итоговые колонки: «Итого»/«Всего» …
+LEAD_FONT_SIZE = styles.fs(10)   # итоговые колонки: «Итого»/«Всего» …
 NAME_WIDTH_BASE = 188
 NAME_WIDTH_MIN = 150
-LEAD_WIDTH_BASE = 118
-LEAD_WIDTH_MIN = 106
+LEAD_WIDTH_BASE = 110
+LEAD_WIDTH_MIN = 100
 
 HEADER_ROWS = 3
 TOTAL_ROW = 3
@@ -1336,8 +1336,10 @@ class WeekView(QWidget):
         if self.lead_offset:
             put(TOTAL_ROW, 1, "", bold=True, size=styles.fs(12))
         for col_idx, amount in total_columns:
+            # v0.56.0: шрифт итоговых колонок меньше основного
+            # (просьба пользователя) — и в шапке, и в значениях.
             cell = put(TOTAL_ROW, col_idx, _money_text(amount), bold=True,
-                       size=styles.fs(12))
+                       size=LEAD_FONT_SIZE)
             cell.setTextAlignment(
                 Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter
             )
@@ -1412,8 +1414,9 @@ class WeekView(QWidget):
                 invoiced, work, debt = customer_splits[r]
                 lead_amounts = ((1, debt), (2, invoiced), (3, work))
             for col_idx, amount in lead_amounts:
+                # v0.56.0: тот же шрифт, что у подписей итоговых колонок.
                 cell = put(row, col_idx, _money_text(amount),
-                           size=styles.fs(12))
+                           size=LEAD_FONT_SIZE)
                 cell.setTextAlignment(
                     Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter
                 )

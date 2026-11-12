@@ -32,12 +32,29 @@ from PySide6.QtWidgets import (
 from .. import styles
 from ..dates import fmt_money_plain
 from ..statement import Statement
+from .distribution_dialog import DistributionDialog
+from ..statement_match import classify
 from ..widgets import green_button
 
-COLUMNS = ("Дата", "УНП", "Наименование организации", "Оплата", "Поступление")
-COL_DATE, COL_UNP, COL_NAME, COL_OUT, COL_IN = range(5)
+COLUMNS = (
+    "Дата",
+    "УНП",
+    "Наименование организации",
+    "Оплата",
+    "Поступление",
+    # v0.56.0: «Примечание» — куда строка попадёт при разнесении
+    # (пояснение пользователя: база наполняется постепенно).
+    "Примечание",
+)
+COL_DATE, COL_UNP, COL_NAME, COL_OUT, COL_IN, COL_NOTE = range(6)
 # Ширины колонок: наименование тянется, остальные — фиксированные.
-COLUMN_WIDTHS = ((COL_DATE, 130), (COL_UNP, 130), (COL_OUT, 150), (COL_IN, 150))
+COLUMN_WIDTHS = (
+    (COL_DATE, 120),
+    (COL_UNP, 110),
+    (COL_OUT, 130),
+    (COL_IN, 130),
+    (COL_NOTE, 250),
+)
 
 
 class StatementDialog(QDialog):
@@ -49,9 +66,15 @@ class StatementDialog(QDialog):
         source_name: str = "",
         parent: QWidget | None = None,
         bank_unp: str = "",
+        store=None,
+        on_imported=None,
     ) -> None:
         super().__init__(parent)
         self.statement = statement
+        # v0.56.0: хранилище — по нему считается «Примечание» и делается
+        # разнесение; без него окно остаётся таблицей для просмотра.
+        self.store = store
+        self.on_imported = on_imported
         # v0.54.0: УНП обслуживающего банка — из карточки в «Конфигурации».
         # Его строки в выписке не поставщик и не покупатель.
         self.bank_unp = (bank_unp or "").strip()
@@ -109,20 +132,32 @@ class StatementDialog(QDialog):
         for column, width in COLUMN_WIDTHS:
             self.table.setColumnWidth(column, width)
         header.setSectionResizeMode(COL_NAME, QHeaderView.ResizeMode.Stretch)
+        header.setSectionResizeMode(COL_NOTE, QHeaderView.ResizeMode.Stretch)
         root.addWidget(self.table, stretch=1)
 
         self._fill_table()
 
         # --- кнопки ---
         buttons = QHBoxLayout()
+        if self.store is not None:
+            # Примечания считаются при открытии файла: когда в базе
+            # появился новый контрагент, достаточно нажать «Обновить».
+            refresh_btn = QPushButton("Обновить")
+            refresh_btn.setToolTip(
+                "Пересчитать примечания: поставщиков и покупателей "
+                "добавляют постепенно"
+            )
+            refresh_btn.clicked.connect(self._refresh_notes)
+            buttons.addWidget(refresh_btn)
         buttons.addStretch(1)
         cancel_btn = QPushButton("Отмена")
         cancel_btn.clicked.connect(self.reject)
         buttons.addWidget(cancel_btn)
 
-        self.continue_btn = green_button("Продолжить")
+        self.continue_btn = green_button("Разнести")
         self.continue_btn.setToolTip(
-            "Разнесение данных по «Поступлению и оплате» — второй этап"
+            "Разнести выписку по «Поступлению и оплате»: сначала "
+            "показываем, куда попадёт каждая строка"
         )
         self.continue_btn.clicked.connect(self._continue)
         buttons.addWidget(self.continue_btn)
@@ -176,6 +211,28 @@ class StatementDialog(QDialog):
             f"{tail}"
         )
 
+    def _note_text(self, row) -> str:
+        """Примечание: куда строка попадёт при разнесении (v0.56.0).
+
+        Считается **в момент показа**: базу поставщиков и покупателей
+        пользователь наполняет постепенно, поэтому при повторном
+        открытии файла примечания могут стать точнее.
+        """
+
+        if self.store is None:
+            return ""
+        return classify(row, self.store.data, self.bank_unp).note
+
+    def _refresh_notes(self) -> None:
+        """Пересчитать примечания (кнопка «Обновить»)."""
+
+        if self.store is None:
+            return
+        for row, item in enumerate(self.statement.rows):
+            cell = self.table.item(row, COL_NOTE)
+            if cell is not None:
+                cell.setText(self._note_text(item))
+
     def _is_bank(self, row) -> bool:
         """Строка принадлежит банку из карточки «Конфигурации» (v0.54.0)."""
         return bool(self.bank_unp) and row.unp == self.bank_unp
@@ -195,6 +252,7 @@ class StatementDialog(QDialog):
             self._set_cell(
                 row, COL_IN, self._amount(item.incoming_shown), money=True
             )
+            self._set_cell(row, COL_NOTE, self._note_text(item))
             if item.commission:
                 self.table.item(row, COL_OUT).setToolTip(
                     "Комиссия банка: удержана из суммы, поэтому "
@@ -254,12 +312,28 @@ class StatementDialog(QDialog):
 
     # --------------------------------------------------------------- кнопки
     def _continue(self) -> None:
-        """Разнесение — следующий этап; окно остаётся открытым."""
+        """Разнести выписку по базе (v0.56.0)."""
 
+        if self.store is None:
+            QMessageBox.information(
+                self,
+                "Разнесение",
+                "Разнесение будет доступно из раздела "
+                "«Поступление и оплата».",
+            )
+            return
+        preview = DistributionDialog(self.statement, self.store, self)
+        if preview.exec() != QDialog.DialogCode.Accepted:
+            return
+        result = preview.result_distribution
+        if result is None or not result.applied:
+            return
+        if self.on_imported is not None:
+            self.on_imported(result)
         QMessageBox.information(
             self,
-            "Продолжение",
-            "Таблица выписки готова.\n\n"
-            "Разнесение данных по разделу «Поступление и оплата» — "
-            "второй этап, он делается отдельно.",
+            "Готово",
+            f"Разнесено строк: {result.applied_count}.\n\n"
+            + "\n".join(result.applied[:15]),
         )
+        self.accept()

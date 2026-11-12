@@ -60,6 +60,11 @@ for ((part = 0; part < PARTS; part++)); do
   set -e
 
   cat "$LOG_FILE"
+  # Провал части — тоже в аннотации: причина видна без скачивания лога.
+  if [ "$code" -ne 0 ] && grep -qE "[0-9]+ failed|FAILED|ERROR" "$LOG_FILE"; then
+    grep -E "FAILED|Error|assert" "$LOG_FILE" | head -n 15 \
+      | awk '{printf "%s%%0A", $0}' | sed 's/^/::error ::/' | head -1
+  fi
   if [ "$code" -eq 0 ]; then
     continue
   fi
@@ -86,6 +91,10 @@ for ((part = 0; part < PARTS; part++)); do
     if [ "$test_code" -ne 0 ] && ! grep -q "passed" "$LOG_FILE"; then
       echo "--- ПРОВАЛ: $test_id"
       cat "$LOG_FILE"
+      # Хвост провала — в аннотации запуска: логи Actions скачивать
+      # не всегда удобно, а причина видна прямо на странице проверки.
+      tail -n 25 "$LOG_FILE" | awk '{printf "%s%%0A", $0}' \
+        | sed 's/^/::error ::/' | head -1
       part_status=1
     fi
   done

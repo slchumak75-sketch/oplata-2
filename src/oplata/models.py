@@ -412,6 +412,10 @@ class AppData:
     # добавлено в v0.54.0; в старых файлах его нет — подставится
     # карточка по умолчанию с пустым УНП.
     bank: Bank = field(default_factory=Bank)
+    # Ключи строк выписки, уже разнесённых по базе (v0.56.0): повторная
+    # загрузка того же файла не должна задваивать суммы. Поле добавлено
+    # в v0.56.0; в старых файлах его нет — пустой список.
+    imported_statement_rows: list[str] = field(default_factory=list)
 
     def to_dict(self) -> dict:
         return {
@@ -434,6 +438,7 @@ class AppData:
                 "funds": self.year_start.funds,
             },
             "bank": asdict(self.bank),
+            "imported_statement_rows": list(self.imported_statement_rows),
         }
 
     @classmethod
@@ -455,6 +460,9 @@ class AppData:
             bank=Bank.from_dict(data.get("bank")),
             kkm_reports=[
                 KkmReport.from_dict(x) for x in data.get("kkm_reports", [])
+            ],
+            imported_statement_rows=[
+                str(x) for x in data.get("imported_statement_rows", [])
             ],
         )
         # Миграция v0.8.0: у покупателей прежний «Приход» теперь называется

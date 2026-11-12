@@ -56,6 +56,7 @@ from .excelio import (
 )
 from .models import AppData, set_year_start_funds
 from .statement import StatementError, parse_statement
+from .statement_match import account_base_key
 from .storage import (
     BASE_KORELICHI,
     BASE_MIR,
@@ -432,10 +433,12 @@ class MainWindow(QMainWindow):
         self.import_bases_from_excel()
 
     def _on_load_statement_clicked(self) -> None:
-        """«Загрузить выписку»: PDF-файл -> таблица операций (v0.54.0).
+        """«Загрузить выписку»: PDF-файл -> таблица и разнесение (v0.56.0).
 
-        Пока только показ: данные программы не меняются. Разнесение
-        строк по «Поступлению и оплате» — второй этап.
+        По «Наименованию счета» из шапки узнаём, чья это выписка
+        («ООО МирСтройМаркет» — МИР, «ООО Мирсититорг» — КОРЕЛИЧИ).
+        Если открыта другая база — предупреждаем и предлагаем
+        переключиться: разносить выписку МИР в базу КОРЕЛИЧИ нельзя.
         """
 
         path, _selected = QFileDialog.getOpenFileName(
@@ -451,12 +454,51 @@ class MainWindow(QMainWindow):
         except StatementError as exc:
             QMessageBox.warning(self, "Загрузка выписки", str(exc))
             return
-        StatementDialog(
+        if not self._check_statement_base(statement):
+            return
+        dialog = StatementDialog(
             statement,
             Path(path).name,
             self,
             bank_unp=self.store.data.bank.unp,
-        ).exec()
+            store=self.store,
+            on_imported=self._after_statement_import,
+        )
+        dialog.exec()
+
+    def _check_statement_base(self, statement) -> bool:
+        """Выписка этой базы? Нет — предложить переключить (v0.56.0)."""
+
+        wanted = account_base_key(statement.account_name)
+        if wanted is None or wanted == self.store.base_key:
+            return True
+        answer = QMessageBox.question(
+            self,
+            "Загрузка выписки",
+            f"Выписка счёта «{statement.account_name}» относится к базе "
+            f"«{BASE_TITLES[wanted]}», а открыта «"
+            f"{BASE_TITLES[self.store.base_key]}».\n\n"
+            "Переключить базу и загрузить выписку в неё?",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.Yes,
+        )
+        if answer != QMessageBox.StandardButton.Yes:
+            return False
+        self.toggle_base()
+        return self.store.base_key == wanted
+
+    def _after_statement_import(self, result) -> None:
+        """После разнесения: сохранить и обновить таблицы (v0.56.0)."""
+
+        self.store.save()
+        self.refresh_all_views()
+        if result.already:
+            QMessageBox.information(
+                self,
+                "Выписка",
+                "Уже разносили раньше, пропущено строк: "
+                f"{len(result.already)}.",
+            )
 
     def _on_clear_base_clicked(self) -> None:
         """«Очистить базу»: удалить операции и суммы (v0.40.0).
