@@ -22,6 +22,8 @@ from __future__ import annotations
 
 from collections.abc import Callable
 
+from PySide6.QtCore import QRegularExpression
+from PySide6.QtGui import QRegularExpressionValidator
 from PySide6.QtWidgets import (
     QCheckBox,
     QComboBox,
@@ -43,6 +45,10 @@ from ..widgets import blue_button, danger_button, green_button
 from .. import styles
 
 NEW_ITEM_LABEL = "— Новый —"
+
+# v0.53.0: УНП (учётный номер плательщика) — 9 цифр. Поле необязательное,
+# поэтому пустое значение допустимо, а неполное — нет.
+UNP_LENGTH = 9
 
 
 class CounterpartyCardDialog(QDialog):
@@ -84,9 +90,28 @@ class CounterpartyCardDialog(QDialog):
         self.combo.currentIndexChanged.connect(lambda *_: self._load_selected())
         root.addWidget(self.combo)
 
-        root.addWidget(QLabel(f"Наименование {self._noun} *"))
+        # v0.53.0: наименование (тянется) и УНП (короткое поле справа).
+        name_row = QHBoxLayout()
+        name_row.setSpacing(24)
+        name_col = QVBoxLayout()
+        name_col.addWidget(QLabel(f"Наименование {self._noun} *"))
         self.name_edit = QLineEdit()
-        root.addWidget(self.name_edit)
+        name_col.addWidget(self.name_edit)
+        name_row.addLayout(name_col, stretch=1)
+        unp_col = QVBoxLayout()
+        unp_col.addWidget(QLabel("УНП"))
+        self.unp_edit = QLineEdit()
+        self.unp_edit.setPlaceholderText("9 цифр")
+        self.unp_edit.setMaxLength(UNP_LENGTH)
+        # 9 цифр должны помещаться целиком (ширина — как у поля суммы)
+        self.unp_edit.setFixedWidth(170)
+        # только цифры: буквы и знаки в УНП не бывают
+        self.unp_edit.setValidator(
+            QRegularExpressionValidator(QRegularExpression(r"\d*"))
+        )
+        unp_col.addWidget(self.unp_edit)
+        name_row.addLayout(unp_col, stretch=0)
+        root.addLayout(name_row)
 
         # Условия оплаты есть только у поставщика. Для покупателя этот
         # блок не создаём вовсе (по запросу пользователя — лишнее).
@@ -195,6 +220,7 @@ class CounterpartyCardDialog(QDialog):
         item = self._current()
         if item is None:
             self.name_edit.clear()
+            self.unp_edit.clear()
             if self.deferment_spin is not None:
                 self.deferment_spin.setValue(0)
             if self.chk_prepayment is not None:
@@ -204,6 +230,7 @@ class CounterpartyCardDialog(QDialog):
             self.chk_archived.setChecked(False)
         else:
             self.name_edit.setText(item.name)
+            self.unp_edit.setText(item.unp)
             if self.deferment_spin is not None:
                 self.deferment_spin.setValue(item.deferment_days)
             if self.chk_prepayment is not None:
@@ -228,6 +255,7 @@ class CounterpartyCardDialog(QDialog):
 
     def _apply_fields(self, item: Counterparty) -> None:
         item.name = self.name_edit.text().strip()
+        item.unp = self.unp_edit.text().strip()
         # У покупателя этих полей в окне нет: существующие значения модели
         # не затираем, новые покупатели получают значения по умолчанию.
         if self.deferment_spin is not None:
@@ -248,9 +276,30 @@ class CounterpartyCardDialog(QDialog):
             return False
         return True
 
+    def _validate_unp(self) -> bool:
+        """v0.53.0: УНП — 9 цифр. Пустое поле разрешено (не заполняли)."""
+
+        unp = self.unp_edit.text().strip()
+        if not unp:
+            return True
+        if len(unp) == UNP_LENGTH and unp.isdigit():
+            return True
+        QMessageBox.warning(
+            self,
+            "Проверьте УНП",
+            f"УНП — {UNP_LENGTH} цифр, а введено {len(unp)}.\n\n"
+            "Оставьте поле пустым, если УНП не нужен.",
+        )
+        self.unp_edit.setFocus()
+        self.unp_edit.selectAll()
+        return False
+
+    def _validate(self) -> bool:
+        return self._validate_name() and self._validate_unp()
+
     #                                                                кнопки
     def _add(self) -> None:
-        if not self._validate_name():
+        if not self._validate():
             return
         item = Counterparty(name="")
         self._apply_fields(item)
@@ -260,7 +309,7 @@ class CounterpartyCardDialog(QDialog):
         self._reload_combo(item.id)
 
     def _save_and_close(self) -> None:
-        if not self._validate_name():
+        if not self._validate():
             return
         item = self._current()
         if item is None:

@@ -155,6 +155,8 @@ def _write_sheet(book, title: str, header: list[str], rows: list[list[object]]) 
 def _base_rows(data: AppData) -> dict[str, tuple[list[str], list[list[object]]]]:
     """Все таблицы одной базы: название листа -> (заголовок, строки)."""
 
+    # v0.53.0: УНП — последней колонкой. Импорт читает колонки по
+    # порядку, поэтому старые выгрузки (без УНП) загружаются как прежде.
     counterparty_header = [
         "Название",
         "Идентификатор",
@@ -162,6 +164,7 @@ def _base_rows(data: AppData) -> dict[str, tuple[list[str], list[list[object]]]]
         "Предоплата",
         "Реализация",
         "В архиве",
+        "УНП",
     ]
 
     def counterparty_rows(items: list[Counterparty]) -> list[list[object]]:
@@ -173,6 +176,7 @@ def _base_rows(data: AppData) -> dict[str, tuple[list[str], list[list[object]]]]
                 _yes(item.prepayment),
                 _yes(item.realization),
                 _yes(item.archived),
+                item.unp,
             ]
             for item in items
         ]
@@ -322,6 +326,7 @@ def _read_counterparties(rows: list[list[object]]) -> list[Counterparty]:
                 prepayment=_parse_yes(get(3)),
                 realization=_parse_yes(get(4)),
                 archived=_parse_yes(get(5)),
+                unp=_text(get(6)),  # v0.53.0: в старых выгрузках пусто
             )
         )
     return result

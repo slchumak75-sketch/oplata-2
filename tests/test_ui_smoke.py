@@ -6570,3 +6570,133 @@ def test_amount_input_is_closed_without_edit_rights(qt_app, store):
     qt_app.processEvents()
     assert view._popup is not None  # noqa: SLF001 - окно справа от строки
     window.close()
+
+
+def test_counterparty_card_saves_unp(qt_app, store):
+    """v0.53.0: УНП вводится в карточке поставщика и покупателя.
+
+    Просьба пользователя: «сделай в карточках поставщиков и покупателей
+    возможность ввода УНП». Поле одно и то же для обоих видов карточек
+    (структура контрагента общая), пустым его оставлять можно.
+    """
+
+    from oplata.dialogs.counterparty_card import CounterpartyCardDialog
+
+    for kind, items in (
+        ("supplier", store.data.suppliers),
+        ("customer", store.data.customers),
+    ):
+        dialog = CounterpartyCardDialog(store, kind)
+        dialog.name_edit.setText("Контрагент с УНП")
+        dialog.unp_edit.setText("123456789")
+        dialog._add()
+        added = items[-1]
+        assert added.unp == "123456789"
+
+        # Повторное открытие показывает сохранённый УНП.
+        reopened = CounterpartyCardDialog(store, kind, selected_id=added.id)
+        assert reopened.unp_edit.text() == "123456789"
+        reopened.close()
+
+        # Пустой УНП — допустимое значение (не заполняли).
+        dialog.name_edit.setText("Без УНП")
+        dialog.unp_edit.clear()
+        dialog._add()
+        assert items[-1].unp == ""
+        dialog.close()
+
+
+def test_counterparty_card_rejects_incomplete_unp(qt_app, store, monkeypatch):
+    """v0.53.0: неполный УНП не сохраняется, карточка остаётся открытой."""
+
+    from PySide6.QtWidgets import QMessageBox
+
+    from oplata.dialogs.counterparty_card import CounterpartyCardDialog
+
+    warnings: list[str] = []
+    monkeypatch.setattr(
+        QMessageBox,
+        "warning",
+        lambda *args: warnings.append(str(args[-1])),
+    )
+
+    dialog = CounterpartyCardDialog(store, "supplier")
+    before = len(store.data.suppliers)
+    dialog.name_edit.setText("Короткий УНП")
+    dialog.unp_edit.setText("12345")
+    dialog._save_and_close()
+
+    assert len(warnings) == 1
+    assert "9 цифр" in warnings[0]
+    assert len(store.data.suppliers) == before  # ничего не сохранилось
+    assert dialog.result() != dialog.DialogCode.Accepted
+
+    # Девять цифр — сохраняется и закрывается.
+    dialog.unp_edit.setText("987654321")
+    dialog._save_and_close()
+    assert store.data.suppliers[-1].unp == "987654321"
+    dialog.close()
+
+
+def test_unp_survives_excel_round_trip(store, tmp_path):
+    """v0.53.0: УНП переживает выгрузку баз в Excel и загрузку обратно."""
+
+    pytest.importorskip("openpyxl")
+
+    from oplata.excelio import export_bases, import_bases
+    from oplata.models import Counterparty
+    from oplata.storage import BASE_MIR
+
+    store.data.suppliers.append(Counterparty(name="Поставщик У", unp="111222333"))
+    store.data.customers.append(Counterparty(name="Покупатель У", unp="444555666"))
+    store.save()
+
+    path = export_bases({BASE_MIR: store.data}, tmp_path / "oplata.xlsx")
+    (imported,) = import_bases(path).values()
+
+    assert [s.unp for s in imported.suppliers if s.name == "Поставщик У"] == [
+        "111222333"
+    ]
+    assert [c.unp for c in imported.customers if c.name == "Покупатель У"] == [
+        "444555666"
+    ]
+
+
+def test_old_excel_without_unp_column_imports(store, tmp_path):
+    """v0.53.0: выгрузка старой версии (без колонки УНП) читается как прежде."""
+
+    pytest.importorskip("openpyxl")
+
+    from openpyxl import Workbook
+
+    from oplata.excelio import (
+        SHEET_CUSTOMERS,
+        SHEET_SUPPLIERS,
+        _sheet_title,
+        import_bases,
+    )
+    from oplata.storage import BASE_MIR
+
+    book = Workbook()
+    book.remove(book.active)
+    for suffix in (SHEET_SUPPLIERS, SHEET_CUSTOMERS):
+        sheet = book.create_sheet(_sheet_title(BASE_MIR, suffix))
+        sheet.append(
+            [
+                "Название",
+                "Идентификатор",
+                "Отсрочка (дней)",
+                "Предоплата",
+                "Реализация",
+                "В архиве",
+            ]
+        )
+        sheet.append(["Старый контрагент", "id-1", 0, "нет", "нет", "нет"])
+    path = tmp_path / "old.xlsx"
+    book.save(path)
+
+    (imported,) = import_bases(path).values()
+
+    assert [s.name for s in imported.suppliers] == ["Старый контрагент"]
+    assert [s.unp for s in imported.suppliers] == [""]  # пусто, а не мусор
+    assert [c.unp for c in imported.customers] == [""]

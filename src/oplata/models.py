@@ -28,6 +28,7 @@ class Counterparty:
     """Поставщик или покупатель (структура карточек одинаковая)."""
 
     name: str
+    unp: str = ""           # v0.53.0: УНП — 9 цифр, необязательно
     id: str = field(default_factory=new_id)
     deferment_days: int = 0
     prepayment: bool = False    # Режим оплаты: «Предоплата»
@@ -38,6 +39,7 @@ class Counterparty:
     def from_dict(cls, data: dict) -> "Counterparty":
         return cls(
             name=str(data.get("name", "")),
+            unp=str(data.get("unp", "") or ""),
             id=str(data.get("id") or new_id()),
             deferment_days=int(data.get("deferment_days", 0)),
             prepayment=bool(data.get("prepayment", False)),
