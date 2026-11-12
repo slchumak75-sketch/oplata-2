@@ -7229,10 +7229,23 @@ def test_distribution_skips_already_imported_rows(qt_app, store):
 
 
 def test_week_lead_columns_are_narrower_and_smaller(qt_app, store):
-    """v0.56.0: итоговые колонки уже, шрифт в их ячейках меньше."""
+    """v0.56.0: итоговые колонки уже, шрифт в их ячейках меньше.
 
+    Сравниваем с величинами модуля, а не с измеренным шрифтом колонок
+    дней: тот подбирается по ширине окна (``_fit_amount_font``) и на
+    другой машине может оказаться любым.
+    """
+
+    from oplata import styles
     from oplata.models import Counterparty
+    from oplata.views import week_view
     from oplata.views.week_view import WeekView
+
+    # Было: ширина 118/106 и шрифт fs(11) — как у всей таблицы.
+    assert week_view.LEAD_WIDTH_BASE == 110
+    assert week_view.LEAD_WIDTH_MIN == 100
+    assert week_view.LEAD_FONT_SIZE == styles.fs(10)
+    assert week_view.LEAD_FONT_SIZE < styles.fs(11)
 
     store.data.suppliers.append(Counterparty(name="Поставщик", unp="1"))
     store.data.customers.append(Counterparty(name="Покупатель", unp="2"))
@@ -7242,10 +7255,9 @@ def test_week_lead_columns_are_narrower_and_smaller(qt_app, store):
         qt_app.processEvents()
         offset = 1 if kind == "supplier" else 0
         lead = view.table.columnWidth(1 + offset)
-        day = view.table.columnWidth(5 + offset)
-        assert lead < 110  # уже, чем прежде (было 118/106)
         lead_item = view.table.item(2, 1 + offset)
-        day_item = view.table.item(2, 5 + offset)
-        assert day_item is not None
-        assert lead_item.font().pixelSize() < day_item.font().pixelSize()
+        assert lead_item is not None
+        assert lead <= week_view.LEAD_WIDTH_BASE
+        # Шрифт значения в итоговой колонке — тот же, что у её подписи.
+        assert lead_item.font().pixelSize() == week_view.LEAD_FONT_SIZE
         view.close()
