@@ -25,7 +25,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from decimal import Decimal
+from decimal import Decimal, InvalidOperation
 
 from .calc import OTHER_INCOME_TITLE
 from .models import (
@@ -33,10 +33,13 @@ from .models import (
     CASH_SOURCE,
     INCOMING,
     KIND_PAYMENT,
+    KIND_SALE,
     OUTGOING,
     AppData,
     Counterparty,
     add_realization,
+    cash_receipt_amount,
+    daily_operation_total,
     set_daily_cash_receipt,
     set_daily_operation,
     set_daily_other_payment,
@@ -184,11 +187,101 @@ def classify_all(
     return [classify(row, data, bank_unp) for row in statement.rows]
 
 
-def _iso_date(row: StatementRow) -> str:
+def iso_date(row: StatementRow) -> str:
     """«05.11.2026» → «2026-11-05» (фактическая дата операции)."""
 
     day, month, year = row.date.split(".")
     return f"{year}-{month}-{day}"
+
+
+def plan_key(row: StatementRow, match: Match) -> tuple:
+    """Ключ записи дня: назначение + получатель + дата операции."""
+
+    return (match.target, match.counterparty_id, match.payment_name,
+            iso_date(row))
+
+
+def plan_totals(
+    statement: Statement,
+    data: AppData,
+    matches: list[Match] | None = None,
+) -> dict[tuple, Decimal]:
+    """Суммы, которые разнос запишет по каждой записи дня (v0.57.0).
+
+    Запись дня в базе одна, поэтому строки выписки с одним назначением
+    и одной датой складываются: иначе вторая затёрла бы первую.
+    """
+
+    planned: dict[tuple, Decimal] = {}
+    for index, row in enumerate(statement.rows):
+        match = (
+            matches[index]
+            if matches is not None and index < len(matches)
+            else classify(row, data)
+        )
+        if not match.target or match.target == TARGET_NEW_PAYMENT:
+            continue
+        key = plan_key(row, match)
+        planned[key] = planned.get(key, Decimal("0")) + row.amount
+    return planned
+
+
+def base_amount(data: AppData, match: Match, date_iso: str) -> Decimal:
+    """Сколько по этому назначению **уже записано** в базе за день.
+
+    Показывается в окне разноса до записи (v0.57.0): видно, совпадает
+    сумма выписки с уже введённой или день придётся перезаписать.
+    """
+
+    if match.target == TARGET_CARD:
+        return _cash_receipt_total(data, CARD_SOURCE, date_iso)
+    if match.target == TARGET_CASH:
+        return _cash_receipt_total(data, CASH_SOURCE, date_iso)
+    if match.target == TARGET_CUSTOMERS:
+        return daily_operation_total(
+            data.operations, match.counterparty_id, date_iso, KIND_SALE
+        )
+    if match.target == TARGET_SUPPLIERS:
+        return daily_operation_total(
+            data.operations, match.counterparty_id, date_iso, KIND_PAYMENT
+        )
+    if match.target == TARGET_OTHER_INCOME:
+        return _other_payment_total(
+            data, OTHER_INCOME_ROW_TITLE, date_iso, INCOMING
+        )
+    if match.target == TARGET_OTHER_PAYMENT:
+        return _other_payment_total(
+            data, match.payment_name, date_iso, OUTGOING
+        )
+    return Decimal("0")
+
+
+def _cash_receipt_total(data: AppData, source: str, date_iso: str) -> Decimal:
+    return sum(
+        (
+            cash_receipt_amount(receipt)
+            for receipt in data.cash_receipts
+            if receipt.source == source and receipt.date == date_iso
+        ),
+        Decimal("0"),
+    )
+
+
+def _other_payment_total(
+    data: AppData, name: str, date_iso: str, direction: str
+) -> Decimal:
+    total = Decimal("0")
+    for payment in data.other_payments:
+        if (
+            payment.name == name
+            and payment.date == date_iso
+            and payment.direction == direction
+        ):
+            try:
+                total += Decimal(payment.amount or "0")
+            except InvalidOperation:  # битую сумму считаем нулевой
+                continue
+    return total
 
 
 def distribute(
@@ -227,12 +320,7 @@ def distribute(
         if match.target == TARGET_NEW_PAYMENT:
             result.unresolved.append(row)
             continue
-        target_key = (
-            match.target,
-            match.counterparty_id,
-            match.payment_name,
-            _iso_date(row),
-        )
+        target_key = plan_key(row, match)
         planned[target_key] = planned.get(target_key, Decimal("0")) + row.amount
         labels[target_key] = match.note
         seen.add(key)
