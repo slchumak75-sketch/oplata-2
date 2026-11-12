@@ -42,11 +42,13 @@ from ..statement import Statement
 from ..statement_match import (
     OTHER_INCOME_ROW_TITLE,
     base_amount,
+    classify_commission,
     find_by_unp,
     find_payment_by_unp,
     iso_date,
     plan_key,
     plan_totals,
+    row_is_blocked,
     TARGET_CARD,
     TARGET_CASH,
     TARGET_CUSTOMERS,
@@ -105,10 +107,15 @@ class DistributionDialog(QDialog):
             classify(row, store.data, store.data.bank.unp)
             for row in statement.rows
         ]
+        # Комиссия банка по строке — отдельная запись в оплатах.
+        self.commissions: list[Match] = [
+            classify_commission(row, store.data, store.data.bank.unp)
+            for row in statement.rows
+        ]
         # Сколько запишем по каждой записи дня: строки одного дня и
         # одного назначения складываются (запись дня в базе одна).
         self.planned: dict[tuple, Decimal] = plan_totals(
-            statement, store.data, self.matches
+            statement, store.data, self.matches, self.commissions
         )
         self.setWindowTitle("Разнести выписку")
         self.setModal(True)
@@ -183,8 +190,12 @@ class DistributionDialog(QDialog):
             )
             self._base_cell(index, row, match)
             self._target_cell(index, row_index, match)
-            note = self._cell(index, COL_NOTE, match.note)
-            if match.target == TARGET_NEW_PAYMENT:
+            commission = self.commissions[row_index]
+            text = match.note
+            if commission.note:
+                text = f"{text} · {commission.note}"
+            note = self._cell(index, COL_NOTE, text)
+            if row_is_blocked(match, commission):
                 note.setForeground(QColor(styles.RED))
 
     def _base_cell(self, index: int, row, match: Match) -> None:
@@ -220,7 +231,7 @@ class DistributionDialog(QDialog):
         """Пересчитать суммы и обновить колонку «Уже в базе»."""
 
         self.planned = plan_totals(
-            self.statement, self.store.data, self.matches
+            self.statement, self.store.data, self.matches, self.commissions
         )
         for index, row_index in enumerate(self.visible):
             row = self.statement.rows[row_index]
@@ -335,8 +346,11 @@ class DistributionDialog(QDialog):
         if button is None:
             return
         match = self.matches[row_index]
-        needed = match.target == TARGET_NEW_PAYMENT or (
-            match.target == TARGET_OTHER_PAYMENT and not match.payment_name
+        commission = self.commissions[row_index]
+        needed = (
+            match.target == TARGET_NEW_PAYMENT
+            or commission.target == TARGET_NEW_PAYMENT
+            or (match.target == TARGET_OTHER_PAYMENT and not match.payment_name)
         )
         button.setVisible(needed)
 
@@ -390,14 +404,25 @@ class DistributionDialog(QDialog):
         )
         self.store.save()
         match = self.matches[row_index]
-        match.target = TARGET_OTHER_PAYMENT
+        if match.target == TARGET_NEW_PAYMENT:
+            match.target = TARGET_OTHER_PAYMENT
         match.payment_name = name
         match.counterparty_id = ""
         match.note = f"Вид оплаты: {name}"
         self._set_target_text(row, name, TARGET_OTHER_PAYMENT)
+        # Комиссия банка по строке теперь тоже знает, куда писать.
+        self.commissions[row_index] = classify_commission(
+            self.statement.rows[row_index],
+            self.store.data,
+            self.store.data.bank.unp,
+        )
         note = self.table.item(row, COL_NOTE)
         if note is not None:
-            note.setText(match.note)
+            commission = self.commissions[row_index]
+            note.setText(
+                f"{match.note} · {commission.note}" if commission.note
+                else match.note
+            )
             # Пустая кисть возвращает цвет по умолчанию: строка больше
             # не «неизвестная», вид оплаты для неё создан.
             note.setForeground(QBrush())
@@ -432,19 +457,15 @@ class DistributionDialog(QDialog):
 
     # --------------------------------------------------------------- запись
     def _apply(self) -> None:
-        def blocked(match: Match) -> bool:
-            if match.target == TARGET_NEW_PAYMENT:
-                return True
-            if match.target in (TARGET_CUSTOMERS, TARGET_SUPPLIERS):
-                return not match.counterparty_id
-            if match.target == TARGET_OTHER_PAYMENT:
-                return not match.payment_name
-            return False
+        def blocked(match: Match, commission: Match) -> bool:
+            return row_is_blocked(match, commission)
 
         unresolved = [
             row
-            for row, match in zip(self.statement.rows, self.matches)
-            if blocked(match)
+            for row, match, commission in zip(
+                self.statement.rows, self.matches, self.commissions
+            )
+            if blocked(match, commission)
         ]
         if unresolved:
             names = "\n".join(
@@ -467,13 +488,16 @@ class DistributionDialog(QDialog):
         # Строки без назначения и без вида оплаты не разносим; ряды и
         # назначения держим парами, иначе примечания «поедут».
         kept = [
-            (row, match)
-            for row, match in zip(self.statement.rows, self.matches)
-            if match.target and not blocked(match)
+            (row, match, commission)
+            for row, match, commission in zip(
+                self.statement.rows, self.matches, self.commissions
+            )
+            if match.target and not blocked(match, commission)
         ]
-        statement = replace(self.statement, rows=[row for row, _ in kept])
-        matches = [match for _, match in kept]
+        statement = replace(self.statement, rows=[row for row, _a, _b in kept])
+        matches = [match for _row, match, _commission in kept]
+        commissions = [commission for _row, _match, commission in kept]
         self.result_distribution = distribute(
-            statement, self.store.data, matches
+            statement, self.store.data, matches, commissions
         )
         self.accept()
