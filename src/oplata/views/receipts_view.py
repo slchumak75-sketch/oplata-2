@@ -46,8 +46,21 @@ from collections.abc import Callable, Iterable
 from datetime import date, timedelta
 from decimal import Decimal
 
-from PySide6.QtCore import QDate, QEvent, QObject, QPoint, Qt, QTimer
-from PySide6.QtGui import QBrush, QColor, QFontMetrics
+from PySide6.QtCore import (
+    QDate,
+    QEvent,
+    QObject,
+    QPoint,
+    QRegularExpression,
+    Qt,
+    QTimer,
+)
+from PySide6.QtGui import (
+    QBrush,
+    QColor,
+    QFontMetrics,
+    QRegularExpressionValidator,
+)
 from PySide6.QtWidgets import QStyle, QStyleOptionHeader
 from PySide6.QtWidgets import (
     QAbstractItemView,
@@ -92,6 +105,7 @@ from ..models import (
     KIND_PAYMENT,
     OUTGOING,
     add_other_payment,
+    alphabetical_key,
     cash_receipt_amount,
     delete_other_payment,
     operation_amount,
@@ -112,6 +126,9 @@ from ..widgets import (
     make_amount_edit,
     make_date_edit,
 )
+
+# v0.55.0: УНП — 9 цифр (как в карточках поставщика, покупателя и банка).
+UNP_LENGTH = 9
 
 CASH_ROW = "cash"
 CARD_ROW = "card"
@@ -766,6 +783,7 @@ class OtherPaymentCardDialog(QDialog):
         name: str = "",
         dates: Iterable[str] = (),
         vat_rate: str = "",
+        unp: str = "",
     ) -> None:
         super().__init__(parent)
         self.direction = direction
@@ -791,6 +809,19 @@ class OtherPaymentCardDialog(QDialog):
         self.vat_edit.setPlaceholderText("Например: 20")
         self.vat_edit.setText(str(vat_rate or "").strip())
         form.addRow("НДС, %:", self.vat_edit)
+
+        # v0.55.0: УНП контрагента этого вида (9 цифр, необязательно).
+        # По нему строка выписки узнаёт вид: банк с комиссией — не
+        # поставщик и не покупатель (замечание пользователя).
+        self.unp_edit = QLineEdit()
+        self.unp_edit.setPlaceholderText("9 цифр")
+        self.unp_edit.setMaxLength(UNP_LENGTH)
+        self.unp_edit.setFixedWidth(170)
+        self.unp_edit.setValidator(
+            QRegularExpressionValidator(QRegularExpression(r"\d*"))
+        )
+        self.unp_edit.setText(str(unp or "").strip())
+        form.addRow("УНП:", self.unp_edit)
 
         # v0.24.0: календарь — отмеченные даты красят ячейки таблицы
         # «Оплата» красным (просьба пользователя).
@@ -850,6 +881,12 @@ class OtherPaymentCardDialog(QDialog):
         except ValueError:
             return False
         return True
+
+    @property
+    def unp_value(self) -> str:
+        """УНП вида оплаты: 9 цифр или пусто (v0.55.0)."""
+
+        return self.unp_edit.text().strip()
 
     @property
     def name_value(self) -> str:
@@ -1971,12 +2008,15 @@ class ReceiptsView(QWidget):
             name=name,
             dates=payment.dates,
             vat_rate=payment.vat_rate,
+            unp=payment.unp,  # v0.55.0: УНП вида оплаты
         )
         if dialog.exec() != QDialog.DialogCode.Accepted:
             return
         payment.dates = list(dialog.marked_dates)
         # v0.33.0: ставка НДС вида оплаты.
         payment.vat_rate = dialog.vat_value
+        # v0.55.0: УНП вида оплаты.
+        payment.unp = dialog.unp_value
         new_name = dialog.name_value
         if new_name != name:
             rename_other_payment(self.store.data, name, new_name, direction)
@@ -2007,6 +2047,7 @@ class ReceiptsView(QWidget):
             direction,
             dates=list(payment.dates),
             vat_rate=payment.vat_rate,
+            unp=payment.unp,  # v0.55.0: УНП вида копируется
         )
         self.store.save()
         self.refresh_rows()
@@ -2036,6 +2077,7 @@ class ReceiptsView(QWidget):
                 dates=dialog.marked_dates,
                 # v0.33.0: ставка НДС из карточки вида оплаты.
                 vat_rate=dialog.vat_value,
+                unp=dialog.unp_value,  # v0.55.0: УНП вида оплаты
             )
             self.store.save()
             self.refresh_rows()
@@ -2216,14 +2258,20 @@ class ReceiptsView(QWidget):
         title = f"{ROW_TITLES[row_key]} · {target_day.strftime('%d.%m')}"
 
         if row_key == CUSTOMERS_ROW:
-            people = [c for c in self.store.data.customers if not c.archived]
+            people = sorted(
+                (c for c in self.store.data.customers if not c.archived),
+                key=alphabetical_key,
+            )
             empty_title = "Нет покупателей"
             empty_text = (
                 "Добавьте покупателя через кнопку «Карточка покупателя»."
             )
             hint = "Сумма поступит в колонку «Оплата» покупателя за дату."
         else:
-            people = [s for s in self.store.data.suppliers if not s.archived]
+            people = sorted(
+                (s for s in self.store.data.suppliers if not s.archived),
+                key=alphabetical_key,
+            )
             empty_title = "Нет поставщиков"
             empty_text = (
                 "Добавьте поставщика через кнопку «Карточка поставщика»."

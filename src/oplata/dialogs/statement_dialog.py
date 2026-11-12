@@ -14,7 +14,7 @@ from __future__ import annotations
 from decimal import Decimal
 
 from PySide6.QtCore import Qt
-from PySide6.QtGui import QColor
+from PySide6.QtGui import QColor, QFontMetrics
 from PySide6.QtWidgets import (
     QAbstractItemView,
     QDialog,
@@ -70,6 +70,27 @@ class StatementDialog(QDialog):
         root.addWidget(QLabel(self._caption(source_name)))
 
         self.table = QTableWidget()
+        # v0.55.0: строки узкие — по шрифту, без «воздуха» (просьба
+        # пользователя): выписка бывает длинная, и в экран должно
+        # влезать как можно больше операций.
+        # Шрифт ставим самому виджету, а не только стилем: тогда
+        # QFontMetrics даёт верную высоту строки.
+        table_font = self.table.font()
+        table_font.setPixelSize(styles.fs(11))
+        self.table.setFont(table_font)
+        self.table.setStyleSheet(
+            f"QTableWidget{{font-size:{styles.fs(11)}px;\n"
+            "gridline-color:" + styles.TABLE_GRID + ";}\n"
+            "QTableWidget::item{padding:1px 5px;}\n"
+            "QHeaderView::section{padding:3px 5px;}"
+        )
+        # Перенос слов выключен: иначе длинное наименование организации
+        # занимало две строки и таблица «раздувалась». Высота строки —
+        # одна строка текста по шрифту плюс 4 px.
+        self.table.setWordWrap(False)
+        row_height = QFontMetrics(self.table.font()).height() + 4
+        self.table.verticalHeader().setDefaultSectionSize(row_height)
+        self.table.verticalHeader().setMinimumSectionSize(row_height)
         self.table.setColumnCount(len(COLUMNS))
         self.table.setHorizontalHeaderLabels(list(COLUMNS))
         self.table.setEditTriggers(
@@ -121,16 +142,25 @@ class StatementDialog(QDialog):
             parts.append(f"счёт {statement.account}")
         head = " · ".join(parts)
         # Сверка: если обороты файла сошлись с суммой строк, это видно
-        # сразу — значит файл прочитан целиком, без потерь.
+        # сразу — значит файл прочитан целиком, без потерь. Комиссия
+        # банка попадает и в оплату, и в поступление (v0.55.0), поэтому
+        # ожидаемый оборот больше на сумму комиссий.
+        commission = statement.total_commission
         matched = (
-            statement.total_outgoing == statement.turnover_outgoing
-            and statement.total_incoming == statement.turnover_incoming
+            statement.total_outgoing
+            == statement.turnover_outgoing + commission
+            and statement.total_incoming
+            == statement.turnover_incoming + commission
         )
-        tail = (
-            "Обороты сошлись с итогом файла."
-            if matched
-            else "Внимание: итог строк не совпал с оборотами файла."
-        )
+        if matched and commission:
+            tail = (
+                "Обороты сошлись с итогом файла "
+                f"(с учётом комиссий банка: {fmt_money_plain(commission)})."
+            )
+        elif matched:
+            tail = "Обороты сошлись с итогом файла."
+        else:
+            tail = "Внимание: итог строк не совпал с оборотами файла."
         bank_rows = sum(1 for row in statement.rows if self._is_bank(row))
         if bank_rows:
             tail += (
@@ -157,14 +187,25 @@ class StatementDialog(QDialog):
             self._set_cell(row, COL_DATE, item.date)
             self._set_cell(row, COL_UNP, item.unp)
             self._set_cell(row, COL_NAME, item.name)
+            # v0.55.0: комиссия банка добавляется к поступлению и
+            # показывается в оплате — её платим мы.
             self._set_cell(
-                row, COL_OUT, self._amount(item.outgoing), money=True
+                row, COL_OUT, self._amount(item.outgoing_shown), money=True
             )
-            self._set_cell(row, COL_IN, self._amount(item.incoming), money=True)
+            self._set_cell(
+                row, COL_IN, self._amount(item.incoming_shown), money=True
+            )
+            if item.commission:
+                self.table.item(row, COL_OUT).setToolTip(
+                    "Комиссия банка: удержана из суммы, поэтому "
+                    f"добавлена и к поступлению ({fmt_money_plain(item.commission)})"
+                )
             if self._is_bank(item):
                 self._mark_bank_row(row)
         self._fill_total_row(len(rows))
-        self.table.resizeRowsToContents()
+        # Высоту строк не пересчитываем: она задана одна на все
+        # (defaultSectionSize) — иначе Qt добавит запас, и таблица
+        # выписки перестанет быть компактной.
 
     def _mark_bank_row(self, row: int) -> None:
         """Серым фоном и подсказкой отметить операции самого банка."""

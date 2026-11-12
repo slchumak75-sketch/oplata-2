@@ -33,7 +33,13 @@ from PySide6.QtWidgets import (
 
 from ..dates import fmt_date, fmt_money_plain
 from ..dialogs.operation_dialog import OperationDialog
-from ..models import KIND_INCOME, KIND_PAYMENT, KIND_SALE, Operation
+from ..models import (
+    KIND_INCOME,
+    KIND_PAYMENT,
+    KIND_SALE,
+    Operation,
+    alphabetical_key,
+)
 from .. import styles
 from ..storage import DataStore
 from ..widgets import danger_button, green_button, make_panel
@@ -325,9 +331,12 @@ class OperationsView(QWidget):
         self.supplier_filter.blockSignals(True)
         self.supplier_filter.clear()
         self.supplier_filter.addItem(ALL_COUNTERPARTIES, "")
-        for supplier in self.store.data.suppliers:
+        # v0.55.0: список — по алфавиту, как в таблицах поставщиков
+        # и покупателей: искать контрагента проще, когда порядок
+        # одинаковый во всей программе.
+        for supplier in sorted(self.store.data.suppliers, key=alphabetical_key):
             self.supplier_filter.addItem(supplier.name, supplier.id)
-        for customer in self.store.data.customers:
+        for customer in sorted(self.store.data.customers, key=alphabetical_key):
             self.supplier_filter.addItem(customer.name, customer.id)
         index = self.supplier_filter.findData(current_id or "")
         self.supplier_filter.setCurrentIndex(max(index, 0))
