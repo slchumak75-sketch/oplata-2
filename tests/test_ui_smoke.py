@@ -6,6 +6,7 @@
 """
 
 import os
+import re
 import sys
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
@@ -7086,6 +7087,24 @@ def test_statement_account_name_defines_base(qt_app):
     assert account_base_key("ООО Мирсититорг") == BASE_KORELICHI
     assert account_base_key("") is None
     assert account_base_key("ООО Чужое") is None
+
+
+def test_statement_purpose_survives_split_header(qt_app):
+    """v0.56.0: перенос строки внутри «Назначение платежа:» не теряет его.
+
+    Разные версии pypdf разбивают текст по-разному: в 5.9 «Назначение» и
+    «платежа: …» печатаются на разных строках. Без склейки назначение
+    пропадало, а по нему определяются выручка наличными и эквайринг.
+    """
+
+    from oplata.statement import extract_text, parse_statement_text
+
+    text = extract_text(SAMPLE_STATEMENT)
+    split = re.sub(r"Назначение\s+платежа:", "Назначение\n платежа:", text)
+    assert split != text  # в образце есть что разрывать
+    statement = parse_statement_text(split)
+    assert any(row.is_cash for row in statement.rows)
+    assert any(row.is_cards for row in statement.rows)
 
 
 def test_statement_notes_column_shows_where_row_goes(qt_app, store):

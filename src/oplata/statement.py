@@ -226,9 +226,35 @@ def parse_statement(path: Path | str) -> Statement:
     return parse_statement_text(extract_text(path))
 
 
+# Заголовки, которые pypdf может разорвать переносом строки: версия
+# библиотеки влияет на разбивку текста (в 5.9 «Назначение» и «платежа: …»
+# печатаются на разных строках), а по назначению платежа определяются
+# выручка наличными и эквайринг (v0.56.0).
+SPLIT_HEADERS = (
+    "Назначение платежа:",
+    "Фактическая дата и время совершения операции:",
+    "Наименование счета:",
+    "Входящее сальдо:",
+    "Исходящее сальдо:",
+    "Кол-во операций",
+)
+
+
+def join_split_headers(text: str) -> str:
+    """Склеить заголовок, разорванный переносом строки (v0.56.0)."""
+
+    for header in SPLIT_HEADERS:
+        words = header.split()
+        pattern = r"\s+".join(re.escape(word) for word in words[:-1])
+        pattern += r"\s*" + re.escape(words[-1])
+        text = re.sub(pattern, header, text)
+    return text
+
+
 def parse_statement_text(text: str) -> Statement:
     """Разобрать уже извлечённый текст выписки."""
 
+    text = join_split_headers(text)
     if "УНП:" not in text or "Фактическая дата" not in text:
         raise StatementError(
             "Файл не похож на выписку из банка: в нём нет ни одного "
