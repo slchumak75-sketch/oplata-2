@@ -8,6 +8,7 @@
 import os
 import re
 import sys
+from decimal import Decimal
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
@@ -7280,3 +7281,118 @@ def test_week_lead_columns_are_narrower_and_smaller(qt_app, store):
         # Шрифт значения в итоговой колонке — тот же, что у её подписи.
         assert lead_item.font().pixelSize() == week_view.LEAD_FONT_SIZE
         view.close()
+
+
+# --------------------------------------------------------------- v0.57.0
+def test_distribution_shows_base_amounts_before_writing(qt_app, store):
+    """v0.57.0: колонка «Уже в базе» — что записано и что станет."""
+
+    from oplata.models import CARD_SOURCE, CashReceipt, Counterparty
+    from oplata.statement import Statement, StatementRow
+    from oplata.dialogs.distribution_dialog import (
+        COL_BASE,
+        COL_NAME,
+        DistributionDialog,
+    )
+
+    store.data.customers.append(Counterparty(name="Покупатель", unp="1"))
+    statement = Statement(
+        rows=[
+            StatementRow(
+                date="05.11.2026", unp="100325912", name="БАНК",
+                incoming=1000, purpose="Перечисление денежных средств "
+                "по операциям с платежными карточками",
+            ),
+            StatementRow(
+                date="05.11.2026", unp="1", name="Покупатель", incoming=50,
+            ),
+        ]
+    )
+    # За этот день по картам уже лежит 300,00 — день будет заменён.
+    store.data.cash_receipts.append(
+        CashReceipt(source=CARD_SOURCE, date="2026-11-05", amount="300.00")
+    )
+    dialog = DistributionDialog(statement, store)
+    dialog.show()
+    qt_app.processEvents()
+
+    cards = dialog.table.item(0, COL_BASE).text()
+    customers = dialog.table.item(1, COL_BASE).text()
+    assert cards == "300,00 → 1 000,00"  # прежняя сумма заменяется
+    assert customers == "0,00 → 50,00"
+    assert dialog.table.item(0, COL_NAME).text() == "БАНК"
+    dialog.close()
+
+
+def test_distribution_creates_payment_card_for_row(qt_app, store, monkeypatch):
+    """v0.57.0: вид оплаты создаётся карточкой из окна разноса."""
+
+    from PySide6.QtWidgets import QDialog
+    from oplata.models import OUTGOING, other_payment_names
+    from oplata.statement import Statement, StatementRow
+    from oplata.dialogs.distribution_dialog import (
+        COL_NOTE,
+        DistributionDialog,
+        NEW_PAYMENT_CHOICE,
+    )
+    from oplata.statement_match import TARGET_NEW_PAYMENT, TARGET_OTHER_PAYMENT
+    from oplata.views.receipts_view import OtherPaymentCardDialog
+
+    monkeypatch.setattr(
+        OtherPaymentCardDialog,
+        "exec",
+        lambda self: QDialog.DialogCode.Accepted,
+    )
+    statement = Statement(
+        rows=[
+            StatementRow(
+                date="05.11.2026", unp="192775574",
+                name='ООО "ТД КОМПЛЕКТ"', outgoing=Decimal("8408.53"),
+            )
+        ]
+    )
+    dialog = DistributionDialog(statement, store)
+    dialog.show()
+    qt_app.processEvents()
+
+    row_index = next(
+        index
+        for index, match in enumerate(dialog.matches)
+        if match.target == TARGET_NEW_PAYMENT
+    )
+    row = dialog.visible.index(row_index)
+    combo = dialog._target_combo(row)
+    assert combo.currentText() == NEW_PAYMENT_CHOICE
+
+    assert dialog._create_payment(row, row_index) is True
+    # Карточка создана один раз, с УНП и названием из строки выписки.
+    assert other_payment_names(store.data, OUTGOING) == ['ООО "ТД КОМПЛЕКТ"']
+    payments = [
+        payment
+        for payment in store.data.other_payments
+        if payment.unp == "192775574"
+    ]
+    assert len(payments) == 1
+    assert payments[0].date == "2026-11-05"
+
+    # Строка стала «Вид оплаты», сумма попала в план разноса.
+    match = dialog.matches[row_index]
+    assert match.target == TARGET_OTHER_PAYMENT
+    assert match.payment_name == 'ООО "ТД КОМПЛЕКТ"'
+    assert dialog.table.item(row, COL_NOTE).text() == (
+        'Вид оплаты: ООО "ТД КОМПЛЕКТ"'
+    )
+    assert dialog._target_combo(row).currentText() == 'ООО "ТД КОМПЛЕКТ"'
+    assert str(dialog.planned[next(iter(dialog.planned))]) == "8408.53"
+
+    # И сумма уходит именно в созданный вид оплаты, той же датой.
+    dialog._apply()
+    written = [
+        payment
+        for payment in store.data.other_payments
+        if payment.date == "2026-11-05" and payment.amount
+    ]
+    assert [(item.name, str(item.amount)) for item in written] == [
+        ('ООО "ТД КОМПЛЕКТ"', "8408.53")
+    ]
+    dialog.close()

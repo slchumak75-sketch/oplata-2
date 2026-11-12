@@ -1,17 +1,25 @@
-"""Окно «Разнести выписку» — таблица с колонкой «Куда» (v0.56.0).
+"""Окно «Разнести выписку» — таблица с колонками «Куда» и «Уже в базе».
 
 Перед записью показываем, куда попадёт каждая строка выписки (примечание
-считается заново — база наполняется постепенно), и даём поправить вручную.
-Строки, которым не хватило вида оплаты, остаются помеченными: их можно
-создать карточкой прямо из этой таблицы.
+считается заново — база наполняется постепенно), и даём поправить
+назначение вручную.
+
+v0.57.0:
+* колонка **«Уже в базе»** — сколько по этому назначению уже записано
+  на дату операции, и что станет после разноса (запись дня одна, поэтому
+  прежняя сумма заменяется — расхождение видно до записи);
+* строки, которым не хватило вида оплаты, создают его **карточкой прямо
+  здесь**: УНП и название подставляются из строки выписки.
 """
 
 from __future__ import annotations
 
 from dataclasses import replace
+from datetime import date
+from decimal import Decimal
 
 from PySide6.QtCore import Qt
-from PySide6.QtGui import QColor
+from PySide6.QtGui import QBrush, QColor
 from PySide6.QtWidgets import (
     QAbstractItemView,
     QComboBox,
@@ -29,11 +37,16 @@ from PySide6.QtWidgets import (
 
 from .. import styles
 from ..dates import fmt_money_plain
+from ..models import OUTGOING, add_other_payment, other_payment_names
 from ..statement import Statement
 from ..statement_match import (
     OTHER_INCOME_ROW_TITLE,
+    base_amount,
     find_by_unp,
     find_payment_by_unp,
+    iso_date,
+    plan_key,
+    plan_totals,
     TARGET_CARD,
     TARGET_CASH,
     TARGET_CUSTOMERS,
@@ -47,8 +60,18 @@ from ..statement_match import (
 )
 from ..widgets import green_button
 
-COLUMNS = ("Дата", "Наименование", "Сумма", "Куда", "Примечание")
-COL_DATE, COL_NAME, COL_AMOUNT, COL_TARGET, COL_NOTE = range(5)
+COLUMNS = (
+    "Дата",
+    "Наименование",
+    "Сумма",
+    "Уже в базе",
+    "Куда",
+    "Примечание",
+)
+COL_DATE, COL_NAME, COL_AMOUNT, COL_BASE, COL_TARGET, COL_NOTE = range(6)
+
+# Пункт списка «Куда» для строки, которой не хватило вида оплаты.
+NEW_PAYMENT_CHOICE = "Новый вид оплаты…"
 
 # Что можно выбрать в колонке «Куда»: подпись → ключ строки блока.
 TARGET_CHOICES = (
@@ -73,12 +96,20 @@ class DistributionDialog(QDialog):
         self.statement = statement
         self.store = store
         self.result_distribution = None
+        # Страховка от повторного входа: список «Куда» может дёрнуть
+        # создание карточки, пока карточка уже открыта.
+        self._creating_payment = False
         # Примечания считаются заново: с момента открытия файла в базе
         # могли появиться поставщики и покупатели.
         self.matches: list[Match] = [
             classify(row, store.data, store.data.bank.unp)
             for row in statement.rows
         ]
+        # Сколько запишем по каждой записи дня: строки одного дня и
+        # одного назначения складываются (запись дня в базе одна).
+        self.planned: dict[tuple, Decimal] = plan_totals(
+            statement, store.data, self.matches
+        )
         self.setWindowTitle("Разнести выписку")
         self.setModal(True)
         self.resize(980, 620)
@@ -91,7 +122,9 @@ class DistributionDialog(QDialog):
             QLabel(
                 "Проверьте, куда попадёт каждая строка. Назначение можно "
                 "изменить в колонке «Куда».\n"
-                "Дата записи — фактическая дата операции из выписки."
+                "Дата записи — фактическая дата операции из выписки. "
+                "Колонка «Уже в базе» показывает, что за этот день "
+                "записано сейчас и что станет после разноса."
             )
         )
 
@@ -113,7 +146,8 @@ class DistributionDialog(QDialog):
         header.setSectionResizeMode(COL_NAME, QHeaderView.ResizeMode.Stretch)
         header.setSectionResizeMode(COL_TARGET, QHeaderView.ResizeMode.Stretch)
         header.setSectionResizeMode(COL_NOTE, QHeaderView.ResizeMode.Stretch)
-        for column, width in ((COL_DATE, 110), (COL_AMOUNT, 130)):
+        for column, width in ((COL_DATE, 100), (COL_AMOUNT, 115),
+                              (COL_BASE, 150)):
             self.table.setColumnWidth(column, width)
         root.addWidget(self.table, stretch=1)
 
@@ -147,10 +181,52 @@ class DistributionDialog(QDialog):
             amount.setTextAlignment(
                 Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter
             )
+            self._base_cell(index, row, match)
             self._target_cell(index, row_index, match)
             note = self._cell(index, COL_NOTE, match.note)
             if match.target == TARGET_NEW_PAYMENT:
                 note.setForeground(QColor(styles.RED))
+
+    def _base_cell(self, index: int, row, match: Match) -> None:
+        """«Уже в базе»: что записано за день и что станет (v0.57.0).
+
+        Запись дня в базе одна, поэтому прежняя сумма **заменяется** —
+        об этом пишем и в ячейке, и в подсказке.
+        """
+
+        date_iso = iso_date(row)
+        current = base_amount(self.store.data, match, date_iso)
+        result = self.planned.get(plan_key(row, match), Decimal("0"))
+        if match.target == TARGET_NEW_PAYMENT:
+            text = "—"  # вид оплаты ещё не создан, писать некуда
+        elif current == result:
+            text = fmt_money_plain(current)
+        else:
+            text = f"{fmt_money_plain(current)} → {fmt_money_plain(result)}"
+        cell = self._cell(index, COL_BASE, text)
+        cell.setTextAlignment(
+            Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter
+        )
+        if match.target != TARGET_NEW_PAYMENT and current and current != result:
+            # Расхождение: день в базе уже заполнен другой суммой.
+            cell.setForeground(QColor(styles.RED))
+        cell.setToolTip(
+            f"За {date_iso} в базе: {fmt_money_plain(current)}.\n"
+            f"После разноса станет: {fmt_money_plain(result)}\n"
+            "Запись дня одна, прежняя сумма заменяется."
+        )
+
+    def _refresh_planned(self) -> None:
+        """Пересчитать суммы и обновить колонку «Уже в базе»."""
+
+        self.planned = plan_totals(
+            self.statement, self.store.data, self.matches
+        )
+        for index, row_index in enumerate(self.visible):
+            row = self.statement.rows[row_index]
+            match = self.matches[row_index]
+            self.table.takeItem(index, COL_BASE)
+            self._base_cell(index, row, match)
 
     def _cell(self, row: int, column: int, text: str) -> QTableWidgetItem:
         cell = QTableWidgetItem(text)
@@ -166,19 +242,39 @@ class DistributionDialog(QDialog):
         if match.target == TARGET_OTHER_PAYMENT:
             combo.insertItem(1, match.payment_name, match.target)
         elif match.target == TARGET_NEW_PAYMENT:
-            combo.insertItem(1, "Новый вид оплаты…", match.target)
+            combo.insertItem(1, NEW_PAYMENT_CHOICE, match.target)
         index = combo.findData(match.target)
         if index >= 0:
             combo.setCurrentIndex(index)
         combo.currentIndexChanged.connect(
             lambda _value, r=row, i=row_index: self._target_changed(r, i)
         )
-        self.table.setCellWidget(row, COL_TARGET, combo)
+        # v0.57.0: рядом со списком — кнопка создания вида оплаты. Она
+        # видна только тем строкам, которым вида не хватает.
+        holder = QWidget()
+        layout = QHBoxLayout(holder)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(4)
+        layout.addWidget(combo, stretch=1)
+        button = QPushButton("＋")
+        button.setFixedWidth(30)
+        button.setToolTip(
+            "Создать вид оплаты: УНП и наименование возьмём из строки "
+            "выписки"
+        )
+        button.clicked.connect(
+            lambda _checked=False, r=row, i=row_index: self._create_payment(
+                r, i
+            )
+        )
+        layout.addWidget(button)
+        self.table.setCellWidget(row, COL_TARGET, holder)
+        self._sync_target_button(row, row_index)
 
     def _target_changed(self, row: int, row_index: int) -> None:
         """Ручная правка назначения: примечание подстраиваем под выбор."""
 
-        combo = self.table.cellWidget(row, COL_TARGET)
+        combo = self._target_combo(row)
         target = combo.currentData() if combo is not None else ""
         row_data = self.statement.rows[row_index]
         match = self.matches[row_index]
@@ -222,6 +318,117 @@ class DistributionDialog(QDialog):
         cell = self.table.item(row, COL_NOTE)
         if cell is not None:
             cell.setText(match.note)
+        self._sync_target_button(row, row_index)
+        if combo is not None and combo.currentText() == NEW_PAYMENT_CHOICE:
+            # Выбрали «Новый вид оплаты…» — сразу открываем карточку.
+            self._create_payment(row, row_index)
+            return
+        self._refresh_planned()
+
+    def _sync_target_button(self, row: int, row_index: int) -> None:
+        """Показать кнопку «＋» строкам, которым не хватает вида оплаты."""
+
+        holder = self.table.cellWidget(row, COL_TARGET)
+        if holder is None:
+            return
+        button = holder.findChild(QPushButton)
+        if button is None:
+            return
+        match = self.matches[row_index]
+        needed = match.target == TARGET_NEW_PAYMENT or (
+            match.target == TARGET_OTHER_PAYMENT and not match.payment_name
+        )
+        button.setVisible(needed)
+
+    # ------------------------------------------- карточка вида оплаты
+    def _create_payment(self, row: int, row_index: int) -> bool:
+        """Создать вид оплаты карточкой (v0.57.0).
+
+        УНП и наименование — из строки выписки: пользователь наполняет
+        базу по ходу разбора файла, и уходить в «Конфигурацию» незачем.
+        """
+
+        if self._creating_payment:  # повторный вход из списка «Куда»
+            return False
+        from ..views.receipts_view import OtherPaymentCardDialog
+
+        self._creating_payment = True
+        try:
+            return self._create_payment_card(row, row_index)
+        finally:
+            self._creating_payment = False
+
+    def _create_payment_card(self, row: int, row_index: int) -> bool:
+        """Сама карточка: поля, сохранение, обновление строки."""
+
+        from ..views.receipts_view import OtherPaymentCardDialog
+
+        row_data = self.statement.rows[row_index]
+        used = set(other_payment_names(self.store.data, OUTGOING))
+        day = date.fromisoformat(iso_date(row_data))
+        # Имя из выписки: «ООО "ОМА"» → то же, но без лишних пробелов.
+        suggested = " ".join((row_data.name or row_data.unp).split())
+        dialog = OtherPaymentCardDialog(
+            OUTGOING,
+            used,
+            day,
+            self,
+            name=suggested,
+            unp=row_data.unp,
+        )
+        if dialog.exec() != QDialog.DialogCode.Accepted:
+            return False
+        name = dialog.name_value
+        add_other_payment(
+            self.store.data,
+            name,
+            day.isoformat(),
+            OUTGOING,
+            dates=list(dialog.marked_dates),
+            vat_rate=dialog.vat_value,
+            unp=dialog.unp_value,
+        )
+        self.store.save()
+        match = self.matches[row_index]
+        match.target = TARGET_OTHER_PAYMENT
+        match.payment_name = name
+        match.counterparty_id = ""
+        match.note = f"Вид оплаты: {name}"
+        self._set_target_text(row, name, TARGET_OTHER_PAYMENT)
+        note = self.table.item(row, COL_NOTE)
+        if note is not None:
+            note.setText(match.note)
+            # Пустая кисть возвращает цвет по умолчанию: строка больше
+            # не «неизвестная», вид оплаты для неё создан.
+            note.setForeground(QBrush())
+        self._refresh_planned()
+        return True
+
+    def _set_target_text(self, row: int, text: str, data: str) -> None:
+        """Выбрать в списке «Куда» пункт с нужным значением."""
+
+        combo = self._target_combo(row)
+        if combo is None:
+            return
+        # Сигналы гасим на всё время правки: вставка пункта сама по себе
+        # меняет текущий индекс и иначе дёрнула бы _target_changed.
+        combo.blockSignals(True)
+        try:
+            index = combo.findData(data)
+            if index < 0:
+                combo.insertItem(1, text, data)
+                index = combo.findData(data)
+            combo.setCurrentIndex(index)
+        finally:
+            combo.blockSignals(False)
+
+    def _target_combo(self, row: int) -> QComboBox | None:
+        widget = self.table.cellWidget(row, COL_TARGET)
+        if widget is None:
+            return None
+        if isinstance(widget, QComboBox):
+            return widget
+        return widget.findChild(QComboBox)
 
     # --------------------------------------------------------------- запись
     def _apply(self) -> None:
