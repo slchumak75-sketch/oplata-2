@@ -7157,6 +7157,7 @@ def test_distribution_writes_rows_on_operation_date(qt_app, store):
     from oplata.models import (
         CARD_SOURCE,
         CASH_SOURCE,
+        KIND_PAYMENT,
         Counterparty,
         OtherPayment,
         OUTGOING,
@@ -7209,12 +7210,16 @@ def test_distribution_writes_rows_on_operation_date(qt_app, store):
         for receipt in store.data.cash_receipts
     ] == [(CARD_SOURCE, "2026-11-05", "100.00"),
           (CASH_SOURCE, "2026-11-06", "200.00")]
-    # Реализация покупателя и оплата поставщику — операции своих дней.
+    # Деньги покупателя и оплата поставщику — операции «Оплата»
+    # своих дней (v0.58.0: поступление от покупателя — его оплата).
     assert [
-        (operation.counterparty_id, operation.date, str(operation.amount))
+        (operation.counterparty_id, operation.kind, operation.date,
+         str(operation.amount))
         for operation in store.data.operations
-    ] == [(customer.id, "2026-11-07", "300.00"),
-          (supplier.id, "2026-11-08", "400.00")]
+    ] == [
+        (customer.id, KIND_PAYMENT, "2026-11-07", "300.00"),
+        (supplier.id, KIND_PAYMENT, "2026-11-08", "400.00"),
+    ]
     assert [
         (payment.name, payment.date, str(payment.amount))
         for payment in store.data.other_payments
@@ -7396,3 +7401,107 @@ def test_distribution_creates_payment_card_for_row(qt_app, store, monkeypatch):
         ('ООО "ТД КОМПЛЕКТ"', "8408.53")
     ]
     dialog.close()
+
+
+# --------------------------------------------------------------- v0.58.0
+def test_incoming_from_customer_is_payment_not_realization(qt_app, store):
+    """v0.58.0: деньги от покупателя — оплата его долга, не реализация.
+
+    Раньше выписка создавала «Реализацию», и долг покупателя от
+    поступления только рос (замечание пользователя по файлу вм1.pdf).
+    """
+
+    from oplata.models import KIND_PAYMENT, KIND_SALE, Counterparty
+    from oplata.statement import Statement, StatementRow
+    from oplata.statement_match import distribute
+
+    customer = Counterparty(name="СПК ЖУХОВИЧИ", unp="500021189")
+    store.data.customers.append(customer)
+    statement = Statement(
+        rows=[
+            StatementRow(
+                date="10.11.2026", unp="500021189", name="СПК ЖУХОВИЧИ",
+                incoming=Decimal("314.76"),
+            )
+        ]
+    )
+    distribute(statement, store.data)
+
+    assert [
+        (op.kind, op.date, str(op.amount)) for op in store.data.operations
+    ] == [(KIND_PAYMENT, "2026-11-10", "314.76")]
+    assert not [
+        op for op in store.data.operations if op.kind == KIND_SALE
+    ]  # реализацию выписка не создаёт
+
+
+def test_bank_row_is_distributed_to_payment_by_unp(qt_app, store):
+    """v0.58.0: комиссия банка уходит в вид оплаты с УНП банка."""
+
+    from oplata.models import OUTGOING, OtherPayment
+    from oplata.statement import Statement, StatementRow
+    from oplata.statement_match import (
+        TARGET_OTHER_PAYMENT,
+        classify,
+        distribute,
+    )
+
+    store.data.bank.unp = "100325912"  # карточка банка из «Конфигурации»
+    store.data.other_payments.append(
+        OtherPayment(name="Комиссия банка", unp="100325912",
+                     direction=OUTGOING)
+    )
+    statement = Statement(
+        rows=[
+            StatementRow(
+                date="10.11.2026", unp="100325912",
+                name='ОАО "АСБ БЕЛАРУСБАНК"', outgoing=Decimal("44.05"),
+                incoming=Decimal("2298.65"), commission=Decimal("44.05"),
+                purpose="Перечисление денежных средств по операциям с "
+                "платежными карточками согласно отчету(ам) N1. "
+                "Комиссия банка - 44.05",
+            ),
+            StatementRow(
+                date="10.11.2026", unp="100325912",
+                name='ОАО "АСБ БЕЛАРУСБАНК"', outgoing=Decimal("5.80"),
+                purpose="Вознаграждение банку за прием наличных денежных "
+                "средств",
+            ),
+        ]
+    )
+    # Строка эквайринга — поступление по картам, комиссия — вид оплаты.
+    notes = [
+        classify(row, store.data, store.data.bank.unp).note
+        for row in statement.rows
+    ]
+    assert notes[0] == "Поступление по картам"
+    assert notes[1] == "Вид оплаты: Комиссия банка"
+
+    distribute(statement, store.data)
+    # Обе комиссии дня (44,05 и 5,80) легли в вид оплаты банка.
+    assert [
+        (payment.name, payment.date, str(payment.amount))
+        for payment in store.data.other_payments
+        if payment.date
+    ] == [("Комиссия банка", "2026-11-10", "49.85")]
+    # Поступление по картам — показуемая сумма: 2298,65 + 44,05.
+    assert [
+        (receipt.source, str(receipt.amount))
+        for receipt in store.data.cash_receipts
+    ] == [("card", "2342.70")]
+
+
+def test_bank_row_without_payment_asks_for_card(qt_app, store):
+    """v0.58.0: без вида оплаты строка банка ждёт карточку, а не пропуск."""
+
+    from oplata.statement import Statement, StatementRow
+    from oplata.statement_match import TARGET_NEW_PAYMENT, classify
+
+    store.data.bank.unp = "100325912"
+    row = StatementRow(
+        date="10.11.2026", unp="100325912", name='ОАО "АСБ БЕЛАРУСБАНК"',
+        outgoing=Decimal("44.05"),
+    )
+    match = classify(row, store.data, store.data.bank.unp)
+    assert match.target == TARGET_NEW_PAYMENT  # разносим, вида нет
+    assert "банка" in match.note

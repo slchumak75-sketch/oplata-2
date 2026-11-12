@@ -7,11 +7,13 @@
   * «Перечисление денежных средств по операциям с платежными
     карточками» → строка «Поступление по картам»;
   * «ВЫРУЧКА ОТ РЕАЛИЗАЦИИ» → строка «Поступление наличными»;
-  * УНП совпал с покупателем → строка «Покупатели»;
+  * УНП совпал с покупателем → строка «Покупатели»: деньги покупателя
+    — это **оплата** его долга (v0.58.0);
   * иначе → «Прочие поступления»;
 * **оплата**
   * УНП совпал с поставщиком → строка «Поставщики»;
-  * иначе ищем вид оплаты с таким УНП;
+  * иначе ищем вид оплаты с таким УНП (в том числе для самого банка:
+    комиссия и вознаграждение — тоже оплата, v0.58.0);
   * не нашёлся — строка ждёт карточку нового вида оплаты.
 
 Правило пользователя: **поиск всегда в первую очередь по УНП**, дата
@@ -24,7 +26,7 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from decimal import Decimal, InvalidOperation
 
 from .calc import OTHER_INCOME_TITLE
@@ -33,11 +35,9 @@ from .models import (
     CASH_SOURCE,
     INCOMING,
     KIND_PAYMENT,
-    KIND_SALE,
     OUTGOING,
     AppData,
     Counterparty,
-    add_realization,
     cash_receipt_amount,
     daily_operation_total,
     set_daily_cash_receipt,
@@ -134,8 +134,10 @@ def classify(row: StatementRow, data: AppData, bank_unp: str = "") -> Match:
     """Определить, куда попадёт строка выписки.
 
     ``bank_unp`` — УНП обслуживающего банка из «Конфигурации»: его
-    операции не поставщик и не покупатель. Строки эквайринга и выручки
-    приходят с УНП банка, но это деньги магазина — их разносим.
+    операции не поставщик и не покупатель, поэтому строку банка не
+    ищем среди контрагентов, а только среди видов оплаты (v0.58.0).
+    Строки эквайринга и выручки приходят с УНП банка, но это деньги
+    магазина — их разносим по назначению платежа.
     """
 
     if row.is_incoming:
@@ -156,9 +158,6 @@ def classify(row: StatementRow, data: AppData, bank_unp: str = "") -> Match:
             if row.unp
             else "Прочие поступления (без УНП)",
         )
-    if bank_unp and row.unp == bank_unp:
-        return Match("", "Банк: не разносится")
-
     supplier = find_by_unp(data.suppliers, row.unp)
     if supplier is not None:
         return Match(
@@ -173,12 +172,20 @@ def classify(row: StatementRow, data: AppData, bank_unp: str = "") -> Match:
             f"Вид оплаты: {payment.name}",
             payment_name=payment.name,
         )
-    return Match(
-        TARGET_NEW_PAYMENT,
-        f"Нужен новый вид оплаты (УНП {row.unp})"
-        if row.unp
-        else "Нужен новый вид оплаты",
+    # v0.58.0: строку банка (комиссия, вознаграждение) разносим как
+    # любую оплату — ищем вид оплаты по УНП. Банк «не поставщик и не
+    # покупатель» лишь в том смысле, что его не надо искать среди
+    # контрагентов: вид оплаты для него заводится обычной карточкой.
+    note = (
+        f"Нужен вид оплаты для банка (УНП {row.unp})"
+        if bank_unp and row.unp == bank_unp
+        else (
+            f"Нужен новый вид оплаты (УНП {row.unp})"
+            if row.unp
+            else "Нужен новый вид оплаты"
+        )
     )
+    return Match(TARGET_NEW_PAYMENT, note)
 
 
 def classify_all(
@@ -194,6 +201,69 @@ def iso_date(row: StatementRow) -> str:
     return f"{year}-{month}-{day}"
 
 
+def classify_commission(
+    row: StatementRow, data: AppData, bank_unp: str = ""
+) -> Match:
+    """Куда записать комиссию банка по строке (v0.58.0).
+
+    Банк удержал комиссию из зачисляемой суммы, а платим её мы. Сумма
+    комиссии показывается в «Оплате» строки, значит при разносе она
+    должна лечь в оплаты: ищем вид оплаты по УНП, как для любой оплаты.
+    """
+
+    if not row.commission:
+        return Match("", "")
+    # Комиссию обнуляем обязательно: иначе ``incoming_shown`` снова
+    # прибавит её к поступлению, и строка опять окажется приходом.
+    payment_row = replace(
+        row,
+        incoming=Decimal("0"),
+        outgoing=row.commission,
+        commission=Decimal("0"),
+    )
+    match = classify(payment_row, data, bank_unp)
+    if match.target:
+        match.note = f"Комиссия банка: {match.payment_name or match.note}"
+    return match
+
+
+def row_records(
+    row: StatementRow, match: Match, commission: Match
+) -> list[tuple[tuple, Decimal, str]]:
+    """Записи, которые строка внесёт в базу: (ключ, сумма, подпись).
+
+    Их бывает две: сама сумма строки и комиссия банка (если она есть) —
+    комиссия уходит в оплаты отдельной записью (v0.58.0).
+    """
+
+    records: list[tuple[tuple, Decimal, str]] = []
+    if match.target and match.target != TARGET_NEW_PAYMENT:
+        records.append((plan_key(row, match), row.amount, match.note))
+    if commission.target and commission.target != TARGET_NEW_PAYMENT:
+        records.append(
+            (plan_key(row, commission), row.commission, commission.note)
+        )
+    return records
+
+
+def row_is_blocked(match: Match, commission: Match) -> bool:
+    """Можно ли записать строку целиком (v0.58.0).
+
+    Если комиссию некуда писать, строку не трогаем вовсе: иначе при
+    повторном разносе (после создания вида оплаты) сумма удвоилась бы.
+    """
+
+    if not match.target or match.target == TARGET_NEW_PAYMENT:
+        return True
+    if commission.target == TARGET_NEW_PAYMENT:
+        return True
+    if match.target in (TARGET_CUSTOMERS, TARGET_SUPPLIERS):
+        return not match.counterparty_id
+    if match.target == TARGET_OTHER_PAYMENT:
+        return not match.payment_name
+    return False
+
+
 def plan_key(row: StatementRow, match: Match) -> tuple:
     """Ключ записи дня: назначение + получатель + дата операции."""
 
@@ -205,6 +275,7 @@ def plan_totals(
     statement: Statement,
     data: AppData,
     matches: list[Match] | None = None,
+    commissions: list[Match] | None = None,
 ) -> dict[tuple, Decimal]:
     """Суммы, которые разнос запишет по каждой записи дня (v0.57.0).
 
@@ -219,10 +290,13 @@ def plan_totals(
             if matches is not None and index < len(matches)
             else classify(row, data)
         )
-        if not match.target or match.target == TARGET_NEW_PAYMENT:
-            continue
-        key = plan_key(row, match)
-        planned[key] = planned.get(key, Decimal("0")) + row.amount
+        commission = (
+            commissions[index]
+            if commissions is not None and index < len(commissions)
+            else classify_commission(row, data)
+        )
+        for key, amount, _note in row_records(row, match, commission):
+            planned[key] = planned.get(key, Decimal("0")) + amount
     return planned
 
 
@@ -238,8 +312,9 @@ def base_amount(data: AppData, match: Match, date_iso: str) -> Decimal:
     if match.target == TARGET_CASH:
         return _cash_receipt_total(data, CASH_SOURCE, date_iso)
     if match.target == TARGET_CUSTOMERS:
+        # v0.58.0: поступление от покупателя — оплата его долга.
         return daily_operation_total(
-            data.operations, match.counterparty_id, date_iso, KIND_SALE
+            data.operations, match.counterparty_id, date_iso, KIND_PAYMENT
         )
     if match.target == TARGET_SUPPLIERS:
         return daily_operation_total(
@@ -288,11 +363,13 @@ def distribute(
     statement: Statement,
     data: AppData,
     matches: list[Match] | None = None,
+    commissions: list[Match] | None = None,
 ) -> Distribution:
     """Разнести выписку по базе.
 
     ``matches`` — назначение строк, поправленное пользователем в окне
-    «Разнести»; без него назначение считается заново.
+    «Разнести»; ``commissions`` — назначение комиссий банка. Без них
+    назначение считается заново.
 
     Суммы одного дня и одного получателя складываем, а не пишем подряд:
     запись дня в базе одна (``set_daily_*``), иначе вторая строка затёрла
@@ -310,6 +387,11 @@ def distribute(
             if matches is not None and index < len(matches)
             else classify(row, data)
         )
+        commission = (
+            commissions[index]
+            if commissions is not None and index < len(commissions)
+            else classify_commission(row, data)
+        )
         result.rows.append((row, match))
         key = row.import_key()
         if key in seen:
@@ -317,12 +399,14 @@ def distribute(
                 f"{row.date} · {row.name or row.unp} · {row.amount}"
             )
             continue
-        if match.target == TARGET_NEW_PAYMENT:
+        if row_is_blocked(match, commission):
             result.unresolved.append(row)
             continue
-        target_key = plan_key(row, match)
-        planned[target_key] = planned.get(target_key, Decimal("0")) + row.amount
-        labels[target_key] = match.note
+        for target_key, amount, note in row_records(row, match, commission):
+            planned[target_key] = (
+                planned.get(target_key, Decimal("0")) + amount
+            )
+            labels[target_key] = note
         seen.add(key)
 
     for (target, counterparty_id, payment_name, date_iso), amount in sorted(
@@ -333,7 +417,14 @@ def distribute(
         elif target == TARGET_CASH:
             set_daily_cash_receipt(data, CASH_SOURCE, date_iso, amount)
         elif target == TARGET_CUSTOMERS:
-            add_realization(data, counterparty_id, date_iso, amount)
+            # v0.58.0: деньги от покупателя — это **оплата** его долга,
+            # а не новая реализация. Так же пишет и ручной ввод в строке
+            # «Покупатели» блока «Поступление» (колонка «Оплата»
+            # покупателя); раньше выписка создавала «Реализацию» и долг
+            # покупателя только рос.
+            set_daily_operation(
+                data, counterparty_id, date_iso, KIND_PAYMENT, amount
+            )
         elif target == TARGET_SUPPLIERS:
             set_daily_operation(
                 data, counterparty_id, date_iso, KIND_PAYMENT, amount
