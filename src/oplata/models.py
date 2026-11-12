@@ -48,6 +48,16 @@ class Counterparty:
         )
 
 
+def alphabetical_key(item) -> str:
+    """Ключ сортировки контрагентов по алфавиту (v0.55.0).
+
+    Без учёта регистра; «ё» считаем как «е», иначе «ёлка» уехала бы в
+    конец списка — в русском алфавите буква стоит после «е».
+    """
+
+    return getattr(item, "name", str(item)).casefold().replace("ё", "е")
+
+
 @dataclass
 class Operation:
     """Операция недельных таблиц и журнала операций.
@@ -165,6 +175,10 @@ class OtherPayment:
     # Задаётся в карточке вида; как и отмеченные даты, значение лежит
     # в первой записи этого вида (это и есть «карточка вида»).
     vat_rate: str = ""
+    # v0.55.0: УНП — 9 цифр, необязательно. Нужен, чтобы узнавать
+    # этот вид в выписке: банк (комиссия, эквайринг) не поставщик и не
+    # покупатель, у него свой УНП (замечание пользователя).
+    unp: str = ""
     id: str = field(default_factory=new_id)
 
     @classmethod
@@ -177,6 +191,7 @@ class OtherPayment:
             direction=str(data.get("direction") or OUTGOING),
             dates=[str(day) for day in data.get("dates", []) if day],
             vat_rate=str(data.get("vat_rate", "") or "").strip(),
+            unp=str(data.get("unp", "") or "").strip(),
         )
 
 
@@ -734,12 +749,14 @@ def add_other_payment(
     direction: str = OUTGOING,
     dates: list[str] | None = None,
     vat_rate: str = "",
+    unp: str = "",
 ) -> OtherPayment:
     """Создать строку вида оплаты (сумма 0 — строка только появилась).
 
     ``dates`` — даты, отмеченные в календаре карточки (v0.24.0): их
     ячейки в таблице блока будут красными. ``vat_rate`` — ставка НДС
-    в процентах (v0.33.0), пустая строка = без НДС.
+    в процентах (v0.33.0), пустая строка = без НДС. ``unp`` — УНП
+    контрагента этого вида (v0.55.0), пустая строка = не задан.
     """
 
     payment = OtherPayment(
@@ -749,6 +766,7 @@ def add_other_payment(
         direction=direction,
         dates=list(dates or []),
         vat_rate=str(vat_rate or "").strip(),
+        unp=str(unp or "").strip(),
     )
     data.other_payments.append(payment)
     return payment

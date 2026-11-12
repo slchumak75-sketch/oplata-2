@@ -65,6 +65,7 @@ from ..models import (
     KIND_SALE,
     Counterparty,
     Operation,
+    alphabetical_key,
     operation_amount,
     set_daily_operation,
 )
@@ -78,6 +79,26 @@ from ..widgets import (
     arrow_button,
     install_row_hover,
 )
+
+# v0.55.0: названия контрагентов — мельче основного шрифта таблицы,
+# итоговые колонки — у́же (просьба пользователя). Ширины подобраны по
+# метрикам: подпись «Просрочено» при fs(11) занимает ~104 px.
+def alphabetical_key(item) -> str:
+    """Ключ сортировки по алфавиту (v0.55.0).
+
+    Без учёта регистра; «ё» считаем как «е», иначе «ёлка» уехала бы в
+    конец списка — в русском алфавите буква стоит после «е».
+    """
+
+    return getattr(item, "name", str(item)).casefold().replace("ё", "е")
+
+
+NAME_FONT_SIZE = styles.fs(10)   # названия контрагентов
+LEAD_FONT_SIZE = styles.fs(11)   # итоговые колонки: «Итого»/«Всего» …
+NAME_WIDTH_BASE = 188
+NAME_WIDTH_MIN = 150
+LEAD_WIDTH_BASE = 118
+LEAD_WIDTH_MIN = 106
 
 HEADER_ROWS = 3
 TOTAL_ROW = 3
@@ -253,16 +274,19 @@ class WeekView(QWidget):
                 else:
                     day_base.append(92)
                     day_min.append(72)
+        # v0.55.0: итоговые колонки у́же, а шрифт названий мельче
+        # (просьба пользователя) — длинные наименования поставщиков и
+        # покупателей перестали съедать место у дней недели.
         self.base_widths = (
-            [200]
+            [NAME_WIDTH_BASE]
             + ([46] if self.lead_offset else [])
-            + [132] * self.lead_columns
+            + [LEAD_WIDTH_BASE] * self.lead_columns
             + day_base
         )
         self.min_widths = (
-            [170]
+            [NAME_WIDTH_MIN]
             + ([40] if self.lead_offset else [])
-            + [124] * self.lead_columns
+            + [LEAD_WIDTH_MIN] * self.lead_columns
             + day_min
         )
         self.week_start = week_monday(date.today())
@@ -1070,12 +1094,23 @@ class WeekView(QWidget):
 
     # --------------------------------------------------------------- данные
     def counterparties(self) -> list[Counterparty]:
+        """Строки таблицы: неархивные контрагенты **по алфавиту**.
+
+        v0.55.0: раньше порядок был как в файле данных — новый
+        контрагент появлялся в конце списка, и искать его приходилось
+        глазами. Теперь таблица всегда отсортирована по наименованию
+        (просьба пользователя). Порядок в ``data.json`` не меняем:
+        операции привязаны к идентификаторам, а не к месту в списке.
+        """
+
         items = (
             self.store.data.suppliers
             if self.kind == "supplier"
             else self.store.data.customers
         )
-        return [c for c in items if not c.archived]
+        return sorted(
+            (c for c in items if not c.archived), key=alphabetical_key
+        )
 
     def refresh(self) -> None:
         partners = self.counterparties()
@@ -1214,19 +1249,20 @@ class WeekView(QWidget):
             put(2, 1, "От-\nсрочка", size=styles.fs(12))
             # v0.22.1: вместо «на сегодня» — «Итого», оно слева от
             # «Просрочено».
-            put(2, 1 + self.lead_offset, "Итого", bold=True, size=styles.fs(12))
+            put(2, 1 + self.lead_offset, "Итого", bold=True,
+                size=LEAD_FONT_SIZE)
             # v0.28.3: подписи целиком и с большой буквы — «Просрочено»
             # и «Неделя» (были «просрочено» и «за неделю»).
             put(2, 2 + self.lead_offset, "Просрочено", bold=True,
-                size=styles.fs(12))
+                size=LEAD_FONT_SIZE)
             put(2, 3 + self.lead_offset, "Неделя", bold=True,
-                size=styles.fs(12))
+                size=LEAD_FONT_SIZE)
         else:
             # v0.29.0: «Всего» = «Выписано» + «В работе»; порядок — по
             # просьбе пользователя (итог левее слагаемых).
-            put(2, 1, "Всего", bold=True, size=styles.fs(12))
-            put(2, 2, "Выписано", bold=True, size=styles.fs(12))
-            put(2, 3, "В работе", bold=True, size=styles.fs(12))
+            put(2, 1, "Всего", bold=True, size=LEAD_FONT_SIZE)
+            put(2, 2, "Выписано", bold=True, size=LEAD_FONT_SIZE)
+            put(2, 3, "В работе", bold=True, size=LEAD_FONT_SIZE)
         for i, day in enumerate(days):
             for j, sub in enumerate(self.subheaders):
                 cell = put(2, self._day_column(i, j), sub,
@@ -1333,9 +1369,11 @@ class WeekView(QWidget):
             # (оплата её не уменьшает), а не остаток долга.
             due_map = archival_maps[r]
             total, late, week = debt_columns[r]
+            # v0.55.0: шрифт названия меньше основного (просьба
+            # пользователя) — длинные наименования влезают целиком.
             name_item = put(row, 0, partner.name, center=False,
                             color=styles.LINK_BLUE, underline=True,
-                            size=styles.fs(12))
+                            size=NAME_FONT_SIZE)
             name_item.setData(Qt.ItemDataRole.UserRole, partner.id)
             if self.kind == "supplier":
                 name_item.setToolTip(

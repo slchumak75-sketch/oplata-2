@@ -35,14 +35,26 @@ def store(tmp_path):
     return DataStore(tmp_path / "data.json")
 
 
-def patch_other_payment_card(monkeypatch, names=(), vat_rate=""):
+def week_row(view, name: str) -> int:
+    """Номер строки контрагента в недельной таблице.
+
+    v0.55.0: таблица поставщиков и покупателей выводится **по алфавиту**,
+    поэтому номер строки нельзя считать по порядку в данных — берём его
+    из самого представления.
+    """
+
+    return 4 + [c.name for c in view.counterparties()].index(name)
+
+
+def patch_other_payment_card(monkeypatch, names=(), vat_rate="", unp=""):
     """Подменить карточку нового вида оплаты (v0.20.0).
 
     Сама карточка — модальный диалог: в headless-прогоне ``exec()``
     задел бы цикл событий и тест повис. Подмена возвращает имя из
     очереди (а дальше — как прежде: «Новый вид оплаты», «… 2», …),
     дату блока и нулевую сумму. ``vat_rate`` — ставка НДС, которую
-    карточка «вводит» для каждого создаваемого вида (v0.33.0).
+    карточка «вводит» для каждого создаваемого вида (v0.33.0);
+    ``unp`` — УНП вида (v0.55.0).
     """
     from decimal import Decimal
 
@@ -55,7 +67,17 @@ def patch_other_payment_card(monkeypatch, names=(), vat_rate=""):
     class FakeCard:
         """Карточка без показа: имя из очереди, дата и сумма не нужны."""
 
-        def __init__(self, direction, used_names, day, parent=None):
+        def __init__(
+            self,
+            direction,
+            used_names,
+            day,
+            parent=None,
+            name="",
+            dates=(),
+            vat_rate="",
+            unp="",
+        ):
             if queue:
                 self._name = queue.pop(0)
             else:
@@ -84,6 +106,12 @@ def patch_other_payment_card(monkeypatch, names=(), vat_rate=""):
             """Ставка НДС из карточки (v0.33.0)."""
 
             return vat_rate
+
+        @property
+        def unp_value(self):
+            """УНП вида оплаты из карточки (v0.55.0)."""
+
+            return unp
 
     monkeypatch.setattr(receipts_view_module, "OtherPaymentCardDialog", FakeCard)
 
@@ -293,7 +321,9 @@ def test_delivery_dialog_saves_and_debt_shows_in_week(qt_app, store):
     window = MainWindow(store)
     window.suppliers_view.goto_date(date(2026, 11, 5))
     table = window.suppliers_view.table
-    ggg_row = 4 + [s.name for s in store.data.suppliers].index("ггг")
+    # v0.55.0: таблица отсортирована по алфавиту, поэтому строку ищем
+    # в самом представлении, а не по порядку в данных.
+    ggg_row = week_row(window.suppliers_view, "ггг")
     table_lead_offset = window.suppliers_view.lead_offset
     assert table.item(ggg_row, _DAY(window.suppliers_view, 3, 1)).text() == "88 888,88"  # Долг чт
     # v0.27.3: итоговые колонки сдвинуты на узкую колонку условий
@@ -656,7 +686,7 @@ def test_early_payment_keeps_debt_archival_in_day_cell(qt_app, store):
     window = MainWindow(store)
     window.suppliers_view.goto_date(due)
     table = window.suppliers_view.table
-    row = 4 + [s.name for s in store.data.suppliers].index(supplier.name)
+    row = week_row(window.suppliers_view, supplier.name)
     debt_col = _DAY(window.suppliers_view, window.suppliers_view._days.index(due), 1)
 
     # Оплаты ещё нет — в «Долге» вся сумма поставки.
@@ -788,7 +818,9 @@ def test_operation_dialog_and_journal_crud(qt_app, store):
     # видна только в «Итого»: 1 200 − 200 = 1 000.
     window.suppliers_view.goto_date(date(2026, 11, 26))
     week_table = window.suppliers_view.table
-    ggg_row = 4 + [s.name for s in store.data.suppliers].index("ггг")
+    # v0.55.0: таблица отсортирована по алфавиту, поэтому строку ищем
+    # в самом представлении, а не по порядку в данных.
+    ggg_row = week_row(window.suppliers_view, "ггг")
     debt_col = _DAY(window.suppliers_view, 3, 1)
     total_col = 1 + window.suppliers_view.lead_offset
     assert week_table.item(ggg_row, debt_col).text() == "1 200,00"
@@ -929,7 +961,9 @@ def test_data_calendar_marks_days_and_saves_explicitly(qt_app, store):
     # должен сдвинуться на следующий рабочий день без ручного refresh.
     window.suppliers_view.goto_date(due_day)
     table = window.suppliers_view.table
-    ggg_row = 4 + [s.name for s in store.data.suppliers].index("ггг")
+    # v0.55.0: таблица отсортирована по алфавиту, поэтому строку ищем
+    # в самом представлении, а не по порядку в данных.
+    ggg_row = week_row(window.suppliers_view, "ггг")
     assert table.item(ggg_row, _DAY(window.suppliers_view, 3, 1)).text() == "700,00"  # чт 05.11
     calendar.chk_off.setChecked(True)
     calendar._on_day_clicked(due_day)
@@ -1256,7 +1290,7 @@ def test_receipts_outgoing_block_saves_supplier_payment(qt_app, store):
     # Недельная таблица поставщиков показывает ту же оплату в своей ячейке.
     window.suppliers_view.goto_date(date(2026, 10, 27))
     table = window.suppliers_view.table
-    bbb_row = 4 + [s.name for s in store.data.suppliers].index("ббб")
+    bbb_row = week_row(window.suppliers_view, "ббб")
     assert table.item(bbb_row, _DAY(window.suppliers_view, 1, 2)).text() == "4 500,00"
     window.close()
 
@@ -1427,7 +1461,7 @@ def test_supplier_payments_sync_both_ways(qt_app, store):
 
     window.suppliers_view.goto_date(date(2026, 10, 27))
     table = window.suppliers_view.table
-    bbb_row = 4 + [s.name for s in store.data.suppliers].index("ббб")
+    bbb_row = week_row(window.suppliers_view, "ббб")
     payment_cell = table.item(bbb_row, _DAY(window.suppliers_view, 1, 2))
     assert payment_cell.text() == "4 500,00"
 
@@ -1445,7 +1479,7 @@ def test_supplier_payments_sync_both_ways(qt_app, store):
     store.data.customers.append(buyer)
     window.customers_view.goto_date(date(2026, 10, 27))
     customers_table = window.customers_view.table
-    buyer_row = 4 + [c.name for c in store.data.customers].index("Покупатель Е")
+    buyer_row = week_row(window.customers_view, "Покупатель Е")
     # v0.29.0: «Оплата» — третья колонка дня (Реализация, метка, Оплата).
     customers_table.item(buyer_row, _DAY(window.customers_view, 1, 2)).setText("1 750")
     assert view.incoming.amount_text("customers") == "1 750,00"
@@ -2287,7 +2321,8 @@ def test_supplier_click_opens_operations_journal(qt_app, store, monkeypatch):
     table = view.table
     row = 4  # первая строка контрагента
 
-    supplier_id = store.data.suppliers[0].id
+    # v0.55.0: первая строка таблицы — первый контрагент **по алфавиту**.
+    supplier_id = view.counterparties()[0].id
     view._on_item_clicked(table.item(row, 0))
     assert opened == [("supplier", supplier_id)]
     assert deliveries == []
@@ -3057,12 +3092,15 @@ def test_edit_payment_card_renames_and_updates_dates(qt_app, store, monkeypatch)
             name="",
             dates=(),
             vat_rate="",
+            unp="",
         ):
             self.direction = direction
             self.name_value = "Аренда офиса"
             self._dates = ["2026-10-28"]
             # v0.33.0: ставку НДС карточка тоже правит.
             self.vat_value = "20"
+            # v0.55.0: УНП вида оплаты.
+            self.unp_value = "100325912"
 
         def exec(self):
             return QDialog.DialogCode.Accepted
@@ -3083,6 +3121,8 @@ def test_edit_payment_card_renames_and_updates_dates(qt_app, store, monkeypatch)
     # v0.33.0: ставка НДС сохраняется карточкой и видна в колонке.
     assert payment.vat_rate == "20"
     assert view.outgoing.amount_text("other:Аренда офиса", COL_VAT) == "20 %"
+    # v0.55.0: УНП вида оплаты сохраняется карточкой.
+    assert payment.unp == "100325912"
     window.close()
 
 
@@ -3336,7 +3376,9 @@ def test_supplier_total_column_shows_whole_debt(qt_app, store, monkeypatch):
     window.show()
     qt_app.processEvents()
     view = window.suppliers_view
-    row = 4  # первая строка контрагента
+    # v0.55.0: строки таблицы — по алфавиту, поэтому строку поставщика
+    # ищем в представлении.
+    row = week_row(view, supplier.name)
     table = view.table
 
     offset = view.lead_offset  # v0.27.3: узкая колонка условий
@@ -3405,7 +3447,7 @@ def test_supplier_payment_reduces_overdue_first_then_week(qt_app, store, monkeyp
     window.show()
     qt_app.processEvents()
     view = window.suppliers_view
-    row = 4
+    row = week_row(view, supplier.name)  # v0.55.0: строки — по алфавиту
     table = view.table
     view.goto_date(date(2026, 10, 26))
 
@@ -3488,7 +3530,12 @@ def test_week_table_fonts_are_uniform(qt_app, store):
     window.show()
     qt_app.processEvents()
 
-    expected = styles.fs(12)
+    # v0.16.0: разнобоя 13/14/16 px больше нет. v0.55.0: три размера по
+    # ролям — основной fs(12), названия контрагентов мельче (fs(10),
+    # просьба пользователя), подписи итоговых колонок — fs(11).
+    from oplata.views.week_view import LEAD_FONT_SIZE, NAME_FONT_SIZE
+
+    expected = {styles.fs(12), LEAD_FONT_SIZE, NAME_FONT_SIZE}
     for view in (window.suppliers_view, window.customers_view):
         table = view.table
         sizes = set()
@@ -3497,7 +3544,14 @@ def test_week_table_fonts_are_uniform(qt_app, store):
                 item = table.item(row, col)
                 if item is not None and item.text():
                     sizes.add(item.font().pixelSize())
-        assert sizes == {expected}, f"разнобой шрифтов: {sorted(sizes)}"
+        assert sizes <= expected, f"лишние размеры шрифтов: {sorted(sizes)}"
+        # Названия — мельче, подписи итоговых — средние. В демо-данных
+        # покупателей нет, поэтому строку названия проверяем, если она есть.
+        if view.counterparties():
+            assert table.item(4, 0).font().pixelSize() == NAME_FONT_SIZE
+        offset = view.lead_offset
+        for column in range(1 + offset, 4 + offset):
+            assert table.item(2, column).font().pixelSize() == LEAD_FONT_SIZE
         # Заголовок недели и итог справа — одного размера.
         # v0.23.1: шрифт заголовка «Неделя: …» — как у кнопки «Сегодня»
         # (просьба пользователя): базовый кегль и начертание кнопки из
@@ -4101,15 +4155,15 @@ def test_debt_headers_are_written_in_full(qt_app, store):
         window.close()
         return
 
-    font = QFont()
-    font.setPixelSize(styles.fs(12))
-    font.setBold(True)
-    metrics = QFontMetrics(font)
+    # v0.55.0: подписи итоговых колонок набраны своим шрифтом
+    # (LEAD_FONT_SIZE), поэтому мерим по фактическому шрифту ячейки,
+    # а не по базовому кеглю таблицы.
     for column, text in (
         (2 + offset, "Просрочено"),
         (3 + offset, "Неделя"),
         (1 + offset, "Итого"),
     ):
+        metrics = QFontMetrics(view.table.item(2, column).font())
         advance = metrics.horizontalAdvance(text)
         assert advance <= view.min_widths[column] - 8, (
             f"подпись «{text}» ({advance} px) обрежется в колонке "
@@ -6745,8 +6799,16 @@ def test_statement_parser_reads_bank_statement(store):
     assert "платежными карточками" in statement.rows[4].purpose
 
     # Итоги строк совпадают с оборотами файла, сальдо сходится.
-    assert statement.total_outgoing == statement.turnover_outgoing
-    assert statement.total_incoming == statement.turnover_incoming
+    # v0.55.0: комиссия банка попадает и в оплату, и в поступление,
+    # поэтому итог строк больше оборота файла ровно на неё.
+    assert statement.rows[4].commission == Decimal("18.02")
+    assert statement.total_commission == Decimal("18.02")
+    assert statement.total_outgoing == statement.turnover_outgoing + Decimal(
+        "18.02"
+    )
+    assert statement.total_incoming == statement.turnover_incoming + Decimal(
+        "18.02"
+    )
     assert (
         statement.opening_balance
         - statement.total_outgoing
@@ -6792,10 +6854,14 @@ def test_statement_dialog_shows_operations_table(qt_app, store):
     assert table.item(2, 4).text() == "8,40"
     assert table.item(2, 3).text() == ""
 
+    # v0.55.0: комиссия банка — в оплате и добавлена к поступлению.
+    assert table.item(4, 3).text() == "18,02"
+    assert table.item(4, 4).text() == "1 221,77"  # 1 203,75 + 18,02
+
     total_row = len(statement.rows)
     assert table.item(total_row, 0).text() == "ИТОГО"
-    assert table.item(total_row, 3).text() == "13 958,50"
-    assert table.item(total_row, 4).text() == "5 112,15"
+    assert table.item(total_row, 3).text() == "13 976,52"  # 13 958,50 + 18,02
+    assert table.item(total_row, 4).text() == "5 130,17"  # 5 112,15 + 18,02
     dialog.close()
 
 
@@ -6828,8 +6894,9 @@ def test_statement_dialog_marks_bank_rows(qt_app, store):
     assert "Строк банка (не поставщик и не покупатель): 2" in dialog._caption(
         "вм3.pdf"
     )
-    # Суммы банка в «ИТОГО» остаются: деньги-то настоящие.
-    assert table.item(len(statement.rows), 4).text() == "5 112,15"
+    # Суммы банка в «ИТОГО» остаются: деньги-то настоящие (включая
+    # комиссию, v0.55.0).
+    assert table.item(len(statement.rows), 4).text() == "5 130,17"
     dialog.close()
 
 
@@ -6889,3 +6956,117 @@ def test_bank_card_is_saved_in_configuration(qt_app, store, monkeypatch):
     assert opened[0].table.rowCount() == 7  # 6 операций + «ИТОГО»
     assert opened[0].bank_unp == "100325912"
     window.close()
+
+
+def test_bank_commission_is_added_to_incoming(qt_app, store):
+    """v0.55.0: «Комиссия банка - 18.02» — в оплате и сверх поступления.
+
+    Пояснение пользователя: если в тексте платежа есть такая запись, то
+    в столбце «Поступление» к сумме прибавляется комиссия (1 203,75 +
+    18,02 = 1 221,77), а в столбце «Оплата» стоит сама комиссия.
+    """
+
+    from decimal import Decimal
+
+    from oplata.statement import parse_statement, parse_statement_text
+
+    statement = parse_statement(SAMPLE_STATEMENT)
+    row = statement.rows[4]  # зачисление выручки по карточкам
+    assert row.incoming == Decimal("1203.75")  # как в файле
+    assert row.commission == Decimal("18.02")
+    assert row.incoming_shown == Decimal("1221.77")
+    assert row.outgoing_shown == Decimal("18.02")
+    # Сальдо от комиссии не меняется: она проходит с двух сторон.
+    assert (
+        statement.opening_balance
+        - statement.total_outgoing
+        + statement.total_incoming
+        == statement.closing_balance
+    )
+
+    # Комиссию узнаём и с точкой, и с запятой в сумме.
+    text = (
+        "05.11.2026 1 1 Счет: BY00\n"
+        "БИК: AKBBBY2X УНП: 100325912\n"
+        "0,00 100,00\n"
+        "ООО Тест\n"
+        "Назначение платежа: ВЫРУЧКА. Комиссия банка - 1,50\n"
+        "Фактическая дата и время совершения операции: 05.11.2026 10:00:00\n"
+    )
+    parsed = parse_statement_text(text)
+    assert parsed.rows[0].commission == Decimal("1.50")
+    assert parsed.rows[0].incoming_shown == Decimal("101.50")
+    assert parsed.rows[0].outgoing_shown == Decimal("1.50")
+
+
+def test_other_payment_card_saves_unp(qt_app, store):
+    """v0.55.0: в карточке вида оплаты есть УНП, и он сохраняется."""
+
+    from datetime import date
+
+    from oplata.views.receipts_view import OtherPaymentCardDialog
+
+    dialog = OtherPaymentCardDialog(
+        "outgoing", set(), date(2026, 11, 12), None, unp="100325912"
+    )
+    assert dialog.unp_edit.text() == "100325912"
+    # Буквы и знаки в УНП не вводятся, лишние разряды не набираются.
+    dialog.unp_edit.clear()
+    for char in "ab12-3 4567890123":
+        dialog.unp_edit.insert(char)
+    assert dialog.unp_edit.text() == "123456789"
+    dialog.close()
+
+
+def test_week_tables_are_sorted_alphabetically(qt_app, store):
+    """v0.55.0: поставщики и покупатели в таблице стоят по алфавиту."""
+
+    from oplata.app import MainWindow
+    from oplata.models import Counterparty
+
+    store.data.suppliers = [
+        Counterparty(name=name) for name in ("Ясень", "ёлка", "Акация", "Берёза")
+    ]
+    store.data.customers = [
+        Counterparty(name=name) for name in ("Юпитер", "Альфа", "ёж", "Вега")
+    ]
+    window = MainWindow(store)
+    window.show()
+    qt_app.processEvents()
+
+    for view in (window.suppliers_view, window.customers_view):
+        table = view.table
+        names = [
+            table.item(row, 0).text()
+            for row in range(4, 4 + len(view.counterparties()))
+        ]
+        assert names == [c.name for c in view.counterparties()]
+        assert names == sorted(names, key=lambda name: name.casefold().replace(
+            "ё", "е"
+        ))
+    # «ё» идёт как «е»: Берёза → ёлка, а не в конец списка.
+    suppliers = [c.name for c in window.suppliers_view.counterparties()]
+    assert suppliers == ["Акация", "Берёза", "ёлка", "Ясень"]
+    customers = [c.name for c in window.customers_view.counterparties()]
+    assert customers == ["Альфа", "Вега", "ёж", "Юпитер"]
+    window.close()
+
+
+def test_statement_table_rows_are_narrow(qt_app, store):
+    """v0.55.0: строки таблицы выписки узкие — по шрифту, без «воздуха»."""
+
+    from oplata.statement import parse_statement
+    from oplata.dialogs.statement_dialog import StatementDialog
+
+    statement = parse_statement(SAMPLE_STATEMENT)
+    dialog = StatementDialog(statement, "вм3.pdf")
+    dialog.show()
+    qt_app.processEvents()
+    table = dialog.table
+
+    # Высота задана одна на все строки: одна строка текста по шрифту,
+    # без запаса. Обычная таблица Qt даёт 30 px на строку.
+    assert table.rowHeight(0) == table.verticalHeader().defaultSectionSize()
+    assert table.rowHeight(0) < 30
+    assert table.wordWrap() is False  # иначе длинное имя займёт две строки
+    dialog.close()

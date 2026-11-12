@@ -45,6 +45,16 @@ RE_FACT_DATE = re.compile(
 RE_DOC = re.compile(rf"^({DATE})\s+(\S+)\s+(\d+)\s+Счет:")
 RE_AMOUNTS = re.compile(rf"^({AMOUNT})\s+({AMOUNT})$")
 RE_PURPOSE = re.compile(r"^Назначение платежа:")
+# v0.55.0: «Комиссия банка - 18.02» в назначении платежа. Банк держит
+# комиссию за зачисление выручки: на счёт приходит сумма за вычетом
+# комиссии, но платим её мы. Поэтому комиссия показывается и в оплате,
+# и добавленной к поступлению (пояснение пользователя).
+# Сумму комиссии банк печатает по-разному: в образце это «- 18.02»
+# (с точкой), тогда как все остальные суммы — через запятую. Поэтому
+# принимаем оба разделителя.
+RE_COMMISSION = re.compile(
+    r"Комиссия\s+банка\s*[-–—:]\s*(\d[\d ]*[.,]\d{2})", re.IGNORECASE
+)
 RE_OPENING = re.compile(rf"Входящее сальдо:\s*({AMOUNT})")
 RE_CLOSING = re.compile(rf"Исходящее сальдо:\s*({AMOUNT})")
 RE_TURNOVER = re.compile(rf"^ОБОРОТЫ\s+({AMOUNT})\s+({AMOUNT})$")
@@ -77,6 +87,22 @@ class StatementRow:
     incoming: Decimal = Decimal("0")
     outgoing: Decimal = Decimal("0")
     purpose: str = ""  # назначение платежа: пригодится при разнесении
+    # v0.55.0: комиссия банка из назначения платежа (0 — её нет).
+    commission: Decimal = Decimal("0")
+
+    @property
+    def incoming_shown(self) -> Decimal:
+        """Поступление к показу: сумма **плюс** комиссия банка.
+
+        Комиссию банк удержал из суммы, поэтому на счёт пришло меньше,
+        чем платил покупатель: «1 203,75 + 18,02 = 1 221,77».
+        """
+        return self.incoming + self.commission
+
+    @property
+    def outgoing_shown(self) -> Decimal:
+        """Оплата к показу: сумма **плюс** комиссия банка (её платим мы)."""
+        return self.outgoing + self.commission
 
 
 @dataclass
@@ -93,11 +119,17 @@ class Statement:
 
     @property
     def total_incoming(self) -> Decimal:
-        return sum((row.incoming for row in self.rows), Decimal("0"))
+        return sum((row.incoming_shown for row in self.rows), Decimal("0"))
 
     @property
     def total_outgoing(self) -> Decimal:
-        return sum((row.outgoing for row in self.rows), Decimal("0"))
+        return sum((row.outgoing_shown for row in self.rows), Decimal("0"))
+
+    @property
+    def total_commission(self) -> Decimal:
+        """Сумма комиссий банка по всем строкам (v0.55.0)."""
+
+        return sum((row.commission for row in self.rows), Decimal("0"))
 
 
 def parse_amount(text: str) -> Decimal:
@@ -183,6 +215,10 @@ def parse_statement_text(text: str) -> Statement:
         nonlocal unp, name, purpose, incoming, outgoing, in_purpose, started
         if not started:
             return
+        text = " ".join(" ".join(purpose).split())
+        commission = Decimal("0")
+        if match := RE_COMMISSION.search(text):
+            commission = parse_amount(match.group(1))
         rows.append(
             StatementRow(
                 date=operation_date,
@@ -190,7 +226,8 @@ def parse_statement_text(text: str) -> Statement:
                 name=" ".join(name.split()),
                 incoming=incoming,
                 outgoing=outgoing,
-                purpose=" ".join(" ".join(purpose).split()),
+                purpose=text,
+                commission=commission,
             )
         )
         unp, name, purpose = "", "", []
