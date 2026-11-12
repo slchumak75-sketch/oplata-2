@@ -54,7 +54,10 @@ a = Analysis(
     # v0.20.0: openpyxl импортируется лениво (внутри функции), поэтому
     # PyInstaller-у его называем явно — иначе выгрузка в Excel в
     # собранной программе упала бы с «No module named openpyxl».
-    hiddenimports=["openpyxl"],
+    # v0.54.0: pypdf импортируется так же лениво (внутри функции) —
+    # без явного указания загрузка выписки в собранной программе
+    # упала бы с «No module named pypdf».
+    hiddenimports=["openpyxl", "pypdf"],
     hookspath=[],
     hooksconfig={},
     runtime_hooks=[],

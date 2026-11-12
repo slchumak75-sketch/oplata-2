@@ -6700,3 +6700,192 @@ def test_old_excel_without_unp_column_imports(store, tmp_path):
     assert [s.name for s in imported.suppliers] == ["Старый контрагент"]
     assert [s.unp for s in imported.suppliers] == [""]  # пусто, а не мусор
     assert [c.unp for c in imported.customers] == [""]
+
+
+SAMPLE_STATEMENT = "tests/fixtures/statement-mir.pdf"
+
+
+def test_statement_parser_reads_bank_statement(store):
+    """v0.54.0: выписка PDF разбирается в операции с УНП и суммами.
+
+    Образец — выписка ОАО «АСБ Беларусбанк» за 05.11.2026: две оплаты
+    (дебет) и четыре поступления (кредит).
+    """
+
+    from decimal import Decimal
+
+    from oplata.statement import parse_statement
+
+    statement = parse_statement(SAMPLE_STATEMENT)
+
+    assert statement.statement_date == "05.11.2026"
+    assert statement.opening_balance == Decimal("29719.47")
+    assert statement.closing_balance == Decimal("20873.12")
+    assert statement.turnover_outgoing == Decimal("13958.50")  # дебет
+    assert statement.turnover_incoming == Decimal("5112.15")  # кредит
+
+    # Дата берётся из «Фактическая дата и время совершения операции»,
+    # а не из даты документа (в образце они разные: 03.11 против 05.11).
+    assert [row.date for row in statement.rows] == ["05.11.2026"] * 6
+    assert [row.unp for row in statement.rows] == [
+        "100005713",
+        "192775574",
+        "590959404",
+        "500021189",
+        "100325912",
+        "100325912",
+    ]
+    assert statement.rows[0].name == 'ООО "ОМА"'
+    assert statement.rows[0].outgoing == Decimal("5549.97")  # оплата — дебет
+    assert statement.rows[0].incoming == Decimal("0")
+    assert statement.rows[2].incoming == Decimal("8.40")  # поступление — кредит
+    assert statement.rows[2].outgoing == Decimal("0")
+    # Многострочное «Назначение платежа» не ломает разбор имён.
+    assert statement.rows[4].name == 'ОАО "АСБ БЕЛАРУСБАНК"'
+    assert "платежными карточками" in statement.rows[4].purpose
+
+    # Итоги строк совпадают с оборотами файла, сальдо сходится.
+    assert statement.total_outgoing == statement.turnover_outgoing
+    assert statement.total_incoming == statement.turnover_incoming
+    assert (
+        statement.opening_balance
+        - statement.total_outgoing
+        + statement.total_incoming
+        == statement.closing_balance
+    )
+
+
+def test_statement_parser_rejects_foreign_file():
+    """v0.54.0: файл не по образцу выписки — понятная ошибка, а не пустая таблица."""
+
+    from oplata.statement import StatementError, parse_statement_text
+
+    with pytest.raises(StatementError) as error:
+        parse_statement_text("Счёт-фактура № 17 от 05.11.2026\nИтого: 100,00")
+    assert "не похож" in str(error.value)
+
+
+def test_statement_dialog_shows_operations_table(qt_app, store):
+    """v0.54.0: окно выписки — таблица «Дата · УНП · Наименование · Оплата · Поступление».
+
+    Порядок столбцов такой, как просил пользователь: **оплата перед
+    поступлением**.
+    """
+
+    from oplata.dialogs.statement_dialog import StatementDialog
+    from oplata.statement import parse_statement
+
+    statement = parse_statement(SAMPLE_STATEMENT)
+    dialog = StatementDialog(statement, "вм3.pdf")
+    table = dialog.table
+
+    assert [
+        table.horizontalHeaderItem(column).text() for column in range(5)
+    ] == ["Дата", "УНП", "Наименование организации", "Оплата", "Поступление"]
+
+    assert table.rowCount() == len(statement.rows) + 1  # + строка «ИТОГО»
+    assert table.item(0, 0).text() == "05.11.2026"
+    assert table.item(0, 1).text() == "100005713"
+    assert table.item(0, 2).text() == 'ООО "ОМА"'
+    assert table.item(0, 3).text() == "5 549,97"  # оплата
+    assert table.item(0, 4).text() == ""  # поступления нет — пусто, не «0,00»
+    assert table.item(2, 4).text() == "8,40"
+    assert table.item(2, 3).text() == ""
+
+    total_row = len(statement.rows)
+    assert table.item(total_row, 0).text() == "ИТОГО"
+    assert table.item(total_row, 3).text() == "13 958,50"
+    assert table.item(total_row, 4).text() == "5 112,15"
+    dialog.close()
+
+
+def test_statement_dialog_marks_bank_rows(qt_app, store):
+    """v0.54.0: строки банка из «Конфигурации» отмечаются — он не контрагент.
+
+    Замечание пользователя: «ОАО "АСБ БЕЛАРУСБАНК" является ни продавцом
+    ни покупателем». УНП банка задаётся карточкой в «Конфигурации», по
+    нему его строки и узнаются.
+    """
+
+    from PySide6.QtGui import QColor
+
+    from oplata import styles
+    from oplata.dialogs.statement_dialog import StatementDialog
+    from oplata.statement import parse_statement
+
+    statement = parse_statement(SAMPLE_STATEMENT)
+    store.data.bank.unp = "100325912"
+    dialog = StatementDialog(
+        statement, "вм3.pdf", bank_unp=store.data.bank.unp
+    )
+    table = dialog.table
+
+    assert [dialog._is_bank(row) for row in statement.rows] == [
+        False, False, False, False, True, True,
+    ]
+    assert table.item(0, 2).background().color() != QColor(styles.WORKDAY_GREY)
+    assert table.item(5, 2).background().color() == QColor(styles.WORKDAY_GREY)
+    assert "Строк банка (не поставщик и не покупатель): 2" in dialog._caption(
+        "вм3.pdf"
+    )
+    # Суммы банка в «ИТОГО» остаются: деньги-то настоящие.
+    assert table.item(len(statement.rows), 4).text() == "5 112,15"
+    dialog.close()
+
+
+def test_bank_card_is_saved_in_configuration(qt_app, store, monkeypatch):
+    """v0.54.0: карточка банка сохраняется из «Конфигурации» и читается из файла."""
+
+    from PySide6.QtWidgets import QFileDialog, QMessageBox
+
+    from oplata.app import MainWindow
+    from oplata.models import Bank
+    from oplata.storage import DataStore
+
+    window = MainWindow(store)
+    view = window.data_view
+
+    # По умолчанию карточка банка пустая по УНП, наименование подставлено.
+    assert isinstance(store.data.bank, Bank)
+
+    view.bank_unp_edit.setText("100325912")
+    view.bank_name_edit.setText('ОАО "АСБ БЕЛАРУСБАНК"')
+    assert view.save_bank() is True
+    assert store.data.bank.unp == "100325912"
+
+    # Прочитанное из файла совпадает с сохранённым.
+    reread = DataStore(store.path)
+    assert reread.data.bank.unp == "100325912"
+    assert reread.data.bank.name == 'ОАО "АСБ БЕЛАРУСБАНК"'
+
+    # Неполный УНП не сохраняется: программа не сможет узнать банк.
+    warnings: list[str] = []
+    monkeypatch.setattr(
+        QMessageBox,
+        "warning",
+        staticmethod(lambda *args: warnings.append(str(args[-1]))),
+    )
+    view.bank_unp_edit.setText("12345")
+    assert view.save_bank() is False
+    assert warnings and "9 цифр" in warnings[0]
+    assert store.data.bank.unp == "100325912"  # прежнее значение не затерли
+
+    # Кнопка выписки есть на плашке и открывает таблицу.
+    monkeypatch.setattr(
+        QFileDialog,
+        "getOpenFileName",
+        staticmethod(lambda *args, **kwargs: (SAMPLE_STATEMENT, "")),
+    )
+    opened: list[object] = []
+    from oplata.dialogs.statement_dialog import StatementDialog
+
+    monkeypatch.setattr(
+        StatementDialog,
+        "exec",
+        lambda self: opened.append(self) or 1,
+    )
+    window.statement_button.click()
+    assert len(opened) == 1
+    assert opened[0].table.rowCount() == 7  # 6 операций + «ИТОГО»
+    assert opened[0].bank_unp == "100325912"
+    window.close()

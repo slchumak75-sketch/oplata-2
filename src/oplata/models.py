@@ -344,6 +344,31 @@ def set_kkm_amount(
 
 
 @dataclass
+class Bank:
+    """Обслуживающий банк (v0.54.0).
+
+    Банк, который ведёт счёт, — **не поставщик и не покупатель**: в
+    выписке попадаются его собственные операции (комиссия банка,
+    выручка по карточкам, выдача наличных, проценты), и разносить их по
+    поставщикам и покупателям нельзя. Карточка живёт в «Конфигурации» и
+    нужна, чтобы программа узнавала банк по УНП в выписке.
+    """
+
+    name: str = 'ОАО "АСБ БЕЛАРУСБАНК"'
+    unp: str = ""       # 9 цифр; пусто — пока не заполняли
+
+    @classmethod
+    def from_dict(cls, data: dict | None) -> "Bank":
+        if not data:  # в старом файле карточки нет — берём по умолчанию
+            return cls()
+        data = data
+        return cls(
+            name=str(data.get("name", "") or ""),
+            unp=str(data.get("unp", "") or ""),
+        )
+
+
+@dataclass
 class AppData:
     """Весь сохраняемый набор данных (один JSON-файл, см. storage.py)."""
 
@@ -368,6 +393,10 @@ class AppData:
     # «Конфигурация»). Поле добавлено в v0.14.0; в старых файлах его
     # нет — from_dict подставит пустую структуру.
     year_start: YearStart = field(default_factory=YearStart)
+    # Обслуживающий банк: ни поставщик, ни покупатель (v0.54.0). Поле
+    # добавлено в v0.54.0; в старых файлах его нет — подставится
+    # карточка по умолчанию с пустым УНП.
+    bank: Bank = field(default_factory=Bank)
 
     def to_dict(self) -> dict:
         return {
@@ -389,6 +418,7 @@ class AppData:
                 ],
                 "funds": self.year_start.funds,
             },
+            "bank": asdict(self.bank),
         }
 
     @classmethod
@@ -407,6 +437,7 @@ class AppData:
                 str(k): str(v) for k, v in data.get("day_overrides", {}).items()
             },
             year_start=YearStart.from_dict(data.get("year_start")),
+            bank=Bank.from_dict(data.get("bank")),
             kkm_reports=[
                 KkmReport.from_dict(x) for x in data.get("kkm_reports", [])
             ],

@@ -47,6 +47,7 @@ from .dialogs.counterparty_card import CounterpartyCardDialog
 from .dialogs.delivery_dialog import DeliveryDialog
 from .dialogs.operations_journal_dialog import OperationsJournalDialog
 from .dialogs.realization_dialog import RealizationDialog
+from .dialogs.statement_dialog import StatementDialog
 from .excelio import (
     ExcelError,
     describe_bases,
@@ -54,6 +55,7 @@ from .excelio import (
     import_bases,
 )
 from .models import AppData, set_year_start_funds
+from .statement import StatementError, parse_statement
 from .storage import (
     BASE_KORELICHI,
     BASE_MIR,
@@ -335,6 +337,16 @@ class MainWindow(QMainWindow):
         self.clear_button.clicked.connect(self._on_clear_base_clicked)
         layout.addWidget(self.clear_button)
 
+        # v0.54.0: «Загрузить выписку» — прочитать PDF-выписку банка и
+        # показать её таблицей (первый этап; разнесение — второй).
+        self.statement_button = QPushButton("Загрузить выписку")
+        self.statement_button.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.statement_button.setToolTip(
+            "Прочитать выписку банка из PDF и показать операции таблицей"
+        )
+        self.statement_button.clicked.connect(self._on_load_statement_clicked)
+        layout.addWidget(self.statement_button)
+
         self._apply_base_style()
 
         layout.addStretch(1)
@@ -418,6 +430,33 @@ class MainWindow(QMainWindow):
         if not self._ask_password("Загрузка баз", "Пароль администратора:"):
             return
         self.import_bases_from_excel()
+
+    def _on_load_statement_clicked(self) -> None:
+        """«Загрузить выписку»: PDF-файл -> таблица операций (v0.54.0).
+
+        Пока только показ: данные программы не меняются. Разнесение
+        строк по «Поступлению и оплате» — второй этап.
+        """
+
+        path, _selected = QFileDialog.getOpenFileName(
+            self,
+            "Выписка из банка (PDF)",
+            "",
+            "Выписка PDF (*.pdf)",
+        )
+        if not path:
+            return
+        try:
+            statement = parse_statement(Path(path))
+        except StatementError as exc:
+            QMessageBox.warning(self, "Загрузка выписки", str(exc))
+            return
+        StatementDialog(
+            statement,
+            Path(path).name,
+            self,
+            bank_unp=self.store.data.bank.unp,
+        ).exec()
 
     def _on_clear_base_clicked(self) -> None:
         """«Очистить базу»: удалить операции и суммы (v0.40.0).
