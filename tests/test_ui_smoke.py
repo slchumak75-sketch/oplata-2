@@ -7070,3 +7070,182 @@ def test_statement_table_rows_are_narrow(qt_app, store):
     assert table.rowHeight(0) < 30
     assert table.wordWrap() is False  # иначе длинное имя займёт две строки
     dialog.close()
+
+
+# --------------------------------------------------------------- v0.56.0
+def test_statement_account_name_defines_base(qt_app):
+    """v0.56.0: база определяется по «Наименованию счета» из шапки."""
+
+    from oplata.statement import parse_statement
+    from oplata.statement_match import account_base_key
+    from oplata.storage import BASE_KORELICHI, BASE_MIR
+
+    statement = parse_statement(SAMPLE_STATEMENT)
+    assert statement.account_name  # шапка прочитана
+    assert account_base_key(statement.account_name) == BASE_MIR
+    assert account_base_key("ООО Мирсититорг") == BASE_KORELICHI
+    assert account_base_key("") is None
+    assert account_base_key("ООО Чужое") is None
+
+
+def test_statement_notes_column_shows_where_row_goes(qt_app, store):
+    """v0.56.0: столбец «Примечание» — куда строка попадёт при разнесении."""
+
+    from oplata.models import Counterparty
+    from oplata.statement import parse_statement
+    from oplata.dialogs.statement_dialog import StatementDialog
+
+    statement = parse_statement(SAMPLE_STATEMENT)
+    unp_income = next(
+        row.unp for row in statement.rows
+        if row.is_incoming and not row.is_cards and not row.is_cash
+    )
+    dialog = StatementDialog(statement, "вм3.pdf", store=store)
+    dialog.show()
+    qt_app.processEvents()
+    headers = [
+        dialog.table.horizontalHeaderItem(column).text()
+        for column in range(dialog.table.columnCount())
+    ]
+    assert headers[-1] == "Примечание"  # последняя колонка, после сумм
+
+    notes = [
+        dialog.table.item(row, headers.index("Примечание")).text()
+        for row in range(len(statement.rows))
+    ]
+    assert "Поступление по картам" in notes
+    assert "Поступление наличными" in notes
+    # Покупателя с таким УНП в базе нет — строка ждёт контрагента.
+    assert any("не найден" in note for note in notes)
+
+    # Появился покупатель — примечание пересчиталось (кнопка «Обновить»).
+    store.data.customers.append(
+        Counterparty(name="Новый покупатель", unp=unp_income)
+    )
+    dialog._refresh_notes()
+    notes = [
+        dialog.table.item(row, headers.index("Примечание")).text()
+        for row in range(len(statement.rows))
+    ]
+    assert f"Покупатель: Новый покупатель" in notes
+    dialog.close()
+
+
+def test_distribution_writes_rows_on_operation_date(qt_app, store):
+    """v0.56.0: разнос идёт на дату фактической операции, по УНП."""
+
+    from oplata.models import (
+        CARD_SOURCE,
+        CASH_SOURCE,
+        Counterparty,
+        OtherPayment,
+        OUTGOING,
+    )
+    from oplata.statement import Statement, StatementRow
+    from oplata.statement_match import distribute
+
+    customer = Counterparty(name="Покупатель", unp="111111111")
+    supplier = Counterparty(name="Поставщик", unp="222222222")
+    store.data.customers.append(customer)
+    store.data.suppliers.append(supplier)
+    store.data.other_payments.append(
+        OtherPayment(name="Налоги", unp="333333333", direction=OUTGOING)
+    )
+
+    statement = Statement(
+        rows=[
+            StatementRow(
+                date="05.11.2026", unp="100325912", name="БАНК",
+                incoming=100, purpose="Перечисление денежных средств "
+                "по операциям с платежными карточками",
+            ),
+            StatementRow(
+                date="06.11.2026", unp="100325912", name="БАНК",
+                incoming=200, purpose="ВЫРУЧКА ОТ РЕАЛИЗАЦИИ за 06.11",
+            ),
+            StatementRow(
+                date="07.11.2026", unp="111111111", name="Покупатель",
+                incoming=300,
+            ),
+            StatementRow(
+                date="08.11.2026", unp="222222222", name="Поставщик",
+                outgoing=400,
+            ),
+            StatementRow(
+                date="09.11.2026", unp="333333333", name="Налоговая",
+                outgoing=500,
+            ),
+            StatementRow(
+                date="10.11.2026", unp="444444444", name="Неизвестный",
+                incoming=600,
+            ),
+        ]
+    )
+    result = distribute(statement, store.data)
+
+    # Суммы легли на даты операций, а не на дату загрузки файла.
+    assert [
+        (receipt.source, receipt.date, str(receipt.amount))
+        for receipt in store.data.cash_receipts
+    ] == [(CARD_SOURCE, "2026-11-05", "100.00"),
+          (CASH_SOURCE, "2026-11-06", "200.00")]
+    # Реализация покупателя и оплата поставщику — операции своих дней.
+    assert [
+        (operation.counterparty_id, operation.date, str(operation.amount))
+        for operation in store.data.operations
+    ] == [(customer.id, "2026-11-07", "300.00"),
+          (supplier.id, "2026-11-08", "400.00")]
+    assert [
+        (payment.name, payment.date, str(payment.amount))
+        for payment in store.data.other_payments
+        if payment.date  # карточки видов (без даты) не считаем
+    ] == [("Прочие поступления", "2026-11-10", "600.00"),
+          ("Налоги", "2026-11-09", "500.00")]
+    assert result.applied_count == 6
+
+
+def test_distribution_skips_already_imported_rows(qt_app, store):
+    """v0.56.0: повторная загрузка файла не задваивает суммы."""
+
+    from oplata.statement import Statement, StatementRow
+    from oplata.statement_match import distribute
+
+    rows = [
+        StatementRow(
+            date="05.11.2026", unp="100325912", name="БАНК", incoming=100,
+            purpose="Перечисление денежных средств по операциям "
+            "с платежными карточками",
+        )
+    ]
+    first = distribute(Statement(rows=list(rows)), store.data)
+    assert first.applied_count == 1
+
+    second = distribute(Statement(rows=list(rows)), store.data)
+    assert second.applied_count == 0
+    assert second.already  # строка отмечена как уже разнесённая
+    assert len(store.data.cash_receipts) == 1
+    # Реестр разнесённых строк переживает сохранение и чтение файла.
+    assert store.data.to_dict()["imported_statement_rows"]
+
+
+def test_week_lead_columns_are_narrower_and_smaller(qt_app, store):
+    """v0.56.0: итоговые колонки уже, шрифт в их ячейках меньше."""
+
+    from oplata.models import Counterparty
+    from oplata.views.week_view import WeekView
+
+    store.data.suppliers.append(Counterparty(name="Поставщик", unp="1"))
+    store.data.customers.append(Counterparty(name="Покупатель", unp="2"))
+    for kind in ("supplier", "customer"):
+        view = WeekView(store, kind, lambda *_a: None)
+        view.show()
+        qt_app.processEvents()
+        offset = 1 if kind == "supplier" else 0
+        lead = view.table.columnWidth(1 + offset)
+        day = view.table.columnWidth(5 + offset)
+        assert lead < 110  # уже, чем прежде (было 118/106)
+        lead_item = view.table.item(2, 1 + offset)
+        day_item = view.table.item(2, 5 + offset)
+        assert day_item is not None
+        assert lead_item.font().pixelSize() < day_item.font().pixelSize()
+        view.close()

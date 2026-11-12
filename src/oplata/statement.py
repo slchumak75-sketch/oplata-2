@@ -59,6 +59,15 @@ RE_OPENING = re.compile(rf"Входящее сальдо:\s*({AMOUNT})")
 RE_CLOSING = re.compile(rf"Исходящее сальдо:\s*({AMOUNT})")
 RE_TURNOVER = re.compile(rf"^ОБОРОТЫ\s+({AMOUNT})\s+({AMOUNT})$")
 RE_ACCOUNT = re.compile(r"Счет клиента:\s*([A-Z0-9 ]+)")
+# v0.56.0: по имени счёта узнаём, чья это выписка — МИР или КОРЕЛИЧИ
+# («Наименование счета: ООО МирСтройМаркет» / «ООО Мирсититорг»).
+RE_ACCOUNT_NAME = re.compile(r"Наименование\s+счета:\s*(.+)")
+# Признаки строк «Поступление»: поступление по картам и выручка
+# (наличными). Слова — из назначения платежа (пояснение пользователя).
+CARD_TRANSFER_PHRASE = (
+    "перечисление денежных средств по операциям с платежными карточками"
+)
+CASH_PROCEEDS_PHRASE = "выручка от реализации"
 RE_STATEMENT_DATE = re.compile(r"ВЫПИСКА ИЗ ЛИЦЕВОГО СЧЕТА ЗА\s*(" + DATE + r")")
 
 MISSING_PYPDF_TEXT = "Не найден пакет pypdf — загрузка выписки недоступна."
@@ -91,6 +100,24 @@ class StatementRow:
     commission: Decimal = Decimal("0")
 
     @property
+    def is_incoming(self) -> bool:
+        """Строка — поступление (деньги пришли)."""
+
+        return self.incoming_shown > 0
+
+    @property
+    def is_cards(self) -> bool:
+        """Поступление по платежным карточкам (эквайринг)."""
+
+        return CARD_TRANSFER_PHRASE in self.purpose.lower()
+
+    @property
+    def is_cash(self) -> bool:
+        """Выручка от реализации — наличными."""
+
+        return CASH_PROCEEDS_PHRASE in self.purpose.lower()
+
+    @property
     def incoming_shown(self) -> Decimal:
         """Поступление к показу: сумма **плюс** комиссия банка.
 
@@ -104,6 +131,22 @@ class StatementRow:
         """Оплата к показу: сумма **плюс** комиссия банка (её платим мы)."""
         return self.outgoing + self.commission
 
+    @property
+    def amount(self) -> Decimal:
+        """Сумма строки: поступление или оплата."""
+
+        return self.incoming_shown if self.is_incoming else self.outgoing_shown
+
+    def import_key(self) -> str:
+        """Ключ строки для защиты от повторного разноса (v0.56.0).
+
+        Одна и та же выписка может быть загружена两次: ключ по дате,
+        УНП, сумме и направлению не даст записать операцию дважды.
+        """
+
+        side = "in" if self.is_incoming else "out"
+        return f"{self.date}|{self.unp}|{self.amount}|{side}"
+
 
 @dataclass
 class Statement:
@@ -111,6 +154,9 @@ class Statement:
 
     statement_date: str = ""
     account: str = ""
+    # v0.56.0: «Наименование счета» — по нему определяем базу
+    # (ООО МирСтройМаркет — МИР, ООО Мирсититорг — КОРЕЛИЧИ).
+    account_name: str = ""
     opening_balance: Decimal = Decimal("0")
     closing_balance: Decimal = Decimal("0")
     turnover_outgoing: Decimal = Decimal("0")  # обороты по дебету
@@ -194,6 +240,8 @@ def parse_statement_text(text: str) -> Statement:
         statement.statement_date = match.group(1)
     if match := RE_ACCOUNT.search(text):
         statement.account = match.group(1).strip()
+    if match := RE_ACCOUNT_NAME.search(text):
+        statement.account_name = match.group(1).strip()
     if match := RE_OPENING.search(text):
         statement.opening_balance = parse_amount(match.group(1))
     if match := RE_CLOSING.search(text):
