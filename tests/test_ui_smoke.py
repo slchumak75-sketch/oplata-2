@@ -7253,6 +7253,205 @@ def test_distribution_skips_already_imported_rows(qt_app, store):
     assert store.data.to_dict()["imported_statement_rows"]
 
 
+def _two_row_statement():
+    """Выписка из двух строк: карты и поступление от покупателя."""
+
+    from oplata.statement import Statement, StatementRow
+
+    return Statement(
+        rows=[
+            StatementRow(
+                date="05.11.2026", unp="100325912", name="БАНК",
+                incoming=100,
+                purpose="Перечисление денежных средств по операциям "
+                "с платежными карточками",
+            ),
+            StatementRow(
+                date="07.11.2026", unp="111111111", name="Покупатель",
+                incoming=300,
+            ),
+        ]
+    )
+
+
+def test_distribution_redo_replaces_previous_writes(qt_app, store):
+    """v0.59.0: «Переразнести» снимает прежние записи и пишет заново.
+
+    Без переразноса повторная загрузка файла не писала ничего и молча
+    выходила — пользователь думал, что разнос сломался.
+    """
+
+    from oplata.models import CARD_SOURCE, Counterparty, KIND_PAYMENT
+    from oplata.statement_match import distribute
+
+    store.data.customers.append(
+        Counterparty(name="Покупатель", unp="111111111")
+    )
+    first = distribute(_two_row_statement(), store.data)
+    assert first.applied_count == 2
+
+    redo = distribute(_two_row_statement(), store.data, redo=True)
+    assert redo.applied_count == 2
+    assert redo.replaced  # прежние записи сняты, а не удвоены
+    # Суммы не задвоились: по картам за день по-прежнему одна запись.
+    assert [
+        (receipt.source, receipt.date, str(receipt.amount))
+        for receipt in store.data.cash_receipts
+        if receipt.source == CARD_SOURCE
+    ] == [(CARD_SOURCE, "2026-11-05", "100.00")]
+    assert [
+        (operation.kind, str(operation.amount))
+        for operation in store.data.operations
+    ] == [(KIND_PAYMENT, "300.00")]
+    # Реестр помнит, что именно записал разнос.
+    assert store.data.to_dict()["imported_statement_writes"]
+
+
+def test_distribution_redo_keeps_manually_edited_amount(qt_app, store):
+    """v0.59.0: сумму дня правили вручную — переразнос её не трогает."""
+
+    from oplata.models import CARD_SOURCE, Counterparty
+    from oplata.statement_match import distribute
+
+    store.data.customers.append(
+        Counterparty(name="Покупатель", unp="111111111")
+    )
+    distribute(_two_row_statement(), store.data)
+    for receipt in store.data.cash_receipts:
+        if receipt.source == CARD_SOURCE:
+            receipt.amount = "150.00"      # ручная правка
+
+    redo = distribute(_two_row_statement(), store.data, redo=True)
+    assert any("правили вручную" in line for line in redo.kept)
+    assert [
+        str(receipt.amount)
+        for receipt in store.data.cash_receipts
+        if receipt.source == CARD_SOURCE
+    ] == ["150.00"]
+
+
+def test_distribution_redo_finds_stale_realizations(qt_app, store):
+    """v0.59.0: находим «реализации», созданные версиями 0.56–0.57."""
+
+    from oplata.models import Counterparty, add_realization
+    from oplata.statement_match import (
+        find_stale_realizations,
+        remove_operations,
+    )
+
+    buyer = Counterparty(name="Покупатель", unp="111111111")
+    store.data.customers.append(buyer)
+    add_realization(store.data, buyer.id, "2026-11-07", Decimal("300"))
+    # Чужая реализация: та же дата, но другая сумма — трогать не надо.
+    add_realization(store.data, buyer.id, "2026-11-07", Decimal("999"))
+
+    stale = find_stale_realizations(store.data, _two_row_statement())
+    assert [str(operation.amount) for operation in stale] == ["300.00"]
+    remove_operations(store.data, stale)
+    assert [str(operation.amount) for operation in store.data.operations] == [
+        "999.00"
+    ]
+
+
+def test_distribution_redo_warns_about_old_registry(qt_app, store):
+    """v0.59.0: у старого реестра нет подробностей — предупреждаем."""
+
+    from oplata.models import Counterparty
+    from oplata.statement_match import distribute
+
+    store.data.customers.append(
+        Counterparty(name="Покупатель", unp="111111111")
+    )
+    statement = _two_row_statement()
+    distribute(statement, store.data)
+    # База, которую разносила версия до 0.59.0: строки помечены,
+    # подробных записей нет.
+    store.data.imported_statement_writes = []
+
+    redo = distribute(statement, store.data, redo=True)
+    assert any("проверьте дни" in line for line in redo.warnings)
+
+
+def _press_message_button(monkeypatch, label, calls=None):
+    """«Нажать» кнопку модального сообщения (v0.59.0)."""
+
+    def fake_exec(self):
+        button = next(b for b in self.buttons() if b.text() == label)
+        self.clickedButton = lambda: button     # type: ignore[method-assign]
+        if calls is not None:
+            calls.append(self.windowTitle())
+
+    monkeypatch.setattr(QMessageBox, "exec", fake_exec)
+
+
+def test_statement_dialog_asks_before_redo(qt_app, store, monkeypatch):
+    """v0.59.0: повторный файл — вопрос, а не молчаливый выход."""
+
+    from oplata.dialogs.statement_dialog import StatementDialog
+    from oplata.models import Counterparty
+    from oplata.statement_match import distribute
+
+    store.data.customers.append(
+        Counterparty(name="Покупатель", unp="111111111")
+    )
+    statement = _two_row_statement()
+
+    calls: list[str] = []
+    fresh = StatementDialog(statement, "выписка.pdf", None, store=store)
+    _press_message_button(monkeypatch, "Переразнести", calls)
+    assert fresh._ask_about_repeat() is False   # новый файл — без вопросов
+    assert not calls
+
+    distribute(statement, store.data)
+    again = StatementDialog(statement, "выписка.pdf", None, store=store)
+    assert again._ask_about_repeat() is True    # нажали «Переразнести»
+    assert calls == ["Выписка уже разносилась"]
+
+    _press_message_button(monkeypatch, "Отмена", calls)
+    assert again._ask_about_repeat() is None    # нажали «Отмена»
+
+
+def test_statement_dialog_reports_when_nothing_new(qt_app, store, monkeypatch):
+    """v0.59.0: повторный разнос объясняет, почему писать нечего.
+
+    Раньше программа молча закрывала окно, и это выглядело как
+    «выписка не разносится».
+    """
+
+    from PySide6.QtWidgets import QDialog
+
+    from oplata.dialogs.distribution_dialog import DistributionDialog
+    from oplata.dialogs.statement_dialog import StatementDialog
+    from oplata.models import Counterparty
+    from oplata.statement_match import distribute
+
+    store.data.customers.append(
+        Counterparty(name="Покупатель", unp="111111111")
+    )
+    statement = _two_row_statement()
+    distribute(statement, store.data)
+
+    shown: list[str] = []
+    monkeypatch.setattr(
+        QMessageBox,
+        "information",
+        staticmethod(lambda *args: shown.append(args[-1])),
+    )
+    monkeypatch.setattr(
+        DistributionDialog,
+        "exec",
+        lambda self: (self._apply(), QDialog.DialogCode.Accepted)[-1],
+    )
+    monkeypatch.setattr(
+        StatementDialog, "_ask_about_repeat", lambda self: False
+    )
+    dialog = StatementDialog(
+        statement, "выписка.pdf", None, bank_unp="100325912", store=store
+    )
+    dialog._continue()
+    assert shown and "Новых данных нет" in shown[-1]
+
+
 def test_week_lead_columns_are_narrower_and_smaller(qt_app, store):
     """v0.56.0: итоговые колонки уже, шрифт в их ячейках меньше.
 

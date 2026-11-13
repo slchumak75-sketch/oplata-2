@@ -30,15 +30,18 @@ from dataclasses import dataclass, field, replace
 from decimal import Decimal, InvalidOperation
 
 from .calc import OTHER_INCOME_TITLE
+from .dates import fmt_money_plain as fmt_amount
 from .models import (
     CARD_SOURCE,
     CASH_SOURCE,
     INCOMING,
     KIND_PAYMENT,
+    KIND_SALE,
     OUTGOING,
     AppData,
     Counterparty,
     cash_receipt_amount,
+    operation_amount,
     daily_operation_total,
     set_daily_cash_receipt,
     set_daily_operation,
@@ -76,6 +79,12 @@ class Distribution:
 
     applied: list[str] = field(default_factory=list)   # строки отчёта
     already: list[str] = field(default_factory=list)   # уже разносили раньше
+    # v0.59.0: что сняли при переразносе и чего не тронули (сумму дня
+    # правили вручную — снимать её мы не смеем).
+    replaced: list[str] = field(default_factory=list)
+    kept: list[str] = field(default_factory=list)
+    removed: list[str] = field(default_factory=list)   # снятые «реализации»
+    warnings: list[str] = field(default_factory=list)  # на что посмотреть
     unresolved: list[StatementRow] = field(default_factory=list)
     rows: list[tuple[StatementRow, Match]] = field(default_factory=list)
 
@@ -359,11 +368,145 @@ def _other_payment_total(
     return total
 
 
+def write_target(
+    data: AppData,
+    target: str,
+    counterparty_id: str,
+    payment_name: str,
+    date_iso: str,
+    amount: Decimal | None,
+) -> None:
+    """Записать сумму дня по назначению (``None`` — очистить запись)."""
+
+    if target == TARGET_CARD:
+        set_daily_cash_receipt(data, CARD_SOURCE, date_iso, amount)
+    elif target == TARGET_CASH:
+        set_daily_cash_receipt(data, CASH_SOURCE, date_iso, amount)
+    elif target == TARGET_CUSTOMERS:
+        # v0.58.0: деньги от покупателя — это **оплата** его долга,
+        # а не новая реализация. Так же пишет и ручной ввод в строке
+        # «Покупатели» блока «Поступление» (колонка «Оплата»
+        # покупателя); раньше выписка создавала «Реализацию» и долг
+        # покупателя только рос.
+        set_daily_operation(
+            data, counterparty_id, date_iso, KIND_PAYMENT, amount
+        )
+    elif target == TARGET_SUPPLIERS:
+        set_daily_operation(
+            data, counterparty_id, date_iso, KIND_PAYMENT, amount
+        )
+    elif target == TARGET_OTHER_INCOME:
+        set_daily_other_payment(
+            data, OTHER_INCOME_ROW_TITLE, date_iso, amount, INCOMING
+        )
+    elif target == TARGET_OTHER_PAYMENT:
+        set_daily_other_payment(
+            data, payment_name, date_iso, amount, OUTGOING
+        )
+
+
+def target_title(
+    target: str, counterparty_id: str, payment_name: str, data: AppData
+) -> str:
+    """Человеческое название назначения — для отчёта (v0.59.0)."""
+
+    if target in (TARGET_CARD, TARGET_CASH):
+        return "Поступление по картам" if target == TARGET_CARD else (
+            "Поступление наличными"
+        )
+    if target == TARGET_OTHER_INCOME:
+        return OTHER_INCOME_ROW_TITLE
+    if payment_name:
+        return f"Вид оплаты: {payment_name}"
+    name = ""
+    for person in list(data.customers) + list(data.suppliers):
+        if person.id == counterparty_id:
+            name = person.name
+            break
+    who = "Покупатель" if target == TARGET_CUSTOMERS else "Поставщик"
+    return f"{who}: {name or counterparty_id}"
+
+
+def rollback_write(result: Distribution, data: AppData, item: dict) -> bool:
+    """Снять запись, сделанную прошлым разносом (v0.59.0).
+
+    Очищаем только если сумма дня с тех пор не менялась: правили её
+    вручную — не трогаем, чтобы не стереть чужой ввод. Возвращает
+    ``True``, если запись снята.
+    """
+
+    amount = Decimal(str(item.get("amount") or "0"))
+    date_iso = str(item.get("date") or "")
+    target = str(item.get("target") or "")
+    counterparty_id = str(item.get("counterparty_id") or "")
+    payment_name = str(item.get("payment_name") or "")
+    current = base_amount(
+        data, Match(target, "", counterparty_id, payment_name), date_iso
+    )
+    title = target_title(target, counterparty_id, payment_name, data)
+    if current != amount:
+        result.kept.append(
+            f"{title}: {date_iso} — разнос писал {fmt_amount(amount)}, "
+            f"сейчас в базе {fmt_amount(current)}; правили вручную — "
+            "оставили как есть"
+        )
+        return False
+    write_target(data, target, counterparty_id, payment_name, date_iso, None)
+    result.replaced.append(
+        f"{title}: {date_iso} — {fmt_amount(amount)} (снято)"
+    )
+    return True
+
+
+def find_stale_realizations(
+    data: AppData,
+    statement: Statement,
+    matches: list[Match] | None = None,
+) -> list:
+    """Найти «реализации», которые раньше создавал разнос (v0.59.0).
+
+    Версии 0.56.0–0.57.0 писали поступление от покупателя операцией
+    «Реализация». Теперь та же строка пишется оплатой, а старая
+    реализация осталась в базе. Узнаём её по совпадению даты,
+    покупателя и суммы.
+    """
+
+    found = []
+    for index, row in enumerate(statement.rows):
+        match = (
+            matches[index]
+            if matches is not None and index < len(matches)
+            else classify(row, data)
+        )
+        if match.target != TARGET_CUSTOMERS or not match.counterparty_id:
+            continue
+        date_iso = iso_date(row)
+        for operation in data.operations:
+            if (
+                operation.kind == KIND_SALE
+                and operation.counterparty_id == match.counterparty_id
+                and operation.date == date_iso
+                and operation_amount(operation) == row.amount
+                and operation not in found
+            ):
+                found.append(operation)
+    return found
+
+
+def remove_operations(data: AppData, operations: list) -> None:
+    """Убрать операции из базы (подтверждение спрашивает вызывающий)."""
+
+    for operation in operations:
+        if operation in data.operations:
+            data.operations.remove(operation)
+
+
 def distribute(
     statement: Statement,
     data: AppData,
     matches: list[Match] | None = None,
     commissions: list[Match] | None = None,
+    redo: bool = False,
 ) -> Distribution:
     """Разнести выписку по базе.
 
@@ -378,8 +521,25 @@ def distribute(
 
     result = Distribution()
     planned: dict[tuple, Decimal] = {}
-    seen: set[str] = set(getattr(data, "imported_statement_rows", []))
     labels: dict[tuple, str] = {}
+    # v0.59.0: реестр разнесённых строк — с подробностями, чтобы
+    # переразнос мог снять именно то, что записал прошлый раз.
+    previous_writes: list[dict] = list(
+        getattr(data, "imported_statement_writes", [])
+    )
+    entries_by_key: dict[str, list[dict]] = {}
+    for item in previous_writes:
+        for key in item.get("keys") or [item.get("key")]:
+            entries_by_key.setdefault(str(key), []).append(item)
+    seen: set[str] = set(getattr(data, "imported_statement_rows", [])) | set(
+        entries_by_key
+    )
+    new_writes: list[dict] = [item for item in previous_writes]
+    redone: list[str] = []
+    rolled_back: list[dict] = []
+    planned_keys: dict[tuple, list[str]] = {}
+    kept_items: list[dict] = []      # снятию не подлежат — правили вручную
+    kept_targets: set[tuple] = set()
 
     for index, row in enumerate(statement.rows):
         match = (
@@ -394,7 +554,8 @@ def distribute(
         )
         result.rows.append((row, match))
         key = row.import_key()
-        if key in seen:
+        known = key in seen
+        if known and not redo:
             result.already.append(
                 f"{row.date} · {row.name or row.unp} · {row.amount}"
             )
@@ -402,45 +563,78 @@ def distribute(
         if row_is_blocked(match, commission):
             result.unresolved.append(row)
             continue
+        if known:
+            # Переразнос: снимаем то, что записали в прошлый раз.
+            redone.append(key)
+            for item in entries_by_key.get(key, []):
+                if item in new_writes:
+                    new_writes.remove(item)
+                if item in rolled_back:
+                    continue
+                rolled_back.append(item)
+                if not rollback_write(result, data, item):
+                    kept_items.append(item)
+                    kept_targets.add(
+                        (
+                            str(item.get("target") or ""),
+                            str(item.get("counterparty_id") or ""),
+                            str(item.get("payment_name") or ""),
+                            str(item.get("date") or ""),
+                        )
+                    )
         for target_key, amount, note in row_records(row, match, commission):
             planned[target_key] = (
                 planned.get(target_key, Decimal("0")) + amount
             )
+            planned_keys.setdefault(target_key, []).append(key)
             labels[target_key] = note
         seen.add(key)
 
     for (target, counterparty_id, payment_name, date_iso), amount in sorted(
         planned.items()
     ):
-        if target == TARGET_CARD:
-            set_daily_cash_receipt(data, CARD_SOURCE, date_iso, amount)
-        elif target == TARGET_CASH:
-            set_daily_cash_receipt(data, CASH_SOURCE, date_iso, amount)
-        elif target == TARGET_CUSTOMERS:
-            # v0.58.0: деньги от покупателя — это **оплата** его долга,
-            # а не новая реализация. Так же пишет и ручной ввод в строке
-            # «Покупатели» блока «Поступление» (колонка «Оплата»
-            # покупателя); раньше выписка создавала «Реализацию» и долг
-            # покупателя только рос.
-            set_daily_operation(
-                data, counterparty_id, date_iso, KIND_PAYMENT, amount
-            )
-        elif target == TARGET_SUPPLIERS:
-            set_daily_operation(
-                data, counterparty_id, date_iso, KIND_PAYMENT, amount
-            )
-        elif target == TARGET_OTHER_INCOME:
-            set_daily_other_payment(
-                data, OTHER_INCOME_ROW_TITLE, date_iso, amount, INCOMING
-            )
-        elif target == TARGET_OTHER_PAYMENT:
-            set_daily_other_payment(
-                data, payment_name, date_iso, amount, OUTGOING
-            )
+        if (target, counterparty_id, payment_name, date_iso) in kept_targets:
+            # Сумму дня правили вручную — переразнос её не переписывает.
+            continue
+        write_target(
+            data, target, counterparty_id, payment_name, date_iso, amount
+        )
         result.applied.append(
             f"{labels[(target, counterparty_id, payment_name, date_iso)]}: "
-            f"{date_iso} — {amount}"
+            f"{date_iso} — {fmt_amount(amount)}"
+        )
+        # В реестр пишем запись дня целиком: суммы одного дня и одного
+        # назначения складываются, поэтому и снимать их надо вместе.
+        new_writes.append(
+            {
+                "keys": list(planned_keys[
+                    (target, counterparty_id, payment_name, date_iso)
+                ]),
+                "target": target,
+                "counterparty_id": counterparty_id,
+                "payment_name": payment_name,
+                "date": date_iso,
+                "amount": str(amount),
+            }
         )
 
+    # Записи, которые трогать не стали, остаются в реестре, чтобы и
+    # следующий переразнос знал про них.
+    new_writes.extend(kept_items)
+    if redo:
+        # Файл разносили версией до 0.59.0: подробного реестра нет,
+        # поэтому снять прежние записи мы не можем — новые суммы легли
+        # поверх. Предупреждаем, чтобы день не оказался удвоен.
+        blind = [
+            key for key in redone if key not in entries_by_key
+        ]
+        if blind:
+            result.warnings.append(
+                "Снимать прежние записи нечего: эти строки разнесены "
+                "более старой версией, подробного реестра у неё не было "
+                f"(строк: {len(blind)}). Новые суммы записаны поверх "
+                "прежних — проверьте дни выписки."
+            )
     data.imported_statement_rows = sorted(seen)
+    data.imported_statement_writes = new_writes
     return result
