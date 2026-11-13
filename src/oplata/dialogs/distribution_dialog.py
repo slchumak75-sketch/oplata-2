@@ -40,6 +40,7 @@ from ..dates import fmt_money_plain
 from ..models import OUTGOING, add_other_payment, other_payment_names
 from ..statement import Statement
 from ..statement_match import (
+    choose_option_data,
     OTHER_INCOME_ROW_TITLE,
     base_amount,
     classify_commission,
@@ -54,6 +55,7 @@ from ..statement_match import (
     row_is_blocked,
     TARGET_CARD,
     TARGET_CASH,
+    TARGET_CHOOSE,
     TARGET_CUSTOMERS,
     TARGET_NEW_PAYMENT,
     TARGET_OTHER_INCOME,
@@ -217,8 +219,10 @@ class DistributionDialog(QDialog):
         date_iso = iso_date(row)
         current = base_amount(self.store.data, match, date_iso)
         result = self.planned.get(plan_key(row, match), Decimal("0"))
-        if match.target == TARGET_NEW_PAYMENT:
-            text = "—"  # вид оплаты ещё не создан, писать некуда
+        if match.target in (TARGET_NEW_PAYMENT, TARGET_CHOOSE):
+            # v0.61.0: пока получатель (или вид оплаты) не выбран,
+            # писать некуда.
+            text = "—"
         elif current == result:
             text = fmt_money_plain(current)
         else:
@@ -227,7 +231,11 @@ class DistributionDialog(QDialog):
         cell.setTextAlignment(
             Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter
         )
-        if match.target != TARGET_NEW_PAYMENT and current and current != result:
+        if (
+            match.target not in (TARGET_NEW_PAYMENT, TARGET_CHOOSE)
+            and current
+            and current != result
+        ):
             # Расхождение: день в базе уже заполнен другой суммой.
             cell.setForeground(QColor(styles.RED))
         cell.setToolTip(
@@ -262,6 +270,21 @@ class DistributionDialog(QDialog):
     def _target_cell(self, row: int, row_index: int, match: Match) -> None:
         combo = QComboBox()
         combo.addItem("— не разносить —", "")
+        if match.target == TARGET_CHOOSE:
+            # v0.61.0: УНП подходит несколько карточек — показываем их
+            # списком «Наименование · УНП · Примечание» и ждём выбора.
+            # Первым стоит «выберите», чтобы программа не угадывала.
+            combo.insertItem(
+                1, f"— выберите ({len(match.options)}) —", TARGET_CHOOSE
+            )
+            for option in match.options:
+                target, counterparty_id, payment_name, label = option
+                combo.addItem(
+                    label,
+                    choose_option_data(
+                        target, counterparty_id, payment_name
+                    ),
+                )
         for label, key in TARGET_CHOICES:
             combo.addItem(label, key)
         # Свой вид оплаты и «нужен новый вид» показываем подписью.
@@ -304,6 +327,9 @@ class DistributionDialog(QDialog):
         target = combo.currentData() if combo is not None else ""
         row_data = self.statement.rows[row_index]
         match = self.matches[row_index]
+        if self._apply_chosen_option(row, row_index, target):
+            return
+        match.options = []
         match.target = target
         match.counterparty_id = ""
         match.payment_name = ""
@@ -351,6 +377,70 @@ class DistributionDialog(QDialog):
             return
         self._refresh_planned()
 
+    def _apply_chosen_option(
+        self, row: int, row_index: int, data
+    ) -> bool:
+        """Выбор кандидата из списка (v0.61.0).
+
+        Возвращает ``True``, если пункт был кандидатом (или «выберите»)
+        и строка обработана: дальше общую обработку не продолжаем.
+        """
+
+        if not isinstance(data, str) or not (
+            data == TARGET_CHOOSE or data.startswith("choose:")
+        ):
+            return False
+        match = self.matches[row_index]
+        row_data = self.statement.rows[row_index]
+        name = row_data.name or row_data.unp
+        if data == TARGET_CHOOSE:      # «— выберите (N) —»
+            match.target = TARGET_CHOOSE
+            match.counterparty_id = ""
+            match.payment_name = ""
+            match.note = (
+                f"Уточните: УНП {row_data.unp or '—'} подходит "
+                f"{len(match.options)} — выберите в колонке «Куда»"
+            )
+            self._set_note_text(row, match)
+            self._sync_target_button(row, row_index)
+            self._refresh_planned()
+            return True
+        _prefix, target, counterparty_id, payment_name = data.split(":", 3)
+        match.target = target
+        match.counterparty_id = counterparty_id
+        match.payment_name = payment_name
+        match.options = []
+        if payment_name:
+            match.note = f"Вид оплаты: {payment_name}"
+        else:
+            person = self._person_by_id(counterparty_id)
+            who = "Покупатель" if match.target == TARGET_CUSTOMERS else "Поставщик"
+            match.note = (
+                f"{who}: {person.name if person else name}"
+                if person
+                else f"{who} с УНП {row_data.unp} не найден"
+            )
+        self._set_note_text(row, match)
+        self._sync_target_button(row, row_index)
+        self._refresh_planned()
+        return True
+
+    def _customer_ids(self) -> set:
+        return {item.id for item in self.store.data.customers}
+
+    def _person_by_id(self, counterparty_id: str):
+        for item in list(self.store.data.customers) + list(
+            self.store.data.suppliers
+        ):
+            if item.id == counterparty_id:
+                return item
+        return None
+
+    def _set_note_text(self, row: int, match: Match) -> None:
+        cell = self.table.item(row, COL_NOTE)
+        if cell is not None:
+            cell.setText(match.note)
+
     def _sync_target_button(self, row: int, row_index: int) -> None:
         """Показать кнопку «＋» строкам, которым не хватает вида оплаты."""
 
@@ -358,6 +448,13 @@ class DistributionDialog(QDialog):
         if holder is None:
             return
         button = holder.findChild(QPushButton)
+        if button is not None and self.matches[row_index].target == (
+            TARGET_CHOOSE
+        ):
+            # v0.61.0: карточки с таким УНП уже есть — надо выбрать,
+            # а не создавать новый вид оплаты.
+            button.hide()
+            return
         if button is None:
             return
         match = self.matches[row_index]

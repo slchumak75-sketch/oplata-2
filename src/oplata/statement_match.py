@@ -57,6 +57,11 @@ TARGET_SUPPLIERS = "suppliers"        # строка «Поставщики»
 TARGET_OTHER_INCOME = "other_income"  # «Прочие поступления»
 TARGET_OTHER_PAYMENT = "other_payment"  # свой вид оплаты (по УНП)
 TARGET_NEW_PAYMENT = "new_payment"    # нужна карточка вида оплаты
+# v0.61.0: УНП строки подходит несколько карточек — куда занести,
+# решает пользователь (вариант А: пока не выбран получатель, строка
+# в разнос не идёт). Выбор показывается в списке «Куда» подписью
+# «Наименование · УНП · Примечание».
+TARGET_CHOOSE = "choose"
 
 # Строка «Прочие поступления» блока «Поступление» (имя из calc, чтобы
 # выписка писала ровно ту строку, которую показывает таблица).
@@ -71,6 +76,9 @@ class Match:
     note: str
     counterparty_id: str = ""
     payment_name: str = ""
+    # v0.61.0: кандидаты, если УНП подходит несколько карточек.
+    # Элемент — кортеж (target, counterparty_id, payment_name, подпись).
+    options: list = field(default_factory=list)
 
 
 @dataclass
@@ -112,31 +120,108 @@ def account_base_key(account_name: str) -> str | None:
     return None
 
 
-def find_by_unp(items, unp: str) -> Counterparty | None:
-    """Контрагент по УНП: сначала действующий, потом архивный."""
+def find_all_by_unp(items, unp: str) -> list:
+    """Все контрагенты с таким УНП (v0.61.0).
+
+    УНП может повторяться: одна организация бывает и поставщиком, и
+    покупателем, а у одной организации бывает несколько карточек с
+    разными примечаниями. Сначала действующие, потом архивные — внутри
+    каждой группы сохраняется порядок карточек.
+    """
 
     unp = (unp or "").strip()
     if not unp:
-        return None
-    for item in items:
-        if item.unp == unp and not item.archived:
-            return item
-    for item in items:
-        if item.unp == unp:
-            return item
-    return None
+        return []
+    active = [item for item in items if item.unp == unp and not item.archived]
+    if active:
+        return active
+    return [item for item in items if item.unp == unp]
+
+
+def find_by_unp(items, unp: str):
+    """Контрагент по УНП: сначала действующий, потом архивный."""
+
+    found = find_all_by_unp(items, unp)
+    return found[0] if found else None
+
+
+def find_all_payments_by_unp(data: AppData, unp: str) -> list:
+    """Все виды оплаты с таким УНП (v0.61.0).
+
+    У одного плательщика бывает несколько назначений платежей — их
+    различают примечанием, поэтому список, а не первый попавшийся.
+    """
+
+    unp = (unp or "").strip()
+    if not unp:
+        return []
+    return [
+        payment
+        for payment in data.other_payments
+        if payment.unp == unp and payment.direction == OUTGOING
+    ]
 
 
 def find_payment_by_unp(data: AppData, unp: str):
     """Вид оплаты (блока «Оплата») по УНП — из карточки вида (v0.55.0)."""
 
-    unp = (unp or "").strip()
-    if not unp:
-        return None
-    for payment in data.other_payments:
-        if payment.unp == unp and payment.direction == OUTGOING:
-            return payment
-    return None
+    found = find_all_payments_by_unp(data, unp)
+    return found[0] if found else None
+
+
+def candidate_label(item) -> str:
+    """Подпись кандидата: «Наименование · УНП · Примечание» (v0.61.0).
+
+    УНП у карточек повторяется, поэтому в списке выбора показываем и
+    наименование, и УНП, и примечание — по нему карточки различают.
+    """
+
+    parts = [str(getattr(item, "name", "") or "").strip()]
+    unp = str(getattr(item, "unp", "") or "").strip()
+    if unp:
+        parts.append(f"УНП {unp}")
+    note = str(getattr(item, "note", "") or "").strip()
+    if note:
+        parts.append(note)
+    return " · ".join(part for part in parts if part)
+
+
+def choose_option_data(
+    target: str, counterparty_id: str, payment_name: str
+) -> str:
+    """Метка пункта списка «Куда» для выбранного кандидата (v0.61.0).
+
+    В данных пункта лежит ``choose:<назначение>:<id>:<вид оплаты>`` —
+    по ней окно разноса понимает, что выбран один из кандидатов, а не
+    общее назначение из ``TARGET_CHOICES``.
+    """
+
+    return f"choose:{target}:{counterparty_id}:{payment_name}"
+
+
+def _choose_match(row: StatementRow, target: str, items: list) -> Match:
+    """Строка, которой подходит несколько карточек (v0.61.0)."""
+
+    unp = row.unp or "—"
+    return Match(
+        TARGET_CHOOSE,
+        f"Уточните: УНП {unp} подходит {len(items)} "
+        f"{_cards_word(len(items))} — выберите в колонке «Куда»",
+        options=[
+            (target, getattr(item, "id", ""), "", candidate_label(item))
+            for item in items
+        ],
+    )
+
+
+def _cards_word(count: int) -> str:
+    """«карточка» / «карточки» / «карточек» по числу."""
+
+    if count % 10 == 1 and count % 100 != 11:
+        return "карточка"
+    if count % 10 in (2, 3, 4) and count % 100 not in (12, 13, 14):
+        return "карточки"
+    return "карточек"
 
 
 def classify(row: StatementRow, data: AppData, bank_unp: str = "") -> Match:
@@ -154,12 +239,16 @@ def classify(row: StatementRow, data: AppData, bank_unp: str = "") -> Match:
             return Match(TARGET_CARD, "Поступление по картам")
         if row.is_cash:
             return Match(TARGET_CASH, "Поступление наличными")
-        customer = find_by_unp(data.customers, row.unp)
-        if customer is not None:
+        customers = find_all_by_unp(data.customers, row.unp)
+        if len(customers) > 1:
+            # v0.61.0: УНП подходит несколько покупателей — угадывать
+            # не надо, получателя выбирает пользователь.
+            return _choose_match(row, TARGET_CUSTOMERS, customers)
+        if customers:
             return Match(
                 TARGET_CUSTOMERS,
-                f"Покупатель: {customer.name}",
-                counterparty_id=customer.id,
+                f"Покупатель: {customers[0].name}",
+                counterparty_id=customers[0].id,
             )
         return Match(
             TARGET_OTHER_INCOME,
@@ -167,19 +256,39 @@ def classify(row: StatementRow, data: AppData, bank_unp: str = "") -> Match:
             if row.unp
             else "Прочие поступления (без УНП)",
         )
-    supplier = find_by_unp(data.suppliers, row.unp)
-    if supplier is not None:
+    suppliers = find_all_by_unp(data.suppliers, row.unp)
+    if len(suppliers) > 1:
+        return _choose_match(row, TARGET_SUPPLIERS, suppliers)
+    if suppliers:
         return Match(
             TARGET_SUPPLIERS,
-            f"Поставщик: {supplier.name}",
-            counterparty_id=supplier.id,
+            f"Поставщик: {suppliers[0].name}",
+            counterparty_id=suppliers[0].id,
         )
-    payment = find_payment_by_unp(data, row.unp)
-    if payment is not None:
+    payments = find_all_payments_by_unp(data, row.unp)
+    if len(payments) > 1:
+        # Виды оплаты с одинаковым УНП различаются примечанием —
+        # показываем их списком, пусть выберет пользователь.
+        return Match(
+            TARGET_CHOOSE,
+            f"Уточните: УНП {row.unp} подходит "
+            f"{len(payments)} {_cards_word(len(payments))} видов оплаты "
+            "— выберите в колонке «Куда»",
+            options=[
+                (
+                    TARGET_OTHER_PAYMENT,
+                    "",
+                    payment.name,
+                    candidate_label(payment),
+                )
+                for payment in payments
+            ],
+        )
+    if payments:
         return Match(
             TARGET_OTHER_PAYMENT,
-            f"Вид оплаты: {payment.name}",
-            payment_name=payment.name,
+            f"Вид оплаты: {payments[0].name}",
+            payment_name=payments[0].name,
         )
     # v0.58.0: строку банка (комиссия, вознаграждение) разносим как
     # любую оплату — ищем вид оплаты по УНП. Банк «не поставщик и не
@@ -231,6 +340,11 @@ def classify_commission(
         commission=Decimal("0"),
     )
     match = classify(payment_row, data, bank_unp)
+    if match.target == TARGET_CHOOSE:
+        # v0.61.0: комиссию тоже некуда писать, пока не выбран
+        # получатель, — но подписываем это как комиссию, а не строкой.
+        match.note = "Комиссия банка: уточните получателя в «Куда»"
+        return match
     if match.target:
         match.note = f"Комиссия банка: {match.payment_name or match.note}"
     return match
@@ -246,7 +360,10 @@ def row_records(
     """
 
     records: list[tuple[tuple, Decimal, str]] = []
-    if match.target and match.target != TARGET_NEW_PAYMENT:
+    if match.target and match.target not in (
+        TARGET_NEW_PAYMENT,
+        TARGET_CHOOSE,
+    ):
         records.append((plan_key(row, match), row.amount, match.note))
     if commission.target and commission.target != TARGET_NEW_PAYMENT:
         records.append(
@@ -264,7 +381,10 @@ def row_is_blocked(match: Match, commission: Match) -> bool:
 
     if not match.target or match.target == TARGET_NEW_PAYMENT:
         return True
-    if commission.target == TARGET_NEW_PAYMENT:
+    # v0.61.0: пока получатель не выбран, строку не пишем.
+    if match.target == TARGET_CHOOSE:
+        return True
+    if commission.target in (TARGET_NEW_PAYMENT, TARGET_CHOOSE):
         return True
     if match.target in (TARGET_CUSTOMERS, TARGET_SUPPLIERS):
         return not match.counterparty_id
