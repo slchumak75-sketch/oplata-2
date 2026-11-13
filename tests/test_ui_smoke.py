@@ -8129,3 +8129,120 @@ def test_bank_row_without_payment_asks_for_card(qt_app, store):
     match = classify(row, store.data, store.data.bank.unp)
     assert match.target == TARGET_NEW_PAYMENT  # разносим, вида нет
     assert "банка" in match.note
+
+
+# --------------------------------------------------------------- v0.62.0
+def test_unp_split_by_line_break_is_read(qt_app):
+    """v0.62.0: «УНП» и цифры на разных строках — УНП всё равно читается.
+
+    В выписке за 05.11.2026 pypdf разорвал «БИК: AKBBBY2X УНП» и
+    «: 100325912». УНП в операции оставался пустым, комиссию банка было
+    некуда записать, и строка не разносилась целиком — 979,72 по картам
+    и 13,17 комиссией оставались стоять.
+    """
+
+    from oplata.statement import parse_statement_text
+
+    template = (
+        "05.11.2026 1805 6 Счет: BY13 AKBB 3812 0000 0028 1000 0000\n"
+        "БИК: AKBBBY2X %s\n"
+        "0,00 979,72\n"
+        'ОАО "АСБ БЕЛАРУСБАНК"\n'
+        "Назначение платежа: Перечисление денежных средств по операциям с "
+        "платежными карточками. Комиссия банка - 13.17\n"
+        "Фактическая дата и время совершения операции: 05.11.2026 10:06:07\n"
+    )
+    # Три вида разрыва: после «УНП», после «УНП:» и без двоеточия вовсе.
+    variants = (
+        "УНП\n: 100325912",
+        "УНП:\n100325912",
+        "УНП\n 100325912",
+    )
+    for variant in variants:
+        statement = parse_statement_text(template % variant)
+        assert [row.unp for row in statement.rows] == ["100325912"], variant
+
+    # Целая строка читается как прежде — склейка ничего не ломает.
+    statement = parse_statement_text(template % "УНП: 100325912")
+    assert [row.unp for row in statement.rows] == ["100325912"]
+
+
+def test_bank_row_with_split_unp_is_distributed(qt_app, store):
+    """v0.62.0: строка банка с разорванным УНП разносится обеими суммами.
+
+    Строка из выписки за 05.11.2026: поступление 979,72 по картам и
+    комиссия банка 13,17 — комиссия идёт в вид оплаты с УНП банка.
+    """
+
+    from decimal import Decimal
+
+    from oplata.models import add_other_payment
+    from oplata.statement import parse_statement_text
+    from oplata.statement_match import distribute, row_is_blocked
+
+    store.data.bank.unp = "100325912"
+    add_other_payment(
+        store.data, "Комиссия банка", "2026-11-05", unp="100325912"
+    )
+    text = (
+        "ВЫПИСКА ИЗ ЛИЦЕВОГО СЧЕТА ЗА 05.11.2026\n"
+        "05.11.2026 1805 6 Счет: BY13 AKBB 3812 0000 0028 1000 0000\n"
+        "БИК: AKBBBY2X УНП\n"
+        ": 100325912\n"
+        "0,00 979,72\n"
+        'ОАО "АСБ БЕЛАРУСБАНК"\n'
+        "Назначение платежа: Перечисление денежных средств по операциям с "
+        "платежными карточками согласно отчету(ам) N000000322 от "
+        "05.11.2026. Комиссия банка - 13.17\n"
+        "Фактическая дата и время совершения операции: 05.11.2026 10:06:07\n"
+    )
+    statement = parse_statement_text(text)
+    row = statement.rows[0]
+    assert row.unp == "100325912"  # УНП прочитан, строка не стоит
+    assert row.commission == Decimal("13.17")
+
+    from oplata.statement_match import classify, classify_commission
+
+    commission = classify_commission(row, store.data, store.data.bank.unp)
+    assert row_is_blocked(
+        classify(row, store.data, store.data.bank.unp), commission
+    ) is False
+
+    distribute(statement, store.data)
+    # Комиссия легла в вид оплаты банка, поступление — по картам
+    # (979,72 + 13,17 = 992,89: комиссия проходит с двух сторон).
+    assert [
+        (payment.name, str(payment.amount))
+        for payment in store.data.other_payments
+        if payment.date
+    ] == [("Комиссия банка", "13.17")]
+    assert [
+        (receipt.source, str(receipt.amount))
+        for receipt in store.data.cash_receipts
+    ] == [("card", "992.89")]
+
+
+def test_commission_without_payment_note_names_amount_and_unp(qt_app, store):
+    """v0.62.0: без вида оплаты примечание говорит, сколько и по кому."""
+
+    from decimal import Decimal
+
+    from oplata.statement import Statement, StatementRow
+    from oplata.statement_match import classify_commission
+
+    def commission_of(unp: str) -> str:
+        row = StatementRow(
+            date="05.11.2026", unp=unp, name='ОАО "АСБ БЕЛАРУСБАНК"',
+            incoming=Decimal("979.72"), commission=Decimal("13.17"),
+        )
+        return classify_commission(row, store.data, "100325912").note
+
+    # Вид оплаты не заведён: видно и сумму комиссии, и УНП, по которому
+    # её искали, — понятно, какую карточку создать.
+    assert commission_of("100325912") == (
+        "Комиссия 13,17: нужен вид оплаты (УНП 100325912)"
+    )
+    # Пустой УНП тоже объясняем: молчаливого «нужен вид оплаты» мало.
+    assert commission_of("") == (
+        "Комиссия 13,17: нужен вид оплаты (УНП в строке не указан)"
+    )

@@ -345,6 +345,16 @@ def classify_commission(
         # получатель, — но подписываем это как комиссию, а не строкой.
         match.note = "Комиссия банка: уточните получателя в «Куда»"
         return match
+    if match.target == TARGET_NEW_PAYMENT:
+        # v0.62.0: по одной подписи «Нужен новый вид оплаты» не понять,
+        # из-за какой суммы строка стоит. Говорим прямо: сколько комиссии
+        # и по какому УНП ищем вид оплаты.
+        where = f"УНП {row.unp}" if row.unp else "УНП в строке не указан"
+        match.note = (
+            f"Комиссия {fmt_amount(row.commission)}: "
+            f"нужен вид оплаты ({where})"
+        )
+        return match
     if match.target:
         match.note = f"Комиссия банка: {match.payment_name or match.note}"
     return match

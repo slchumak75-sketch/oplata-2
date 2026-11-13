@@ -494,13 +494,17 @@ class DistributionDialog(QDialog):
         day = date.fromisoformat(iso_date(row_data))
         # Имя из выписки: «ООО "ОМА"» → то же, но без лишних пробелов.
         suggested = " ".join((row_data.name or row_data.unp).split())
+        # v0.62.0: УНП в строке мог не прочитаться (старая выписка, где
+        # «УНП» и цифры попали на разные строки). Тогда предлагаем УНП
+        # банка из «Конфигурации»: карточка без УНП строку не разнесёт.
+        unp = row_data.unp or self.store.data.bank.unp
         dialog = OtherPaymentCardDialog(
             OUTGOING,
             used,
             day,
             self,
             name=suggested,
-            unp=row_data.unp,
+            unp=unp,
         )
         if dialog.exec() != QDialog.DialogCode.Accepted:
             return False
