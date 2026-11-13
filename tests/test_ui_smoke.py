@@ -48,7 +48,8 @@ def week_row(view, name: str) -> int:
     return 4 + [c.name for c in view.counterparties()].index(name)
 
 
-def patch_other_payment_card(monkeypatch, names=(), vat_rate="", unp=""):
+def patch_other_payment_card(monkeypatch, names=(), vat_rate="", unp="",
+                            note=""):
     """Подменить карточку нового вида оплаты (v0.20.0).
 
     Сама карточка — модальный диалог: в headless-прогоне ``exec()``
@@ -56,7 +57,7 @@ def patch_other_payment_card(monkeypatch, names=(), vat_rate="", unp=""):
     очереди (а дальше — как прежде: «Новый вид оплаты», «… 2», …),
     дату блока и нулевую сумму. ``vat_rate`` — ставка НДС, которую
     карточка «вводит» для каждого создаваемого вида (v0.33.0);
-    ``unp`` — УНП вида (v0.55.0).
+    ``unp`` — УНП вида (v0.55.0); ``note`` — примечание (v0.60.0).
     """
     from decimal import Decimal
 
@@ -79,7 +80,9 @@ def patch_other_payment_card(monkeypatch, names=(), vat_rate="", unp=""):
             dates=(),
             vat_rate="",
             unp="",
+            note="",
         ):
+            self._note = note
             if queue:
                 self._name = queue.pop(0)
             else:
@@ -108,6 +111,12 @@ def patch_other_payment_card(monkeypatch, names=(), vat_rate="", unp=""):
             """Ставка НДС из карточки (v0.33.0)."""
 
             return vat_rate
+
+        @property
+        def note_value(self):
+            """Примечание вида оплаты из карточки (v0.60.0)."""
+
+            return note
 
         @property
         def unp_value(self):
@@ -144,10 +153,11 @@ def test_main_window_all_pages(qt_app, store):
     # v0.22.0: вместо «Неделя/Месяц/Квартал/Год» — колонки дней недели.
     # v0.33.0: вторым столбцом стоит «НДС» (в блоке «Поступление»
     # колонка скрыта — виды поступлений своей ставки не имеют).
+    # v0.60.0: перед НДС стоит «Примечание» (в обоих блоках).
     assert [
         view.outgoing.table.horizontalHeaderItem(c).text()
         for c in range(COLUMN_COUNT)
-    ][:2] == ["", "НДС"]
+    ][:3] == ["", "Примечание", "НДС"]
     assert view.incoming.table.isColumnHidden(COL_VAT)
     assert not view.outgoing.table.isColumnHidden(COL_VAT)
     assert view.incoming.days == view.incoming.week_days()
@@ -1329,6 +1339,7 @@ def test_data_panels_are_collapsible(qt_app, store):
 
 from oplata.views.receipts_view import (  # noqa: E402
     COL_NAME,
+    COL_NOTE,
     COL_VAT,
     COLUMN_COUNT,
     TABLE_DAYS,
@@ -1679,7 +1690,8 @@ def test_week_day_columns_show_daily_amounts(qt_app, store):
     # Шесть дней недели: Пн 26.10 – Сб 31.10 (воскресенья нет).
     # v0.33.0: колонок девять — название, НДС, сумма и шесть дней.
     # v0.38.0: колонки «Сумма» нет, поэтому столбцов на один меньше.
-    assert view.incoming.table.columnCount() == COLUMN_COUNT == 2 + TABLE_DAYS
+    # v0.60.0: между названием и НДС стоит колонка «Примечание».
+    assert view.incoming.table.columnCount() == COLUMN_COUNT == 3 + TABLE_DAYS
     assert view.incoming.days[0] == date(2026, 10, 26)
     assert view.incoming.days[-1] == date(2026, 10, 31)
     headers = [
@@ -1688,9 +1700,12 @@ def test_week_day_columns_show_daily_amounts(qt_app, store):
     ]
     # v0.33.0: вторая колонка — «НДС» (в блоке «Поступление» скрыта);
     # v0.38.0: третьей колонкой «Сумма» больше нет — сразу дни.
-    assert headers[0] == "" and headers[1] == "НДС"
+    # v0.60.0: вторая колонка — «Примечание», НДС стал третьим.
+    assert headers[0] == "" and headers[1] == "Примечание"
+    assert headers[2] == "НДС"
     assert view.incoming.table.isColumnHidden(COL_VAT)
-    assert headers[2].startswith("26.10") and headers[-1].startswith("31.10")
+    assert not view.incoming.table.isColumnHidden(COL_NOTE)
+    assert headers[3].startswith("26.10") and headers[-1].startswith("31.10")
 
     row = view.incoming.row_keys.index("cash")
     assert view.incoming.amount_text("cash") == "3 000,00"  # выбранный день
@@ -3095,6 +3110,7 @@ def test_edit_payment_card_renames_and_updates_dates(qt_app, store, monkeypatch)
             dates=(),
             vat_rate="",
             unp="",
+            note="",
         ):
             self.direction = direction
             self.name_value = "Аренда офиса"
@@ -3103,6 +3119,8 @@ def test_edit_payment_card_renames_and_updates_dates(qt_app, store, monkeypatch)
             self.vat_value = "20"
             # v0.55.0: УНП вида оплаты.
             self.unp_value = "100325912"
+            # v0.60.0: примечание вида оплаты.
+            self.note_value = "аренда по второму договору"
 
         def exec(self):
             return QDialog.DialogCode.Accepted
@@ -3269,7 +3287,7 @@ def test_money_block_first_column_left_others_centered(qt_app, store):
     from PySide6.QtCore import Qt
 
     from oplata.app import MainWindow
-    from oplata.views.receipts_view import COL_NAME
+    from oplata.views.receipts_view import COL_NAME, COL_NOTE
 
     window = MainWindow(store)
     center = Qt.AlignmentFlag.AlignHCenter
@@ -3279,7 +3297,9 @@ def test_money_block_first_column_left_others_centered(qt_app, store):
         header = table.horizontalHeader()
         assert header.defaultAlignment() & center
         for column in range(table.columnCount()):
-            expected = left if column == COL_NAME else center
+            # v0.60.0: примечание, как и название, — по левому краю:
+            # это текст, его читают слева.
+            expected = left if column in (COL_NAME, COL_NOTE) else center
             header_item = table.horizontalHeaderItem(column)
             assert header_item is not None
             assert header_item.textAlignment() & expected, column
@@ -4998,9 +5018,11 @@ def test_outgoing_block_has_vat_column(qt_app, store, monkeypatch):
         for column in range(block.table.columnCount())
     ]
     # v0.38.0: колонки «Сумма» нет: название, НДС и шесть дней.
-    assert block.table.columnCount() == 8
-    assert headers[:2] == ["", "НДС"]
-    # Дней по-прежнему шесть (Пн–Сб), колонок — восемь.
+    # v0.60.0: добавлена колонка «Примечание» — название, примечание,
+    # НДС и шесть дней.
+    assert block.table.columnCount() == 9
+    assert headers[:3] == ["", "Примечание", "НДС"]
+    # Дней по-прежнему шесть (Пн–Сб), колонок — девять.
     assert len(block.days) == 6
 
     # В блоке «Поступление» колонки «НДС» нет совсем.
@@ -7450,6 +7472,229 @@ def test_statement_dialog_reports_when_nothing_new(qt_app, store, monkeypatch):
     )
     dialog._continue()
     assert shown and "Новых данных нет" in shown[-1]
+
+
+def test_counterparty_card_saves_note(qt_app, store):
+    """v0.60.0: примечание контрагента сохраняется карточкой."""
+
+    from oplata.dialogs.counterparty_card import CounterpartyCardDialog
+
+    card = CounterpartyCardDialog(store, "supplier")
+    card.name_edit.setText("Тестовый поставщик")
+    card.unp_edit.setText("123456789")
+    card.note_edit.setText("оплату присылает со второго счёта")
+    card._save_and_close()
+
+    item = next(
+        one for one in store.data.suppliers if one.name == "Тестовый поставщик"
+    )
+    assert item.unp == "123456789"
+    assert item.note == "оплату присылает со второго счёта"
+    # Примечание переживает сохранение и чтение файла.
+    saved = next(
+        one
+        for one in DataStore(store.path).data.suppliers
+        if one.name == "Тестовый поставщик"
+    )
+    assert saved.note == item.note
+
+
+def test_two_counterparties_may_share_unp(qt_app, store):
+    """v0.60.0: одинаковый УНП у двух контрагентов — не ошибка.
+
+    Одна организация бывает и поставщиком, и покупателем; карточки
+    различают примечанием.
+    """
+
+    from oplata.dialogs.counterparty_card import CounterpartyCardDialog
+
+    for name, note in (
+        ("Оптовик", "поставка товара"),
+        ("Оптовик-покупатель", "покупает упаковку"),
+    ):
+        card = CounterpartyCardDialog(store, "customer")
+        card.name_edit.setText(name)
+        card.unp_edit.setText("123456789")     # тот же УНП
+        card.note_edit.setText(note)
+        card._add()
+        card.close()
+
+    unps = [item.unp for item in store.data.customers]
+    assert unps == ["123456789", "123456789"]
+    assert [item.note for item in store.data.customers] == [
+        "поставка товара",
+        "покупает упаковку",
+    ]
+
+
+from oplata.storage import DataStore
+
+
+def test_payment_note_shows_in_block_table(qt_app, store):
+    """v0.60.0: примечание вида оплаты — своей колонкой в таблице."""
+
+    from datetime import date
+
+    from oplata.app import MainWindow
+    from oplata.models import add_other_payment
+    from oplata.views.receipts_view import COL_NAME, COL_NOTE, COL_VAT
+
+    add_other_payment(
+        store.data, "Аренда", "2026-10-27", note="второй договор"
+    )
+    # Второй вид с тем же УНП, но другим примечанием (v0.60.0).
+    add_other_payment(
+        store.data,
+        "Аренда гаража",
+        "2026-10-27",
+        unp="100325912",
+        note="гараж под офисом",
+    )
+    window = MainWindow(store)
+    window.show()
+    qt_app.processEvents()
+    view = window.receipts_view
+    view.set_date(date(2026, 10, 27))
+
+    block = view.outgoing
+    headers = [
+        block.table.horizontalHeaderItem(column).text()
+        for column in range(block.table.columnCount())
+    ]
+    # Примечание стоит между названием и НДС.
+    assert headers[:3] == ["", "Примечание", "НДС"]
+
+    def note_of(name: str) -> str:
+        row = block.row_keys.index(f"other:{name}")
+        item = block.table.item(row, COL_NOTE)
+        return item.text() if item is not None else ""
+
+    assert note_of("Аренда") == "второй договор"
+    assert note_of("Аренда гаража") == "гараж под офисом"
+    # Колонка примечания только для чтения: правится карточкой.
+    for name in ("Аренда", "Аренда гаража"):
+        row = block.row_keys.index(f"other:{name}")
+        assert not (
+            block.table.item(row, COL_NOTE).flags()
+            & Qt.ItemFlag.ItemIsEditable
+        )
+    assert block.table.item(0, COL_NAME).text() == "Поставщики"
+    assert COL_NOTE < COL_VAT
+    window.close()
+
+
+def test_payment_card_saves_note(qt_app, store, monkeypatch):
+    """v0.60.0: примечание вида оплаты приходит из карточки."""
+
+    from datetime import date
+
+    from oplata.app import MainWindow
+
+    patch_other_payment_card(
+        monkeypatch, names=("Вид с примечанием",),
+        unp="100325912", note="комиссия за эквайринг",
+    )
+    window = MainWindow(store)
+    window.show()
+    qt_app.processEvents()
+    view = window.receipts_view
+    view.set_date(date(2026, 10, 27))
+    view.add_other_row()
+    qt_app.processEvents()
+
+    payment = next(
+        one
+        for one in store.data.other_payments
+        if one.name == "Вид с примечанием"
+    )
+    assert payment.unp == "100325912"
+    assert payment.note == "комиссия за эквайринг"
+    # Примечание переживает сохранение и чтение файла.
+    saved = next(
+        one
+        for one in DataStore(store.path).data.other_payments
+        if one.name == "Вид с примечанием"
+    )
+    assert saved.note == payment.note
+    # И показываетcя в своей колонке таблицы блока.
+    view.refresh()
+    qt_app.processEvents()
+    row = view.outgoing.row_keys.index("other:Вид с примечанием")
+    from oplata.views.receipts_view import COL_NOTE
+
+    assert view.outgoing.table.item(row, COL_NOTE).text() == (
+        "комиссия за эквайринг"
+    )
+    window.close()
+
+
+def test_counterparty_note_shows_in_week_table_tooltip(qt_app, store):
+    """v0.60.0: примечание контрагента видно в подсказке строки."""
+
+    from oplata.models import Counterparty
+    from oplata.views.week_view import WeekView
+
+    store.data.suppliers.append(
+        Counterparty(
+            name="Оптовик", unp="123456789",
+            note="оплату присылает со второго счёта",
+        )
+    )
+    view = WeekView(store, "supplier", lambda *_a: None)
+    view.show()
+    qt_app.processEvents()
+    rows = [
+        row
+        for row in range(view.table.rowCount())
+        if view.table.item(row, 0) is not None
+        and view.table.item(row, 0).text() == "Оптовик"
+    ]
+    assert rows, "строка поставщика не найдена"
+    item = view.table.item(rows[0], 0)
+    assert item is not None and item.text() == "Оптовик"
+    assert "Примечание: оплату присылает со второго счёта" in item.toolTip()
+    view.close()
+
+
+def test_long_partner_name_wraps_to_two_lines(qt_app, store):
+    """v0.60.0: длинное наименование переносится, а не обрезается.
+
+    Расширять колонку названия некуда — шесть дней по три колонки
+    съедают всю ширину окна, а сужать итоговые ниже 100 px нельзя
+    (подпись «Просрочено» занимает 91 px). Поэтому строка с длинным
+    наименованием становится выше.
+    """
+
+    from oplata.models import Counterparty
+    from oplata.views.week_view import (
+        FIRST_DATA_ROW,
+        NAME_ROW_HEIGHT,
+        WeekView,
+    )
+
+    store.data.suppliers.append(Counterparty(name='ЧПУП "МАВ"', unp="1"))
+    store.data.suppliers.append(
+        Counterparty(name='ООО "КУЛЬТБЫТХОЗТОРГПЛЮС"', unp="2")
+    )
+    view = WeekView(store, "supplier", lambda *_a: None)
+    view.resize(1366, 520)
+    view.show()
+    qt_app.processEvents()
+
+    def row_of(name: str) -> int:
+        for row in range(FIRST_DATA_ROW, view.table.rowCount()):
+            item = view.table.item(row, 0)
+            if item is not None and item.text() == name:
+                return row
+        raise AssertionError(f"нет строки «{name}»")
+
+    short = row_of('ЧПУП "МАВ"')
+    long_row = row_of('ООО "КУЛЬТБЫТХОЗТОРГПЛЮС"')
+    # Короткое наименование — одна строка, длинное занимает две.
+    assert view.table.rowHeight(short) == NAME_ROW_HEIGHT
+    assert view.table.rowHeight(long_row) > NAME_ROW_HEIGHT
+    assert view.table.wordWrap() is True
+    view.close()
 
 
 def test_week_lead_columns_are_narrower_and_smaller(qt_app, store):

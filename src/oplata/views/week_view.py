@@ -94,9 +94,19 @@ def alphabetical_key(item) -> str:
 
 
 NAME_FONT_SIZE = styles.fs(10)   # названия контрагентов
+# v0.60.0: высота строки контрагента. Одна строка — обычная; если
+# наименование не влезает, строка становится выше (перенос по словам),
+# но не более чем на NAME_ROW_MAX_LINES строк.
+NAME_ROW_HEIGHT = 30
+NAME_ROW_MAX_LINES = 3
 LEAD_FONT_SIZE = styles.fs(10)   # итоговые колонки: «Итого»/«Всего» …
 NAME_WIDTH_BASE = 188
 NAME_WIDTH_MIN = 150
+# Ниже 100 px опускаться нельзя: подпись «Просрочено» жирным fs(10)
+# занимает 91 px, а с полями ячейки нужно 99 (проверено тестом
+# ``test_debt_headers_are_written_in_full``). Сужать итоговые дальше
+# некуда — длинное наименование выручает перенос на две строки
+# (v0.60.0), а не ширина колонки.
 LEAD_WIDTH_BASE = 110
 LEAD_WIDTH_MIN = 100
 
@@ -776,6 +786,20 @@ class WeekView(QWidget):
         )
 
     @staticmethod
+    def _note_tooltip(partner) -> str:
+        """Хвост подсказки: примечание контрагента (v0.60.0).
+
+        УНП у контрагентов может повторяться (одна организация — и
+        поставщик, и покупатель), поэтому примечание показываем сразу
+        за подсказкой о клике.
+        """
+
+        note = str(getattr(partner, "note", "") or "").strip()
+        if not note:
+            return ""
+        return f"\n\nПримечание: {note} (УНП {partner.unp or '—'})"
+
+    @staticmethod
     def _conditions_text(partner: Counterparty) -> str:
         """Условия поставщика для узкой колонки (v0.27.3).
 
@@ -1380,12 +1404,12 @@ class WeekView(QWidget):
             if self.kind == "supplier":
                 name_item.setToolTip(
                     "Клик — журнал операций этого поставщика; двойной "
-                    "клик — окно «Поставка»"
+                    "клик — окно «Поставка»" + self._note_tooltip(partner)
                 )
             elif self.kind == "customer":
                 name_item.setToolTip(
                     "Клик — журнал операций этого покупателя; двойной "
-                    "клик — окно «Реализация»"
+                    "клик — окно «Реализация»" + self._note_tooltip(partner)
                 )
             # «Итого», «просрочено» / задолженность «за неделю» (calc);
             # у покупателей — одна колонка «Всего» = Реализация − Оплата.
@@ -1567,8 +1591,60 @@ class WeekView(QWidget):
             if subcolumn != self.mark_index
         ]
         self._fit_amount_font(min(widths[column] for column in money_columns))
+        # v0.60.0: длинное наименование переносим на две строки — иначе
+        # в узкой колонке оно обрезается, а расширять колонку некуда
+        # (шесть дней по три колонки съедают всю ширину окна).
+        self._fit_name_rows(widths[0])
         # v0.40.0: закреплённая шапка должна лечь на те же колонки.
         self._update_frozen_geometry()
+
+    def _fit_name_rows(self, name_width: int) -> None:
+        """Высота строк контрагентов под перенос наименования (v0.60.0).
+
+        Ширина колонки названия на узком окне меньше самого названия,
+        поэтому текст переносится по словам. Qt высоту строки под
+        перенос не подбирает (``resizeRowsToContents`` считает одну
+        строку), поэтому считаем её сами — не больше трёх строк:
+        дальше наименование всё равно нечитаемо.
+        """
+
+        table = self.table
+        if table.rowCount() <= FIRST_DATA_ROW:
+            return
+        font = QFont(table.font())
+        font.setPixelSize(NAME_FONT_SIZE)
+        metrics = QFontMetrics(font)
+        line_height = metrics.height() + 4
+        for row in range(FIRST_DATA_ROW, table.rowCount()):
+            item = table.item(row, 0)
+            if item is None:
+                continue
+            lines = self._name_lines(
+                item.text(), name_width - 6, metrics
+            )
+            height = max(NAME_ROW_HEIGHT, lines * line_height + 6)
+            table.setRowHeight(row, height)
+            if self.frozen_table.rowCount() > row:
+                self.frozen_table.setRowHeight(row, height)
+
+    @staticmethod
+    def _name_lines(text: str, width: int, metrics) -> int:
+        """Сколько строк займёт ``text`` в колонке шириной ``width``."""
+
+        if not text or width <= 0:
+            return 1
+        lines = 1
+        current = ""
+        for word in text.split():
+            probe = f"{current} {word}".strip()
+            if metrics.horizontalAdvance(probe) <= width:
+                current = probe
+                continue
+            lines += 1
+            if lines >= NAME_ROW_MAX_LINES:
+                return NAME_ROW_MAX_LINES
+            current = word
+        return lines
 
     def _fit_amount_font(self, day_column_width: int) -> None:
         """Подобрать размер шрифта сумм так, чтобы «88 888,88» влезало целиком."""

@@ -34,6 +34,10 @@ class Counterparty:
     prepayment: bool = False    # Режим оплаты: «Предоплата»
     realization: bool = False   # Режим оплаты: «Реализация»
     archived: bool = False      # «В архиве (скрывать из списков, историю сохранить)»
+    # v0.60.0: примечание — свободная строка из карточки. УНП у
+    # контрагентов может повторяться (например, один плательщик —
+    # поставщик и покупатель), и примечание помогает их различать.
+    note: str = ""
 
     @classmethod
     def from_dict(cls, data: dict) -> "Counterparty":
@@ -45,6 +49,7 @@ class Counterparty:
             prepayment=bool(data.get("prepayment", False)),
             realization=bool(data.get("realization", False)),
             archived=bool(data.get("archived", False)),
+            note=str(data.get("note", "") or ""),
         )
 
 
@@ -179,6 +184,10 @@ class OtherPayment:
     # этот вид в выписке: банк (комиссия, эквайринг) не поставщик и не
     # покупатель, у него свой УНП (замечание пользователя).
     unp: str = ""
+    # v0.60.0: примечание вида оплаты. УНП у видов может повторяться
+    # (одна организация — несколько назначений платежей), примечание
+    # показывает в таблице, какой это именно вид.
+    note: str = ""
     id: str = field(default_factory=new_id)
 
     @classmethod
@@ -192,6 +201,7 @@ class OtherPayment:
             dates=[str(day) for day in data.get("dates", []) if day],
             vat_rate=str(data.get("vat_rate", "") or "").strip(),
             unp=str(data.get("unp", "") or "").strip(),
+            note=str(data.get("note", "") or ""),
         )
 
 
@@ -768,6 +778,7 @@ def add_other_payment(
     dates: list[str] | None = None,
     vat_rate: str = "",
     unp: str = "",
+    note: str = "",
 ) -> OtherPayment:
     """Создать строку вида оплаты (сумма 0 — строка только появилась).
 
@@ -775,6 +786,7 @@ def add_other_payment(
     ячейки в таблице блока будут красными. ``vat_rate`` — ставка НДС
     в процентах (v0.33.0), пустая строка = без НДС. ``unp`` — УНП
     контрагента этого вида (v0.55.0), пустая строка = не задан.
+    ``note`` — примечание (v0.60.0), показывается в таблице блока.
     """
 
     payment = OtherPayment(
@@ -785,6 +797,7 @@ def add_other_payment(
         dates=list(dates or []),
         vat_rate=str(vat_rate or "").strip(),
         unp=str(unp or "").strip(),
+        note=str(note or "").strip(),
     )
     data.other_payments.append(payment)
     return payment
