@@ -201,7 +201,9 @@ def _fmt_day(iso: str) -> str:
         return f"{iso[8:10]}.{iso[5:7]}.{iso[0:4]}"
     return iso
 
-COL_NAME, COL_VAT = 0, 1
+# v0.60.0: между названием и НДС стоит колонка «Примечание» — по ней
+# видно, какой это вид оплаты, когда УНП у видов повторяется.
+COL_NAME, COL_NOTE, COL_VAT = 0, 1, 2
 # v0.38.0: колонки «Сумма» в таблицах «Поступление» и «Оплата» больше
 # нет — сумма вводится и показывается прямо в ячейке своего дня:
 # «Наименование · НДС · дни недели». Ставка НДС (v0.33.0) осталась
@@ -209,7 +211,7 @@ COL_NAME, COL_VAT = 0, 1
 # v0.22.0: вместо итоговых колонок «Неделя / Месяц / Квартал / Год» в
 # таблице стоят колонки дней текущей недели — как в недельных таблицах,
 # шесть дней (Пн–Сб, воскресенья нет, v0.19.0).
-FIRST_DAY_COL = 2
+FIRST_DAY_COL = 3
 TABLE_DAYS = 6
 COLUMN_COUNT = FIRST_DAY_COL + TABLE_DAYS
 WEEKDAY_SHORT = ("Пн", "Вт", "Ср", "Чт", "Пт", "Сб", "Вс")
@@ -282,7 +284,9 @@ class DayHeaderView(QHeaderView):
 # влезает «88 888,88», а колонке названия остаётся место на
 # «Поступление наличными». v0.33.0: колонка «НДС» узкая — в ней
 # только ставка («20 %»).
-COLUMN_WIDTHS = {COL_VAT: 68}
+# Ширина колонки «Примечание» больше ставки НДС: там целая фраза,
+# но название (основная колонка) остаётся самой широкой.
+COLUMN_WIDTHS = {COL_NOTE: 150, COL_VAT: 68}
 # Колонки дней уже итогов «Неделя/Месяц/Квартал/Год»: в них день и сумма
 # за день («88 888,88» влезает и в 92 px).
 DAY_COLUMN_WIDTH = 96
@@ -772,6 +776,11 @@ class OtherPaymentCardDialog(QDialog):
 
     v0.33.0: в карточке есть **ставка НДС** (в процентах, пусто = без
     НДС). Ставка показывается в колонке «НДС» блока «Оплата».
+
+    v0.60.0: в карточке есть **примечание**. УНП у видов может
+    повторяться (одна организация — несколько назначений платежей),
+    поэтому вид различают по примечанию; оно показывается в таблице
+    блока отдельной колонкой.
     """
 
     def __init__(
@@ -784,6 +793,7 @@ class OtherPaymentCardDialog(QDialog):
         dates: Iterable[str] = (),
         vat_rate: str = "",
         unp: str = "",
+        note: str = "",
     ) -> None:
         super().__init__(parent)
         self.direction = direction
@@ -821,7 +831,19 @@ class OtherPaymentCardDialog(QDialog):
             QRegularExpressionValidator(QRegularExpression(r"\d*"))
         )
         self.unp_edit.setText(str(unp or "").strip())
+        self.unp_edit.setToolTip(
+            "УНП можно повторять: у одной организации бывает несколько "
+            "видов платежей. Различать их помогает поле «Примечание»."
+        )
         form.addRow("УНП:", self.unp_edit)
+
+        # v0.60.0: примечание вида — показывается в таблице блока.
+        self.note_edit = QLineEdit()
+        self.note_edit.setPlaceholderText(
+            "Например: комиссия за эквайринг, аренда по второму договору"
+        )
+        self.note_edit.setText(str(note or "").strip())
+        form.addRow("Примечание:", self.note_edit)
 
         # v0.24.0: календарь — отмеченные даты красят ячейки таблицы
         # «Оплата» красным (просьба пользователя).
@@ -893,6 +915,12 @@ class OtherPaymentCardDialog(QDialog):
         """Название вида оплаты, введённое в карточке (v0.21.0)."""
 
         return self.name_edit.text().strip()
+
+    @property
+    def note_value(self) -> str:
+        """Примечание вида оплаты, введённое в карточке (v0.60.0)."""
+
+        return self.note_edit.text().strip()
 
     @property
     def marked_dates(self) -> list[str]:
@@ -1282,7 +1310,9 @@ class MoneyBlock(QFrame):
         if self.table.columnCount() != COLUMN_COUNT:
             self.table.setColumnCount(COLUMN_COUNT)
         # v0.38.0: колонки «Сумма» нет — только название, НДС и дни.
-        headers = ["", "НДС"]
+        # v0.60.0: «Примечание» показывается в обоих блоках — у видов
+        # поступлений примечание тоже бывает.
+        headers = ["", "Примечание", "НДС"]
         for day in days:
             headers.append(
                 f"{day.strftime('%d.%m')} {WEEKDAY_SHORT[day.weekday()]}"
@@ -1293,9 +1323,11 @@ class MoneyBlock(QFrame):
         for column in range(COLUMN_COUNT):
             header_item = self.table.horizontalHeaderItem(column)
             if header_item is not None:
+                # v0.60.0: примечание, как и название, — по левому
+                # краю: это текст, его читают слева.
                 header_item.setTextAlignment(
                     Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter
-                    if column == COL_NAME
+                    if column in (COL_NAME, COL_NOTE)
                     else Qt.AlignmentFlag.AlignCenter
                 )
         self._apply_column_widths()
@@ -1303,7 +1335,7 @@ class MoneyBlock(QFrame):
     def _apply_column_widths(self) -> None:
         """Ширины колонок фиксированы; шапка — по центру (v0.23.9)."""
 
-        for column in range(COL_VAT, COLUMN_COUNT):
+        for column in range(COL_NOTE, COLUMN_COUNT):
             self.table.setColumnWidth(
                 column,
                 COLUMN_WIDTHS.get(column, DAY_COLUMN_WIDTH),
@@ -1311,7 +1343,12 @@ class MoneyBlock(QFrame):
             header_item = self.table.horizontalHeaderItem(column)
             if header_item is not None:
                 # v0.23.9: по центру, раньше числа были по правому краю.
-                header_item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
+                # v0.60.0: примечание — по левому краю, как название.
+                header_item.setTextAlignment(
+                    Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter
+                    if column == COL_NOTE
+                    else Qt.AlignmentFlag.AlignCenter
+                )
 
     def mark_current_day(self) -> None:
         """Выделить в шапке день, выбранный в блоке (v0.22.0)."""
@@ -1420,6 +1457,17 @@ class MoneyBlock(QFrame):
                 Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter
             )
             self.table.setItem(row, COL_NAME, name_item)
+            # v0.60.0: примечание — только для чтения, как ставка НДС:
+            # правится оно в карточке вида.
+            note_item = QTableWidgetItem("")
+            note_item.setFlags(
+                Qt.ItemFlag.ItemIsEnabled | Qt.ItemFlag.ItemIsSelectable
+            )
+            note_item.setTextAlignment(
+                Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter
+            )
+            note_item.setToolTip("Примечание из карточки вида")
+            self.table.setItem(row, COL_NOTE, note_item)
             # v0.33.0: ставка НДС — только для чтения (задаётся в
             # карточке вида оплаты).
             vat_item = QTableWidgetItem("")
@@ -1531,6 +1579,21 @@ class MoneyBlock(QFrame):
         if key in DIRECT_INPUT_ROWS:
             return "Сумма вводится прямо в ячейку, клик — журнал операций"
         return "Клик — окно со списком и полями сумм"
+
+    def set_notes(self, notes: dict[str, str]) -> None:
+        """Показать примечания своих видов (v0.60.0).
+
+        Словарь: ключ строки -> текст примечания. Ячейка только для
+        чтения: правка идёт через карточку, как и ставка НДС.
+        """
+
+        for row, key in enumerate(self.row_keys):
+            item = self.table.item(row, COL_NOTE)
+            if item is None:
+                continue
+            self._updating = True
+            item.setText(notes.get(key, ""))
+            self._updating = False
 
     def set_vat_rates(self, vat_rates: dict[str, str]) -> None:
         """Показать ставки НДС своих видов оплаты (v0.33.0).
@@ -1953,11 +2016,32 @@ class ReceiptsView(QWidget):
 
     def refresh_incoming_rows(self) -> None:
         self.incoming.set_rows(self._incoming_rows())
+        # v0.60.0: примечания — из карточек видов.
+        self.incoming.set_notes(self._notes(INCOMING))
 
     def refresh_outgoing_rows(self) -> None:
         self.outgoing.set_rows(self._outgoing_rows())
         # v0.33.0: ставки НДС — из карточек видов оплаты.
         self.outgoing.set_vat_rates(self._vat_rates())
+        # v0.60.0: примечания видов оплаты.
+        self.outgoing.set_notes(self._notes(OUTGOING))
+
+    def _notes(self, direction: str) -> dict[str, str]:
+        """Примечание для каждой своей строки блока (v0.60.0).
+
+        Примечание лежит в первой записи вида — там же, где ставка НДС
+        и отмеченные даты: это и есть «карточка вида».
+        """
+
+        notes = {}
+        for name in other_payment_names(self.store.data, direction):
+            payment = self._find_payment(name, direction)
+            if payment is None:
+                continue
+            note = str(getattr(payment, "note", "") or "").strip()
+            if note:
+                notes[other_row_key(name)] = note
+        return notes
 
     def _vat_rates(self) -> dict[str, str]:
         """Ставка НДС для каждой своей строки «Оплаты» (v0.33.0).
@@ -2009,6 +2093,7 @@ class ReceiptsView(QWidget):
             dates=payment.dates,
             vat_rate=payment.vat_rate,
             unp=payment.unp,  # v0.55.0: УНП вида оплаты
+            note=payment.note,  # v0.60.0: примечание
         )
         if dialog.exec() != QDialog.DialogCode.Accepted:
             return
@@ -2017,6 +2102,8 @@ class ReceiptsView(QWidget):
         payment.vat_rate = dialog.vat_value
         # v0.55.0: УНП вида оплаты.
         payment.unp = dialog.unp_value
+        # v0.60.0: примечание вида оплаты.
+        payment.note = dialog.note_value
         new_name = dialog.name_value
         if new_name != name:
             rename_other_payment(self.store.data, name, new_name, direction)
@@ -2048,6 +2135,7 @@ class ReceiptsView(QWidget):
             dates=list(payment.dates),
             vat_rate=payment.vat_rate,
             unp=payment.unp,  # v0.55.0: УНП вида копируется
+            note=payment.note,  # v0.60.0: примечание копируется
         )
         self.store.save()
         self.refresh_rows()
@@ -2078,6 +2166,7 @@ class ReceiptsView(QWidget):
                 # v0.33.0: ставка НДС из карточки вида оплаты.
                 vat_rate=dialog.vat_value,
                 unp=dialog.unp_value,  # v0.55.0: УНП вида оплаты
+                note=dialog.note_value,  # v0.60.0: примечание
             )
             self.store.save()
             self.refresh_rows()
@@ -2524,6 +2613,8 @@ class ReceiptsView(QWidget):
             # и при старте, когда состав строк задан до первого refresh).
             if block.direction == OUTGOING:
                 block.set_vat_rates(self._vat_rates())
+            # v0.60.0: примечания — как ставки, обновляем и при старте.
+            block.set_notes(self._notes(block.direction))
             for key in block.row_keys:
                 # v0.38.0: колонки «Сумма» нет — сумма за выбранный день
                 # лежит в колонке этого дня (``day`` попадает в цикл ниже

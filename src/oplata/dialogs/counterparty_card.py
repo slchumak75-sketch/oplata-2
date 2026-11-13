@@ -102,6 +102,14 @@ class CounterpartyCardDialog(QDialog):
         unp_col.addWidget(QLabel("УНП"))
         self.unp_edit = QLineEdit()
         self.unp_edit.setPlaceholderText("9 цифр")
+        # v0.60.0: УНП может повторяться у нескольких контрагентов
+        # (одна организация — и поставщик, и покупатель; две карточки
+        # с одинаковым УНП). Различать их помогает примечание.
+        self.unp_edit.setToolTip(
+            "УНП может повторяться: у поставщика и покупателя он "
+            "одинаков, если это одна организация. Различать такие "
+            "карточки помогает поле «Примечание»."
+        )
         self.unp_edit.setMaxLength(UNP_LENGTH)
         # 9 цифр должны помещаться целиком (ширина — как у поля суммы)
         self.unp_edit.setFixedWidth(170)
@@ -112,6 +120,16 @@ class CounterpartyCardDialog(QDialog):
         unp_col.addWidget(self.unp_edit)
         name_row.addLayout(unp_col, stretch=0)
         root.addLayout(name_row)
+
+        # v0.60.0: примечание — свободная строка. УНП у контрагентов
+        # может повторяться, примечание помогает их различать.
+        root.addWidget(QLabel("Примечание"))
+        self.note_edit = QLineEdit()
+        self.note_edit.setPlaceholderText(
+            "Например: торгует через две кассы, оплату присылает с "
+            "другого счёта"
+        )
+        root.addWidget(self.note_edit)
 
         # Условия оплаты есть только у поставщика. Для покупателя этот
         # блок не создаём вовсе (по запросу пользователя — лишнее).
@@ -221,6 +239,7 @@ class CounterpartyCardDialog(QDialog):
         if item is None:
             self.name_edit.clear()
             self.unp_edit.clear()
+            self.note_edit.clear()
             if self.deferment_spin is not None:
                 self.deferment_spin.setValue(0)
             if self.chk_prepayment is not None:
@@ -231,6 +250,7 @@ class CounterpartyCardDialog(QDialog):
         else:
             self.name_edit.setText(item.name)
             self.unp_edit.setText(item.unp)
+            self.note_edit.setText(getattr(item, "note", "") or "")
             if self.deferment_spin is not None:
                 self.deferment_spin.setValue(item.deferment_days)
             if self.chk_prepayment is not None:
@@ -256,6 +276,8 @@ class CounterpartyCardDialog(QDialog):
     def _apply_fields(self, item: Counterparty) -> None:
         item.name = self.name_edit.text().strip()
         item.unp = self.unp_edit.text().strip()
+        # v0.60.0: примечание контрагента.
+        item.note = self.note_edit.text().strip()
         # У покупателя этих полей в окне нет: существующие значения модели
         # не затираем, новые покупатели получают значения по умолчанию.
         if self.deferment_spin is not None:
