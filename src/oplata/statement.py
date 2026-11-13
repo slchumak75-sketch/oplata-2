@@ -157,6 +157,33 @@ class StatementRow:
         side = "in" if self.is_incoming else "out"
         return f"{self.date}|{self.unp}|{self.amount}|{side}"
 
+    def row_key(self) -> str:
+        """«Мягкий» ключ строки: дата, УНП и направление (v0.65.0).
+
+        По нему программа находит прежнюю запись той же строки файла,
+        даже когда **сумма прочиталась иначе**. Так и было с кодом
+        платежа в бюджет (v0.64.0): строка «00101 300,00» разносилась
+        как 101 300,00, а после исправления стала 300,00 — ключ с
+        суммой (``import_key``) прежнюю запись уже не находил, и
+        миллионы оставались в базе висеть.
+        """
+
+        side = "in" if self.is_incoming else "out"
+        return f"{self.date}|{self.unp}|{side}"
+
+
+def stored_row_key(key: str) -> str:
+    """«Мягкий» ключ из сохранённого ключа строки (v0.65.0).
+
+    Сохранённый ключ — «дата|УНП|сумма|сторона»; сумму отбрасываем,
+    чтобы найти запись строки, сумма которой прочиталась иначе.
+    """
+
+    parts = str(key or "").split("|")
+    if len(parts) == 4:
+        return f"{parts[0]}|{parts[1]}|{parts[3]}"
+    return str(key or "")
+
 
 @dataclass
 class Statement:

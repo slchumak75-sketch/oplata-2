@@ -820,18 +820,38 @@ def set_daily_other_payment(
         )
 
     if amount is None or amount == 0:
-        data.other_payments = [
-            item for item in data.other_payments if not matches(item)
-        ]
-        # Строку вида оплаты не теряем: остаётся запись с нулевой суммой.
-        if name and not any(
-            item.name == name
-            and getattr(item, "direction", OUTGOING) == direction
-            for item in data.other_payments
-        ):
+        # v0.65.0: запись дня **обнуляем**, а не выбрасываем. В этой же
+        # записи лежат реквизиты карточки вида — УНП, примечание, НДС и
+        # отмеченные даты: выбросив запись, мы теряли УНП, и вид
+        # переставал узнаваться в выписке. Так и ломался переразнос:
+        # сняв прежнюю сумму, программа «забывала», кому она её писала.
+        existing = [item for item in data.other_payments if matches(item)]
+        if existing:
+            for item in existing:
+                item.amount = "0"
+            return
+        # Записи за этот день нет — берём реквизиты из другой записи
+        # того же вида (из самой карточки).
+        sample = next(
+            (
+                item
+                for item in data.other_payments
+                if item.name == name
+                and getattr(item, "direction", OUTGOING) == direction
+            ),
+            None,
+        )
+        if name:
             data.other_payments.append(
                 OtherPayment(
-                    date=date_iso, name=name, amount="0", direction=direction
+                    date=date_iso,
+                    name=name,
+                    amount="0",
+                    direction=direction,
+                    dates=list(sample.dates) if sample else [],
+                    vat_rate=sample.vat_rate if sample else "",
+                    unp=sample.unp if sample else "",
+                    note=sample.note if sample else "",
                 )
             )
         return

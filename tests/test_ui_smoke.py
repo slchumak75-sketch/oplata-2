@@ -8485,7 +8485,9 @@ def test_distribution_reports_rows_left_unresolved(qt_app, store, monkeypatch):
     assert store.data.operations == []  # писать нечего
     assert shown
     report = shown[-1]
-    assert "Не разнесено" in report
+    # v0.65.0: «надо выбрать получателя» — отдельный случай, его
+    # говорят своим словами, а не общим «не разнесено».
+    assert "Надо выбрать получателя" in report
     assert "УНП 111222333" in report
 
 
@@ -8601,3 +8603,210 @@ def test_statement_warns_when_totals_miss_turnover(qt_app, store, monkeypatch):
     assert f"color:{styles.RED}" in texts[0]  # предупреждение красным
     assert "<br>" in texts[0]  # переносы видны и в rich text
     dialog.close()
+
+
+# --------------------------------------------------------------- v0.65.0
+def _store_with_millions(store):
+    """База, где выписку уже разнесли неверными суммами (v0.65.0).
+
+    Точная копия состояния после версии до 0.64.0: код платежа в
+    бюджет попадал в сумму, поэтому ГУ МФ разнеслись как 101 300,00 и
+    3 511 800,00. Реестр разноса заполнен так же, как его пишет
+    программа.
+    """
+
+    from decimal import Decimal
+
+    from oplata.models import (
+        OUTGOING,
+        add_other_payment,
+        set_daily_other_payment,
+    )
+
+    store.data.bank.unp = "100325912"
+    add_other_payment(
+        store.data, "ГУ МФ ПО ГРОДНЕНСКОЙ ОБЛАСТИ", "2026-10-21", OUTGOING,
+        unp="500563252", note="ПОДОХОДНЫЙ НАЛОГ ИЗ ЗАРАБОТНОЙ ПЛАТЫ",
+    )
+    add_other_payment(
+        store.data, "ГУ МФ ПО ГРОДНЕНСКОЙ ОБЛАСТИ (2)", "2026-10-21", OUTGOING,
+        unp="500563252", note="ОПЛАТА СТРАХОВЫХ ВЗНОСОВ",
+    )
+    set_daily_other_payment(
+        store.data, "ГУ МФ ПО ГРОДНЕНСКОЙ ОБЛАСТИ", "2026-10-21",
+        Decimal("101300.00"), OUTGOING,
+    )
+    set_daily_other_payment(
+        store.data, "ГУ МФ ПО ГРОДНЕНСКОЙ ОБЛАСТИ (2)", "2026-10-21",
+        Decimal("3511800.00"), OUTGOING,
+    )
+    store.data.imported_statement_rows = [
+        "21.10.2026|500563252|101300.00|out",
+        "21.10.2026|500563252|3511800.00|out",
+    ]
+    store.data.imported_statement_writes = [
+        {
+            "keys": ["21.10.2026|500563252|101300.00|out"],
+            "target": "other_payment", "counterparty_id": "",
+            "payment_name": "ГУ МФ ПО ГРОДНЕНСКОЙ ОБЛАСТИ",
+            "date": "2026-10-21", "amount": "101300.00",
+        },
+        {
+            "keys": ["21.10.2026|500563252|3511800.00|out"],
+            "target": "other_payment", "counterparty_id": "",
+            "payment_name": "ГУ МФ ПО ГРОДНЕНСКОЙ ОБЛАСТИ (2)",
+            "date": "2026-10-21", "amount": "3511800.00",
+        },
+    ]
+    return store
+
+
+def test_redo_removes_rows_written_with_other_amount(
+    qt_app, store, monkeypatch
+):
+    """v0.65.0: прежняя запись снимается, даже если сумма строки изменилась.
+
+    Ключ строки раньше включал сумму (v0.56.0), поэтому после
+    исправления разбора (код платежа в бюджет, v0.64.0) программа не
+    узнавала свою же строку: 101 300,00 висела в базе, а 300,00
+    писалась рядом. Теперь строка ищется по дате, УНП и направлению.
+    """
+
+    from PySide6.QtWidgets import QMessageBox
+    from oplata.dialogs.statement_dialog import StatementDialog
+    from oplata.statement import parse_statement
+
+    store = _store_with_millions(store)
+    statement = parse_statement(BUDGET_STATEMENT)
+    dialog = StatementDialog(
+        statement, "в7.pdf", store=store, bank_unp="100325912"
+    )
+    dialog.show()
+    qt_app.processEvents()
+
+    monkeypatch.setattr(
+        StatementDialog, "_ask_about_repeat", lambda self: False
+    )
+    monkeypatch.setattr(
+        QMessageBox,
+        "question",
+        staticmethod(lambda *args, **kwargs: QMessageBox.StandardButton.Yes),
+    )
+    monkeypatch.setattr(
+        QMessageBox, "information", staticmethod(lambda *args, **kwargs: None)
+    )
+
+    # Получателя не выбираем: программа всё равно должна снять миллионы,
+    # иначе неверная сумма останется в базе навсегда.
+    dialog._continue()
+    result = dialog.result_distribution
+    assert [item for item in result.replaced if "101 300,00" in item]
+    assert [item for item in result.replaced if "3 511 800,00" in item]
+    assert len(result.restated) == 2
+    assert len(result.rolled_unwritten) == 2  # снято, но не записано
+    amounts = {
+        item.name: str(item.amount) for item in store.data.other_payments
+    }
+    assert amounts["ГУ МФ ПО ГРОДНЕНСКОЙ ОБЛАСТИ"] == "0"
+    assert amounts["ГУ МФ ПО ГРОДНЕНСКОЙ ОБЛАСТИ (2)"] == "0"
+    # Окно не закрылось: получателя надо выбрать здесь же.
+    assert dialog.result() == 0
+
+    # Выбираем получателей — и суммы встают на место.
+    for row, want in ((2, "ПОДОХОДНЫЙ"), (3, "СТРАХОВЫХ")):
+        combo = dialog._target_combo(row)
+        for index in range(combo.count()):
+            if want in combo.itemText(index):
+                combo.setCurrentIndex(index)
+                break
+    dialog._continue()
+    amounts = {
+        item.name: str(item.amount) for item in store.data.other_payments
+    }
+    assert amounts["ГУ МФ ПО ГРОДНЕНСКОЙ ОБЛАСТИ"] == "300.00"
+    assert amounts["ГУ МФ ПО ГРОДНЕНСКОЙ ОБЛАСТИ (2)"] == "800.00"
+    dialog.close()
+
+
+def test_redo_keeps_card_details_when_clearing_amount(qt_app, store):
+    """v0.65.0: обнуление суммы дня не выбрасывает карточку вида.
+
+    Раньше запись удалялась и создавалась заново — без УНП и
+    примечания. Вид переставал узнаваться в выписке, и переразнос
+    ломался: сняв сумму, программа «забывала», кому её писала.
+    """
+
+    from decimal import Decimal
+
+    from oplata.models import (
+        OUTGOING,
+        add_other_payment,
+        set_daily_other_payment,
+    )
+
+    add_other_payment(
+        store.data, "ГУ МФ", "2026-10-21", OUTGOING, unp="500563252",
+        note="ПОДОХОДНЫЙ НАЛОГ", vat_rate="20",
+    )
+    set_daily_other_payment(
+        store.data, "ГУ МФ", "2026-10-21", Decimal("101300.00"), OUTGOING
+    )
+    set_daily_other_payment(
+        store.data, "ГУ МФ", "2026-10-22", Decimal("500.00"), OUTGOING
+    )
+    # Снимаем сумму дня — карточка вида должна уцелеть целиком.
+    set_daily_other_payment(store.data, "ГУ МФ", "2026-10-21", None, OUTGOING)
+
+    rows = [
+        item
+        for item in store.data.other_payments
+        if item.name == "ГУ МФ" and item.date == "2026-10-21"
+    ]
+    assert len(rows) == 1
+    assert str(rows[0].amount) == "0"
+    assert rows[0].unp == "500563252"
+    assert rows[0].note == "ПОДОХОДНЫЙ НАЛОГ"
+    assert rows[0].vat_rate == "20"
+    # Сумма другого дня не пострадала.
+    assert str(
+        next(
+            item.amount
+            for item in store.data.other_payments
+            if item.name == "ГУ МФ" and item.date == "2026-10-22"
+        )
+    ) == "500.00"
+
+
+def test_redo_keeps_hands_off_when_rows_and_writes_disagree(
+    qt_app, store
+):
+    """v0.65.0: неоднозначность — прежние записи не трогаем.
+
+    Одному УНП в один день бывает несколько платежей. Если строк файла
+    меньше, чем разнесённых записей, снимать их нельзя: сняли бы
+    чужую строку, которой в этом файле нет.
+    """
+
+    from decimal import Decimal
+
+    from oplata.statement import Statement, StatementRow
+    from oplata.statement_match import distribute
+
+    store = _store_with_millions(store)
+    statement = Statement(
+        rows=[
+            StatementRow(
+                date="21.10.2026", unp="500563252",
+                name="ГУ МФ ПО ГРОДНЕНСКОЙ ОБЛАСТИ",
+                outgoing=Decimal("300.00"),
+            )
+        ]
+    )
+    result = distribute(statement, store.data)
+    assert result.replaced == []          # ничего не снимали
+    assert result.restated == []
+    amounts = {
+        item.name: str(item.amount) for item in store.data.other_payments
+    }
+    assert amounts["ГУ МФ ПО ГРОДНЕНСКОЙ ОБЛАСТИ"] == "101300.00"
+    assert amounts["ГУ МФ ПО ГРОДНЕНСКОЙ ОБЛАСТИ (2)"] == "3511800.00"
