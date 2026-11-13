@@ -37,7 +37,7 @@ from PySide6.QtWidgets import (
 from .. import styles
 from ..dates import fmt_money_plain
 from ..models import OUTGOING, add_other_payment, other_payment_names
-from ..statement import Statement
+from ..statement import Statement, reconcile
 from ..statement_match import (
     OTHER_INCOME_ROW_TITLE,
     base_amount,
@@ -154,6 +154,10 @@ class StatementDialog(QDialog):
         self.commissions: list[Match] = []
         self.planned: dict[tuple, Decimal] = {}
         self.visible: list[int] = []
+        # v0.66.0: сверка строк с итогами файла. Считается один раз и
+        # одинаково для подписи и для таблицы: расхождение должно быть
+        # видно в обоих местах и не расходиться само с собой.
+        self.reconciliation = reconcile(statement)
         if self.store is not None:
             self._recalculate()
         self.setWindowTitle("Выписка из банка")
@@ -276,49 +280,58 @@ class StatementDialog(QDialog):
         if statement.account:
             parts.append(f"счёт {statement.account}")
         head = " · ".join(parts)
-        # Сверка: если обороты файла сошлись с суммой строк, это видно
-        # сразу — значит файл прочитан целиком, без потерь. Комиссия
-        # банка попадает и в оплату, и в поступление (v0.55.0), поэтому
-        # ожидаемый оборот больше на сумму комиссий.
         commission = statement.total_commission
-        matched = (
-            statement.total_outgoing
-            == statement.turnover_outgoing + commission
-            and statement.total_incoming
-            == statement.turnover_incoming + commission
-        )
-        if matched and commission:
-            tail = (
-                "Обороты сошлись с итогом файла "
-                f"(с учётом комиссий банка: {fmt_money_plain(commission)})."
+        check = self.reconciliation
+        # v0.66.0: итоги файла показываем **всегда**. Иначе «не совпало»
+        # заставляет сравнивать числа в уме: свои итоги против
+        # напечатанных в файле.
+        file_bits = [
+            f"оплата {fmt_money_plain(statement.turnover_outgoing)}",
+            f"поступление {fmt_money_plain(statement.turnover_incoming)}",
+        ]
+        if statement.operations_outgoing is not None:
+            file_bits.append(
+                f"операций {statement.operations_outgoing} / "
+                f"{statement.operations_incoming}"
             )
-        elif matched:
-            tail = "Обороты сошлись с итогом файла."
-        else:
-            # v0.64.0: красным — файл прочитан с расхождением, и
-            # разносить такие суммы нельзя. Именно так выглядела
-            # выписка, где код платежа в бюджет приняли за разряды
-            # суммы (300,00 прочиталось как 101 300,00).
-            tail = (
-                f'<span style="color:{styles.RED}">Внимание: итог строк '
-                "не совпал с оборотами файла.</span>"
-            )
-        bank_rows = sum(1 for row in statement.rows if self._is_bank(row))
-        if bank_rows:
-            tail += (
-                f" Строк банка (не поставщик и не покупатель): "
-                f"{bank_rows}."
-            )
-        # v0.64.0: подпись показывается как rich text (там бывает
-        # красное предупреждение), поэтому переносы — через <br>.
-        return (
-            f"{head}<br>"
+        if commission:
+            file_bits.append(f"комиссия банка {fmt_money_plain(commission)}")
+        lines = [
+            head,
             f"Входящее сальдо {fmt_money_plain(statement.opening_balance)} · "
             f"Оплата {fmt_money_plain(statement.total_outgoing)} · "
             f"Поступление {fmt_money_plain(statement.total_incoming)} · "
-            f"Исходящее сальдо {fmt_money_plain(statement.closing_balance)}. "
-            f"{tail}"
-        )
+            f"Исходящее сальдо {fmt_money_plain(statement.closing_balance)}.",
+            "Обороты файла: " + "; ".join(file_bits) + ".",
+        ]
+        if check.ok:
+            lines.append(
+                "Итог строк сошёлся с файлом"
+                + (
+                    " (комиссия банка добавлена и к оплате, "
+                    "и к поступлению)."
+                    if commission
+                    else "."
+                )
+            )
+        else:
+            # v0.66.0: красным и **с цифрами** — файл прочитан с
+            # расхождением, и разносить такие суммы нельзя. Именно так
+            # выглядела выписка, где код платежа в бюджет приняли за
+            # разряды суммы (300,00 прочиталось как 101 300,00).
+            detail = "<br>".join(f"• {text}" for text in check.problems)
+            lines.append(
+                f'<span style="color:{styles.RED}">Внимание: итог строк '
+                f"не совпал с файлом.<br>{detail}</span>"
+            )
+        bank_rows = sum(1 for row in statement.rows if self._is_bank(row))
+        if bank_rows:
+            lines.append(
+                f"Строк банка (не поставщик и не покупатель): {bank_rows}."
+            )
+        # v0.64.0: подпись показывается как rich text (там бывает
+        # красное предупреждение), поэтому переносы — через <br>.
+        return "<br>".join(line for line in lines if line)
 
     def _note_text(self, row) -> str:
         """Примечание: куда строка попадёт при разнесении (v0.56.0).
@@ -356,7 +369,11 @@ class StatementDialog(QDialog):
             for index, match in enumerate(self.matches)
             if match.target
         ]
-        self.table.setRowCount(len(rows) + 1)  # последняя строка — «ИТОГО»
+        # v0.66.0: при расхождении с файлом под итогом появляется строка
+        # «ПО ФАЙЛУ» — разницу тогда видно прямо в таблице, а не только
+        # в подписи под заголовком.
+        extra = 1 if self.reconciliation.ok else 2
+        self.table.setRowCount(len(rows) + extra)  # последняя — «ИТОГО»
         for row, item in enumerate(rows):
             row_index = row  # в этой таблице строка = строка выписки
             match = self.matches[row_index] if self.store is not None else None
@@ -401,6 +418,8 @@ class StatementDialog(QDialog):
             if self._is_bank(item):
                 self._mark_bank_row(row)
         self._fill_total_row(len(rows))
+        if not self.reconciliation.ok:
+            self._fill_file_row(len(rows) + 1)
         # Высоту строк не пересчитываем: она задана одна на все
         # (defaultSectionSize) — иначе Qt добавит запас, и таблица
         # выписки перестанет быть компактной.
@@ -420,19 +439,59 @@ class StatementDialog(QDialog):
 
     def _fill_total_row(self, row: int) -> None:
         bold = styles.fs(12)
+        check = self.reconciliation
         total = self._set_cell(row, COL_DATE, "ИТОГО")
-        for column, value in (
-            (COL_OUT, self.statement.total_outgoing),
-            (COL_IN, self.statement.total_incoming),
+        for column, value, expected in (
+            (COL_OUT, self.statement.total_outgoing, check.expected_outgoing),
+            (COL_IN, self.statement.total_incoming, check.expected_incoming),
         ):
             cell = self._set_cell(row, column, fmt_money_plain(value), money=True)
             font = cell.font()
             font.setBold(True)
             cell.setFont(font)
+            # v0.66.0: ячейка, которая разошлась с файлом, — красная.
+            if not check.ok and value != expected:
+                cell.setForeground(QColor(styles.RED))
+                cell.setToolTip(
+                    "По файлу должно быть "
+                    f"{fmt_money_plain(expected)} — разница "
+                    f"{fmt_money_plain(value - expected)}"
+                )
         font = total.font()
         font.setBold(True)
         font.setPointSize(bold)
         total.setFont(font)
+
+    def _fill_file_row(self, row: int) -> None:
+        """Строка «ПО ФАЙЛУ» — итоги, напечатанные в самой выписке.
+
+        v0.66.0: появляется только при расхождении. Показывает, какое
+        число ждал файл, — прямо под посчитанным итогом, чтобы разницу
+        не приходилось искать в подписи. Комиссия банка добавлена к
+        обеим суммам: в файле она удержана из суммы, а в строках
+        показана сверху (v0.55.0), иначе сравнивать нельзя.
+        """
+
+        check = self.reconciliation
+        total = self._set_cell(row, COL_DATE, "ПО ФАЙЛУ")
+        for column, expected, value in (
+            (COL_OUT, check.expected_outgoing, self.statement.total_outgoing),
+            (COL_IN, check.expected_incoming, self.statement.total_incoming),
+        ):
+            cell = self._set_cell(
+                row, column, fmt_money_plain(expected), money=True
+            )
+            font = cell.font()
+            font.setBold(True)
+            cell.setFont(font)
+            if value != expected:
+                cell.setForeground(QColor(styles.RED))
+        font = total.font()
+        font.setBold(True)
+        total.setFont(font)
+        total.setToolTip(
+            "Итоги, напечатанные в файле (обороты плюс комиссия банка)"
+        )
 
     def _set_cell(
         self, row: int, column: int, text: str, *, money: bool = False
@@ -1064,6 +1123,16 @@ class StatementDialog(QDialog):
         if result is None:
             return
         parts: list[str] = []
+        # v0.66.0: расхождение с файлом — первым делом. Отчёт —
+        # последнее, что видит человек перед тем, как суммы попадут в
+        # базу: пропустить мимо глаз подпись под заголовком легко.
+        if not self.reconciliation.ok:
+            parts.append(
+                "Внимание: итог строк не совпал с итогами файла — "
+                "разнесены могут быть неверные суммы:"
+            )
+            parts.extend(f"• {text}" for text in self.reconciliation.problems)
+            parts.append("")
         if result.applied:
             parts.append(f"Записано: {len(result.applied)}.")
             parts.extend(result.applied[:12])
