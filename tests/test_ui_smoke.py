@@ -7697,6 +7697,186 @@ def test_long_partner_name_wraps_to_two_lines(qt_app, store):
     view.close()
 
 
+def _ambiguous_statement(unp: str = "111222333", incoming: bool = False):
+    """Строка выписки с заданным УНП (для тестов выбора карточки)."""
+
+    from decimal import Decimal
+
+    from oplata.statement import Statement, StatementRow
+
+    kwargs = (
+        {"incoming": Decimal("300")} if incoming
+        else {"outgoing": Decimal("1500")}
+    )
+    return Statement(
+        rows=[
+            StatementRow(
+                date="10.11.2026", unp=unp, name="Организация", **kwargs
+            )
+        ]
+    )
+
+
+def test_classify_asks_to_choose_when_unp_has_several_cards(qt_app, store):
+    """v0.61.0: несколько карточек с одним УНП — выбор, а не догадка."""
+
+    from oplata.models import Counterparty, add_other_payment
+    from oplata.statement_match import (
+        TARGET_CHOOSE,
+        TARGET_CUSTOMERS,
+        TARGET_OTHER_PAYMENT,
+        TARGET_SUPPLIERS,
+        classify,
+        row_is_blocked,
+    )
+
+    first = Counterparty(name="Опт поставка", unp="111222333", note="товар")
+    second = Counterparty(name="Опт аренда", unp="111222333", note="аренда")
+    store.data.suppliers += [first, second]
+    buyer_one = Counterparty(name="Покупатель раз", unp="444555666",
+                             note="розница")
+    buyer_two = Counterparty(name="Покупатель два", unp="444555666",
+                             note="опт")
+    store.data.customers += [buyer_one, buyer_two]
+    add_other_payment(store.data, "Комиссия эквайринг", "2026-11-10",
+                      unp="999888777", note="эквайринг")
+    add_other_payment(store.data, "Обслуживание счёта", "2026-11-10",
+                      unp="999888777", note="обслуживание")
+
+    def row_for(unp: str, incoming: bool = False):
+        return _ambiguous_statement(unp, incoming).rows[0]
+
+    # Поставщики: два кандидата, оба в подписи с УНП и примечанием.
+    match = classify(row_for("111222333"), store.data)
+    assert match.target == TARGET_CHOOSE
+    assert [option[0] for option in match.options] == [
+        TARGET_SUPPLIERS,
+        TARGET_SUPPLIERS,
+    ]
+    labels = [option[3] for option in match.options]
+    assert labels == [
+        "Опт поставка · УНП 111222333 · товар",
+        "Опт аренда · УНП 111222333 · аренда",
+    ]
+    assert "Уточните" in match.note
+    # Пока получатель не выбран, строку не разносим.
+    assert row_is_blocked(match, type(match)("", ""))
+
+    # Покупатели — так же.
+    match = classify(row_for("444555666", incoming=True), store.data)
+    assert match.target == TARGET_CHOOSE
+    assert [option[0] for option in match.options] == [
+        TARGET_CUSTOMERS,
+        TARGET_CUSTOMERS,
+    ]
+    assert "розница" in match.options[0][3]
+
+    # Виды оплаты с одинаковым УНП — тоже выбор.
+    match = classify(row_for("999888777"), store.data)
+    assert match.target == TARGET_CHOOSE
+    assert [option[2] for option in match.options] == [
+        "Комиссия эквайринг",
+        "Обслуживание счёта",
+    ]
+    assert match.options[0][0] == TARGET_OTHER_PAYMENT
+
+
+def test_ambiguous_row_is_written_after_choice(qt_app, store):
+    """v0.61.0: после выбора кандидата строка пишется именно ему."""
+
+    from oplata.models import Counterparty
+    from oplata.statement_match import (
+        TARGET_CHOOSE,
+        classify,
+        classify_commission,
+        distribute,
+    )
+
+    first = Counterparty(name="Опт поставка", unp="111222333", note="товар")
+    second = Counterparty(name="Опт аренда", unp="111222333", note="аренда")
+    store.data.suppliers += [first, second]
+
+    statement = _ambiguous_statement()
+    matches = [
+        classify(row, store.data) for row in statement.rows
+    ]
+    commissions = [
+        classify_commission(row, store.data) for row in statement.rows
+    ]
+    assert matches[0].target == TARGET_CHOOSE
+    # Пока не выбрали — ничего не пишем.
+    assert distribute(statement, store.data, matches, commissions).applied == []
+    assert not store.data.operations
+
+    # Выбираем второго поставщика — его опции и подставляем.
+    _target, counterparty_id, payment_name, _label = matches[0].options[1]
+    matches[0].target = _target
+    matches[0].counterparty_id = counterparty_id
+    matches[0].payment_name = payment_name
+    matches[0].options = []
+    result = distribute(
+        statement, store.data, matches, commissions
+    )
+    assert result.applied_count == 1
+    assert [operation.counterparty_id for operation in store.data.operations] == [
+        second.id
+    ]
+
+
+def test_distribution_dialog_offers_all_candidates(qt_app, store):
+    """v0.61.0: список «Куда» содержит всех кандидатов с примечанием."""
+
+    from oplata.models import Counterparty
+    from oplata.dialogs.distribution_dialog import DistributionDialog
+    from oplata.statement_match import classify, classify_commission
+
+    first = Counterparty(name="Опт поставка", unp="111222333", note="товар")
+    second = Counterparty(name="Опт аренда", unp="111222333", note="аренда")
+    store.data.suppliers += [first, second]
+    statement = _ambiguous_statement()
+
+    dialog = DistributionDialog(statement, store)
+    dialog.matches = [classify(row, store.data) for row in statement.rows]
+    dialog.commissions = [
+        classify_commission(row, store.data) for row in statement.rows
+    ]
+    dialog._fill_table()
+
+    combo = dialog._target_combo(0)
+    texts = [combo.itemText(index) for index in range(combo.count())]
+    assert "Опт поставка · УНП 111222333 · товар" in texts
+    assert "Опт аренда · УНП 111222333 · аренда" in texts
+    # Первым стоит «выберите» — программа не угадывает получателя.
+    assert combo.currentText().startswith("— выберите")
+    # Примечание строки объясняет, что нужно выбрать.
+    assert "Уточните" in dialog.table.item(0, 5).text()
+
+    # Выбор кандидата подставляет поставщика и его подпись.
+    for index in range(combo.count()):
+        if "аренда" in combo.itemText(index):
+            combo.setCurrentIndex(index)
+            break
+    match = dialog.matches[0]
+    assert match.counterparty_id == second.id
+    assert match.note == "Поставщик: Опт аренда"
+    assert dialog.table.item(0, 5).text() == "Поставщик: Опт аренда"
+
+
+def test_single_card_by_unp_is_still_classified_straight(qt_app, store):
+    """v0.61.0: один кандидат — как прежде, выбора не требуется."""
+
+    from oplata.models import Counterparty
+    from oplata.statement_match import TARGET_SUPPLIERS, classify
+
+    store.data.suppliers.append(
+        Counterparty(name="Единственный", unp="111222333", note="товар")
+    )
+    match = classify(_ambiguous_statement().rows[0], store.data)
+    assert match.target == TARGET_SUPPLIERS
+    assert not match.options
+    assert match.note == "Поставщик: Единственный"
+
+
 def test_week_lead_columns_are_narrower_and_smaller(qt_app, store):
     """v0.56.0: итоговые колонки уже, шрифт в их ячейках меньше.
 
