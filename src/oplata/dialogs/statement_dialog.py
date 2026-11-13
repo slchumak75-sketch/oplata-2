@@ -885,18 +885,53 @@ class StatementDialog(QDialog):
         if self.on_imported is not None and result is not None:
             self.on_imported(result)
         self._report_distribution(result)
+        if result is not None and result.rolled_unwritten:
+            # v0.65.0: прежнюю запись сняли, новой нет. Окно не
+            # закрываем: получателя надо выбрать здесь же, иначе сумма
+            # пропадёт. Кнопка «Обновить» пересчитает таблицу.
+            self._refresh_notes()
+            return
         self.accept()
 
     def _distribute(self) -> bool:
         """Записать строки в базу; ``False`` — пользователь отменил."""
 
+        # v0.65.0: «нет карточки» и «надо выбрать получателя» — разные
+        # вещи, поэтому и говорим о них раздельно.
+        waiting = [
+            row
+            for row, match, commission in zip(
+                self.statement.rows, self.matches, self.commissions
+            )
+            if row_is_blocked(match, commission)
+            and match.target == TARGET_CHOOSE
+        ]
         unresolved = [
             row
             for row, match, commission in zip(
                 self.statement.rows, self.matches, self.commissions
             )
             if row_is_blocked(match, commission)
+            and match.target != TARGET_CHOOSE
         ]
+        if waiting:
+            names = "\n".join(
+                f"• {row.name or row.unp} (УНП {row.unp})"
+                for row in waiting[:6]
+            )
+            answer = QMessageBox.question(
+                self,
+                "Надо выбрать получателя",
+                "Этим строкам подходит несколько карточек с одним УНП — "
+                "программа не угадывает, куда писать:\n"
+                f"{names}\n\n"
+                "Выберите получателя в колонке «Куда» (каждая карточка "
+                "подписана примечанием). Разнести остальные строки?",
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+                QMessageBox.StandardButton.No,
+            )
+            if answer != QMessageBox.StandardButton.Yes:
+                return False
         if unresolved:
             names = "\n".join(
                 f"• {row.name or row.unp} (УНП {row.unp})"
@@ -915,14 +950,17 @@ class StatementDialog(QDialog):
             )
             if answer != QMessageBox.StandardButton.Yes:
                 return False
-        # Строки без назначения и без вида оплаты не разносим; ряды и
-        # назначения держим парами, иначе примечания «поедут».
+        # v0.65.0: в разнос уходят **все** строки с назначением, даже
+        # те, что пока записать нельзя (ждут выбора получателя): иначе
+        # разнос их не увидит и не снимет прежнюю запись этой строки,
+        # а она уже неверна (например, сумма прочиталась иначе).
+        # distribute сам решит, что писать, а что пропустить.
         kept = [
             (row, match, commission)
             for row, match, commission in zip(
                 self.statement.rows, self.matches, self.commissions
             )
-            if match.target and not row_is_blocked(match, commission)
+            if match.target
         ]
         statement = replace(self.statement, rows=[row for row, _a, _b in kept])
         matches = [match for _row, match, _commission in kept]
@@ -935,6 +973,7 @@ class StatementDialog(QDialog):
         # разнос списке, поэтому из самого результата они пропали бы, и
         # молча потерянная строка выглядела бы как «разнос не работает».
         result.unresolved = list(unresolved)
+        result.needs_choice = list(waiting)
         # v0.59.0: при переразносе убираем «реализации», которые
         # создавали старые версии (0.56.0–0.57.0) вместо оплаты.
         if self.redo:
@@ -1045,13 +1084,49 @@ class StatementDialog(QDialog):
                 f"{len(result.kept)}."
             )
             parts.extend(result.kept[:12])
+        if result.restated:
+            # v0.65.0: файл прочитан по-новому — прежние суммы этих
+            # строк сняты, записаны нынешние.
+            parts.append("")
+            parts.append(
+                "Строки разносились с другими суммами (файл прочитан "
+                f"заново): {len(result.restated)}. Прежние записи сняты."
+            )
+            parts.extend(
+                f"• {row.name or row.unp} — {fmt_amount(row.amount)}"
+                for row in result.restated[:8]
+            )
+        if result.needs_choice:
+            # v0.65.0: «надо выбрать получателя» — не то же, что «нет
+            # карточки»: здесь карточек несколько, и выбирает человек.
+            parts.append("")
+            parts.append(
+                "Надо выбрать получателя в колонке «Куда»: "
+                f"{len(result.needs_choice)}."
+            )
+            parts.extend(
+                f"• {row.name or row.unp} (УНП {row.unp}) — "
+                f"{fmt_amount(row.amount)}"
+                for row in result.needs_choice[:8]
+            )
+        if result.rolled_unwritten:
+            parts.append("")
+            parts.append(
+                "Внимание: у этих строк снята прежняя запись, а новая "
+                "пока не записана — выберите получателя и разнесите "
+                "снова:"
+            )
+            parts.extend(
+                f"• {row.name or row.unp} — {fmt_amount(row.amount)}"
+                for row in result.rolled_unwritten[:8]
+            )
         if result.unresolved:
             # v0.63.0: что не разнеслось — видно всегда, а не только
             # когда не записано ничего.
             parts.append("")
             parts.append(
-                "Не разнесено (не хватает карточки или не выбран "
-                f"получатель): {len(result.unresolved)}."
+                "Не разнесено (нет контрагента или вида оплаты с таким "
+                f"УНП): {len(result.unresolved)}."
             )
             parts.extend(
                 f"• {row.name or row.unp} (УНП {row.unp})"

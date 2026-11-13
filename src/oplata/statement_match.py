@@ -47,7 +47,7 @@ from .models import (
     set_daily_operation,
     set_daily_other_payment,
 )
-from .statement import Statement, StatementRow
+from .statement import Statement, StatementRow, stored_row_key
 
 # Куда попадает строка.
 TARGET_CARD = "card"                  # «Поступление по картам»
@@ -94,6 +94,16 @@ class Distribution:
     removed: list[str] = field(default_factory=list)   # снятые «реализации»
     warnings: list[str] = field(default_factory=list)  # на что посмотреть
     unresolved: list[StatementRow] = field(default_factory=list)
+    # v0.65.0: строки, которым не хватает не карточки, а **выбора**:
+    # УНП подходит несколько карточек, и получателя выбирает
+    # пользователь (правило v0.61.0).
+    needs_choice: list[StatementRow] = field(default_factory=list)
+    # Строки, у которых прежнюю запись сняли, а новой пока нет: сумма
+    # не должна пропасть незаметно.
+    rolled_unwritten: list[StatementRow] = field(default_factory=list)
+    # Строки, которые разносились раньше **с другой суммой** (файл
+    # прочитан по-новому): прежние записи сняты, записаны новые.
+    restated: list[StatementRow] = field(default_factory=list)
     rows: list[tuple[StatementRow, Match]] = field(default_factory=list)
 
     @property
@@ -725,14 +735,32 @@ def distribute(
         getattr(data, "imported_statement_writes", [])
     )
     entries_by_key: dict[str, list[dict]] = {}
+    # v0.65.0: тот же реестр, но по «мягкому» ключу строки (дата, УНП,
+    # направление **без суммы**). Нужен, когда сумма строки прочиталась
+    # иначе, чем при прошлом разносе: например, код платежа в бюджет
+    # (v0.64.0) перестал попадать в сумму, и 101 300,00 стала 300,00.
+    entries_by_row_key: dict[str, list[dict]] = {}
+    rows_by_row_key: dict[str, list] = {}
     for item in previous_writes:
         for key in item.get("keys") or [item.get("key")]:
             entries_by_key.setdefault(str(key), []).append(item)
+            entries_by_row_key.setdefault(stored_row_key(key), []).append(item)
+    for row in statement.rows:
+        rows_by_row_key.setdefault(row.row_key(), []).append(row)
+
+    def stored_row_count(row_key: str) -> int:
+        """Сколько строк файла с таким мягким ключом разносили раньше."""
+
+        keys = set()
+        for item in entries_by_row_key.get(row_key, ()):
+            for saved in item.get("keys") or [item.get("key")]:
+                keys.add(str(saved))
+        return len(keys)
     seen: set[str] = set(getattr(data, "imported_statement_rows", [])) | set(
         entries_by_key
     )
     new_writes: list[dict] = [item for item in previous_writes]
-    redone: list[str] = []
+    redone: list[tuple[str, str]] = []  # (ключ строки, мягкий ключ)
     rolled_back: list[dict] = []
     planned_keys: dict[tuple, list[str]] = {}
     kept_items: list[dict] = []      # снятию не подлежат — правили вручную
@@ -751,21 +779,40 @@ def distribute(
         )
         result.rows.append((row, match))
         key = row.import_key()
+        row_key = row.row_key()
         known = key in seen
+        # v0.65.0: строка уже разносилась, но **с другой суммой** —
+        # например, после исправления разбора файла. Снимать прежнюю
+        # запись можно, только когда строк файла с этим ключом столько
+        # же, сколько разнесённых строк: иначе сняли бы чужую строку,
+        # которой в этом файле нет (одному УНП в один день бывает
+        # несколько платежей).
+        restated = (
+            not known
+            and row_key in entries_by_row_key
+            and len(rows_by_row_key.get(row_key, ()))
+            == stored_row_count(row_key)
+        )
         if known and not redo:
             result.already.append(
                 f"{row.date} · {row.name or row.unp} · {row.amount}"
             )
             continue
-        if row_is_blocked(match, commission):
-            result.unresolved.append(row)
-            continue
-        if known:
+        if known or restated:
+            if restated:
+                result.restated.append(row)
             # Переразнос: снимаем то, что записали в прошлый раз.
-            redone.append(key)
-            for item in entries_by_key.get(key, []):
+            # Снимаем и для строк, которые сейчас записать нельзя
+            # (ждут выбора получателя): прежняя сумма всё равно уже
+            # неверна, и оставлять её в базе нельзя.
+            redone.append((key, row_key))
+            took = False
+            for item in entries_by_key.get(key, []) or entries_by_row_key.get(
+                row_key, []
+            ):
                 if item in new_writes:
                     new_writes.remove(item)
+                took = True  # запись этой строки снимаем (снята ранее — тоже)
                 if item in rolled_back:
                     continue
                 rolled_back.append(item)
@@ -779,6 +826,22 @@ def distribute(
                             str(item.get("date") or ""),
                         )
                     )
+            if row_is_blocked(match, commission):
+                # Прежнюю запись сняли, а новой пока нет — об этом
+                # надо сказать: иначе сумма пропадёт незаметно.
+                if match.target == TARGET_CHOOSE:
+                    result.needs_choice.append(row)
+                else:
+                    result.unresolved.append(row)
+                if took:
+                    result.rolled_unwritten.append(row)
+                continue
+        if row_is_blocked(match, commission):
+            if match.target == TARGET_CHOOSE:
+                result.needs_choice.append(row)
+            else:
+                result.unresolved.append(row)
+            continue
         for target_key, amount, note in row_records(row, match, commission):
             planned[target_key] = (
                 planned.get(target_key, Decimal("0")) + amount
@@ -823,7 +886,9 @@ def distribute(
         # поэтому снять прежние записи мы не можем — новые суммы легли
         # поверх. Предупреждаем, чтобы день не оказался удвоен.
         blind = [
-            key for key in redone if key not in entries_by_key
+            key
+            for key, soft in redone
+            if key not in entries_by_key and soft not in entries_by_row_key
         ]
         if blind:
             result.warnings.append(
