@@ -116,6 +116,7 @@ from ..models import (
     set_daily_operation,
     set_daily_other_payment,
 )
+from ..statement_match import free_payment_name
 from ..storage import DataStore
 from ..widgets import (
     AmountLineEdit,
@@ -877,10 +878,23 @@ class OtherPaymentCardDialog(QDialog):
             )
             return
         if name.lower() in self._used:
-            QMessageBox.information(
-                self, "Название", f"Вид «{name}» уже есть в этом блоке."
+            # v0.63.0: раньше это был тупик — из-за него нельзя было
+            # завести второй вид оплаты для той же организации (УНП
+            # повторять можно, имя — нет: по нему вид узнаётся в базе).
+            # Теперь предлагаем свободное имя и спрашиваем.
+            spare = free_payment_name(self._used, name)
+            answer = QMessageBox.question(
+                self,
+                "Название",
+                f"Вид «{name}» уже есть в этом блоке.\n\n"
+                f"Сохранить как «{spare}»? "
+                "УНП можно повторять: виды одной организации "
+                "различаются примечанием.",
             )
-            return
+            if answer != QMessageBox.StandardButton.Yes:
+                return
+            self.name_edit.setText(spare)
+            name = spare
         # v0.33.0: ставка НДС — число в процентах или пусто.
         if not self._vat_is_number():
             QMessageBox.information(

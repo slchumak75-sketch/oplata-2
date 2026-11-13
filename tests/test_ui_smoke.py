@@ -4044,11 +4044,31 @@ def test_other_payment_card_asks_name_only(qt_app, monkeypatch):
     assert not empty.isVisible() or empty.result() != QDialog.DialogCode.Accepted
     empty.close()
 
+    # v0.63.0: занятое имя — не тупик. Программа предлагает свободное
+    # имя «аренда (2)» (УНП у видов повторяется, имя — нет), а решение
+    # остаётся за пользователем.
+    monkeypatch.setattr(
+        QMessageBox,
+        "question",
+        staticmethod(lambda *args, **kwargs: QMessageBox.StandardButton.No),
+    )
     busy = OtherPaymentCardDialog("out", {"Аренда"}, date(2026, 10, 27))
     busy.name_edit.setText("аренда")  # занято без учёта регистра
     busy._try_accept()
     assert busy.result() != QDialog.DialogCode.Accepted
     busy.close()
+
+    monkeypatch.setattr(
+        QMessageBox,
+        "question",
+        staticmethod(lambda *args, **kwargs: QMessageBox.StandardButton.Yes),
+    )
+    spare = OtherPaymentCardDialog("out", {"Аренда"}, date(2026, 10, 27))
+    spare.name_edit.setText("аренда")
+    spare._try_accept()
+    assert spare.result() == QDialog.DialogCode.Accepted
+    assert spare.name_value == "аренда (2)"
+    spare.close()
 
 
 def test_users_table_current_column_applies_user(qt_app, store):
@@ -7155,8 +7175,10 @@ def test_statement_notes_column_shows_where_row_goes(qt_app, store):
         dialog.table.item(row, headers.index("Примечание")).text()
         for row in range(len(statement.rows))
     ]
-    assert "Поступление по картам" in notes
-    assert "Поступление наличными" in notes
+    # v0.63.0: примечание строки показывает и комиссию банка, поэтому
+    # ищем вхождение, а не точное равенство.
+    assert any("Поступление по картам" in note for note in notes)
+    assert any("Поступление наличными" in note for note in notes)
     # Покупателя с таким УНП в базе нет — строка ждёт контрагента.
     assert any("не найден" in note for note in notes)
 
@@ -7440,9 +7462,6 @@ def test_statement_dialog_reports_when_nothing_new(qt_app, store, monkeypatch):
     «выписка не разносится».
     """
 
-    from PySide6.QtWidgets import QDialog
-
-    from oplata.dialogs.distribution_dialog import DistributionDialog
     from oplata.dialogs.statement_dialog import StatementDialog
     from oplata.models import Counterparty
     from oplata.statement_match import distribute
@@ -7459,11 +7478,8 @@ def test_statement_dialog_reports_when_nothing_new(qt_app, store, monkeypatch):
         "information",
         staticmethod(lambda *args: shown.append(args[-1])),
     )
-    monkeypatch.setattr(
-        DistributionDialog,
-        "exec",
-        lambda self: (self._apply(), QDialog.DialogCode.Accepted)[-1],
-    )
+    # v0.63.0: разнос делается в самой таблице выписки — второго окна
+    # больше нет, кнопка «Разнести» пишет сразу.
     monkeypatch.setattr(
         StatementDialog, "_ask_about_repeat", lambda self: False
     )
@@ -7823,11 +7839,15 @@ def test_ambiguous_row_is_written_after_choice(qt_app, store):
     ]
 
 
-def test_distribution_dialog_offers_all_candidates(qt_app, store):
-    """v0.61.0: список «Куда» содержит всех кандидатов с примечанием."""
+def test_statement_table_offers_all_candidates(qt_app, store):
+    """v0.61.0/0.63.0: список «Куда» содержит всех кандидатов.
+
+    Список живёт в самой таблице выписки (v0.63.0): второе окно для
+    разноса больше не открывается, поэтому выбор делается здесь.
+    """
 
     from oplata.models import Counterparty
-    from oplata.dialogs.distribution_dialog import DistributionDialog
+    from oplata.dialogs.statement_dialog import COL_NOTE, StatementDialog
     from oplata.statement_match import classify, classify_commission
 
     first = Counterparty(name="Опт поставка", unp="111222333", note="товар")
@@ -7835,7 +7855,9 @@ def test_distribution_dialog_offers_all_candidates(qt_app, store):
     store.data.suppliers += [first, second]
     statement = _ambiguous_statement()
 
-    dialog = DistributionDialog(statement, store)
+    dialog = StatementDialog(statement, "выписка.pdf", store=store)
+    dialog.show()
+    qt_app.processEvents()
     dialog.matches = [classify(row, store.data) for row in statement.rows]
     dialog.commissions = [
         classify_commission(row, store.data) for row in statement.rows
@@ -7849,7 +7871,7 @@ def test_distribution_dialog_offers_all_candidates(qt_app, store):
     # Первым стоит «выберите» — программа не угадывает получателя.
     assert combo.currentText().startswith("— выберите")
     # Примечание строки объясняет, что нужно выбрать.
-    assert "Уточните" in dialog.table.item(0, 5).text()
+    assert "Уточните" in dialog.table.item(0, COL_NOTE).text()
 
     # Выбор кандидата подставляет поставщика и его подпись.
     for index in range(combo.count()):
@@ -7859,7 +7881,8 @@ def test_distribution_dialog_offers_all_candidates(qt_app, store):
     match = dialog.matches[0]
     assert match.counterparty_id == second.id
     assert match.note == "Поставщик: Опт аренда"
-    assert dialog.table.item(0, 5).text() == "Поставщик: Опт аренда"
+    assert dialog.table.item(0, COL_NOTE).text() == "Поставщик: Опт аренда"
+    dialog.close()
 
 
 def test_single_card_by_unp_is_still_classified_straight(qt_app, store):
@@ -7913,17 +7936,22 @@ def test_week_lead_columns_are_narrower_and_smaller(qt_app, store):
 
 
 # --------------------------------------------------------------- v0.57.0
-def test_distribution_shows_base_amounts_before_writing(qt_app, store):
-    """v0.57.0: колонка «Уже в базе» — что записано и что станет."""
+def test_statement_table_shows_base_amounts_before_writing(qt_app, store):
+    """v0.57.0/0.63.0: колонка «Уже в базе» — в таблице выписки.
+
+    Раньше колонка жила во втором окне разноса; с v0.63.0 она стоит
+    рядом с колонкой «Куда» в самой выписке.
+    """
 
     from oplata.models import CARD_SOURCE, CashReceipt, Counterparty
     from oplata.statement import Statement, StatementRow
-    from oplata.dialogs.distribution_dialog import (
+    from oplata.dialogs.statement_dialog import (
         COL_BASE,
         COL_NAME,
-        DistributionDialog,
+        StatementDialog,
     )
 
+    store.data.bank.unp = "100325912"
     store.data.customers.append(Counterparty(name="Покупатель", unp="1"))
     statement = Statement(
         rows=[
@@ -7941,7 +7969,7 @@ def test_distribution_shows_base_amounts_before_writing(qt_app, store):
     store.data.cash_receipts.append(
         CashReceipt(source=CARD_SOURCE, date="2026-11-05", amount="300.00")
     )
-    dialog = DistributionDialog(statement, store)
+    dialog = StatementDialog(statement, "вм3.pdf", store=store)
     dialog.show()
     qt_app.processEvents()
 
@@ -7953,15 +7981,21 @@ def test_distribution_shows_base_amounts_before_writing(qt_app, store):
     dialog.close()
 
 
-def test_distribution_creates_payment_card_for_row(qt_app, store, monkeypatch):
-    """v0.57.0: вид оплаты создаётся карточкой из окна разноса."""
+def test_statement_table_creates_payment_card_for_row(
+    qt_app, store, monkeypatch
+):
+    """v0.63.0: вид оплаты создаётся карточкой из таблицы выписки.
+
+    То же, что раньше делалось во втором окне разноса: УНП и название
+    берутся из строки выписки, примечание — из назначения платежа.
+    """
 
     from PySide6.QtWidgets import QDialog
     from oplata.models import OUTGOING, other_payment_names
     from oplata.statement import Statement, StatementRow
-    from oplata.dialogs.distribution_dialog import (
+    from oplata.dialogs.statement_dialog import (
         COL_NOTE,
-        DistributionDialog,
+        StatementDialog,
         NEW_PAYMENT_CHOICE,
     )
     from oplata.statement_match import TARGET_NEW_PAYMENT, TARGET_OTHER_PAYMENT
@@ -7980,7 +8014,7 @@ def test_distribution_creates_payment_card_for_row(qt_app, store, monkeypatch):
             )
         ]
     )
-    dialog = DistributionDialog(statement, store)
+    dialog = StatementDialog(statement, "вм3.pdf", store=store)
     dialog.show()
     qt_app.processEvents()
 
@@ -7989,7 +8023,7 @@ def test_distribution_creates_payment_card_for_row(qt_app, store, monkeypatch):
         for index, match in enumerate(dialog.matches)
         if match.target == TARGET_NEW_PAYMENT
     )
-    row = dialog.visible.index(row_index)
+    row = row_index  # в таблице выписки строка = строка файла
     combo = dialog._target_combo(row)
     assert combo.currentText() == NEW_PAYMENT_CHOICE
 
@@ -8015,7 +8049,7 @@ def test_distribution_creates_payment_card_for_row(qt_app, store, monkeypatch):
     assert str(dialog.planned[next(iter(dialog.planned))]) == "8408.53"
 
     # И сумма уходит именно в созданный вид оплаты, той же датой.
-    dialog._apply()
+    dialog._distribute()
     written = [
         payment
         for payment in store.data.other_payments
@@ -8246,3 +8280,207 @@ def test_commission_without_payment_note_names_amount_and_unp(qt_app, store):
     assert commission_of("") == (
         "Комиссия 13,17: нужен вид оплаты (УНП в строке не указан)"
     )
+
+
+# --------------------------------------------------------------- v0.63.0
+def test_payment_card_for_second_row_gets_free_name(
+    qt_app, store, monkeypatch
+):
+    """v0.63.0: второй вид оплаты той же организации создаётся.
+
+    У ГУ МФ по Гродненской области один УНП и разные назначения
+    платежей (подоходный налог, страховые взносы). Раньше вторую
+    карточку нельзя было сохранить: «Вид «…» уже есть в этом блоке»
+    — и разнос вставал. Теперь предлагается свободное имя, а
+    примечание берётся из назначения платежа.
+    """
+
+    from PySide6.QtWidgets import QDialog
+    from oplata.statement import Statement, StatementRow
+    from oplata.statement_match import free_payment_name, purpose_note
+
+    # Имя, которого нет в блоке: «ГУ МФ …», затем «ГУ МФ … (2)».
+    assert free_payment_name(set(), "ГУ МФ") == "ГУ МФ"
+    assert free_payment_name({"гу мф"}, "ГУ МФ") == "ГУ МФ (2)"
+    assert free_payment_name({"гу мф", "гу мф (2)"}, "ГУ МФ") == "ГУ МФ (3)"
+
+    # Примечание — смысл назначения платежа, без реквизитов из хвоста.
+    assert purpose_note(
+        "ПОДОХОДНЫЙ НАЛОГ ИЗ ЗАРАБОТНОЙ ПЛАТЫ ЗА ПЕРВУЮ ПОЛОВИНУ "
+        "ОКТЯБРЯ 2026Г. ПО СРОКУ ПЛАТЕЖА 21.10.26Г. УНП ФБ: 500"
+    ) == "ПОДОХОДНЫЙ НАЛОГ ИЗ ЗАРАБОТНОЙ ПЛАТЫ"
+    assert purpose_note(
+        "ОПЛАТА СТРАХОВЫХ ВЗНОСОВ ЗА 4 КВАРТАЛ 2026Г. "
+        "ПО СРОКУ ПЛАТЕЖА 21.10.26Г."
+    ) == "ОПЛАТА СТРАХОВЫХ ВЗНОСОВ"
+    assert purpose_note("") == ""
+
+    def row(purpose: str, amount: str):
+        return StatementRow(
+            date="21.10.2026", unp="500563252",
+            name="ГУ МФ ПО ГРОДНЕНСКОЙ ОБЛАСТИ",
+            outgoing=Decimal(amount), purpose=purpose,
+        )
+
+    from oplata.dialogs.statement_dialog import StatementDialog
+    from oplata.views.receipts_view import OtherPaymentCardDialog
+
+    monkeypatch.setattr(
+        OtherPaymentCardDialog,
+        "exec",
+        lambda self: QDialog.DialogCode.Accepted,
+    )
+    statement = Statement(
+        rows=[
+            row("ПОДОХОДНЫЙ НАЛОГ ИЗ ЗАРАБОТНОЙ ПЛАТЫ ЗА ОКТЯБРЬ", "101300"),
+            row("ОПЛАТА СТРАХОВЫХ ВЗНОСОВ ЗА 4 КВАРТАЛ", "3511800"),
+        ]
+    )
+    dialog = StatementDialog(statement, "в7.pdf", store=store)
+    dialog.show()
+    qt_app.processEvents()
+
+    assert dialog._create_payment(0, 0) is True
+    assert dialog._create_payment(1, 1) is True
+
+    # Оба вида с одним УНП — различаются примечанием.
+    payments = [
+        payment
+        for payment in store.data.other_payments
+        if payment.unp == "500563252"
+    ]
+    assert [(item.name, item.note) for item in payments] == [
+        (
+            "ГУ МФ ПО ГРОДНЕНСКОЙ ОБЛАСТИ",
+            "ПОДОХОДНЫЙ НАЛОГ ИЗ ЗАРАБОТНОЙ ПЛАТЫ",
+        ),
+        ("ГУ МФ ПО ГРОДНЕНСКОЙ ОБЛАСТИ (2)", "ОПЛАТА СТРАХОВЫХ ВЗНОСОВ"),
+    ]
+    # Сразу после создания каждая строка пишет в «свой» вид: вид
+    # подставлен в строку, разнос не стоит.
+    assert [match.payment_name for match in dialog.matches] == [
+        "ГУ МФ ПО ГРОДНЕНСКОЙ ОБЛАСТИ",
+        "ГУ МФ ПО ГРОДНЕНСКОЙ ОБЛАСТИ (2)",
+    ]
+    # После пересчёта (кнопка «Обновить») УНП стал неоднозначным: по
+    # правилу v0.61.0 программа не угадывает, получателя выбирают
+    # списком — кандидаты подписаны примечанием.
+    dialog._recalculate()
+    assert [match.target for match in dialog.matches] == ["choose", "choose"]
+    labels = [option[3] for option in dialog.matches[0].options]
+    assert labels == [
+        "ГУ МФ ПО ГРОДНЕНСКОЙ ОБЛАСТИ · УНП 500563252 · "
+        "ПОДОХОДНЫЙ НАЛОГ ИЗ ЗАРАБОТНОЙ ПЛАТЫ",
+        "ГУ МФ ПО ГРОДНЕНСКОЙ ОБЛАСТИ (2) · УНП 500563252 · "
+        "ОПЛАТА СТРАХОВЫХ ВЗНОСОВ",
+    ]
+    dialog.close()
+
+
+def test_statement_table_has_target_column_and_distributes(
+    qt_app, store, monkeypatch
+):
+    """v0.63.0: колонка «Куда» — в самой таблице выписки, разнос здесь же.
+
+    Раньше кнопка «Разнести» открывала второе окно; теперь назначение
+    выбирается в первой таблице (после «Поступления»), а вторая таблица
+    не открывается вовсе.
+    """
+
+    from PySide6.QtWidgets import QMessageBox
+    from oplata.models import Counterparty
+    from oplata.dialogs.statement_dialog import (
+        COL_IN,
+        COL_NOTE,
+        COL_TARGET,
+        StatementDialog,
+    )
+    from oplata.statement import Statement, StatementRow
+
+    store.data.customers.append(Counterparty(name="Покупатель", unp="1"))
+    statement = Statement(
+        rows=[
+            StatementRow(
+                date="05.11.2026", unp="1", name="Покупатель", incoming=50,
+            )
+        ]
+    )
+    dialog = StatementDialog(statement, "вм3.pdf", store=store)
+    dialog.show()
+    qt_app.processEvents()
+
+    headers = [
+        dialog.table.horizontalHeaderItem(column).text()
+        for column in range(dialog.table.columnCount())
+    ]
+    # «Куда» стоит сразу после «Поступления» (просьба пользователя).
+    assert headers[headers.index("Поступление") + 1] == "Куда"
+    assert headers.index("Куда") == COL_TARGET
+    # В списке можно выбрать назначение — не просто текст в ячейке.
+    combo = dialog._target_combo(0)
+    assert combo is not None
+    assert "Покупатели" in [
+        combo.itemText(index) for index in range(combo.count())
+    ]
+
+    shown: list[str] = []
+    monkeypatch.setattr(
+        QMessageBox,
+        "information",
+        staticmethod(lambda *args: shown.append(args[-1])),
+    )
+    monkeypatch.setattr(
+        StatementDialog, "_ask_about_repeat", lambda self: False
+    )
+    dialog._continue()
+
+    # Разнос прошёл в этой же таблице: второго окна нет, сумма записана.
+    assert [str(operation.amount) for operation in store.data.operations] == [
+        "50.00"
+    ]
+    assert shown and "Записано: 1." in shown[-1]
+    assert dialog.table.item(0, COL_IN).text() == "50,00"
+    assert "Покупатель" in dialog.table.item(0, COL_NOTE).text()
+
+
+def test_distribution_reports_rows_left_unresolved(qt_app, store, monkeypatch):
+    """v0.63.0: что не разнеслось, видно в отчёте, а не молча."""
+
+    from PySide6.QtWidgets import QMessageBox
+    from oplata.models import Counterparty
+    from oplata.dialogs.statement_dialog import StatementDialog
+    from oplata.statement import Statement, StatementRow
+
+    store.data.suppliers += [
+        Counterparty(name="Опт поставка", unp="111222333", note="товар"),
+        Counterparty(name="Опт аренда", unp="111222333", note="аренда"),
+    ]
+    statement = _ambiguous_statement()
+    dialog = StatementDialog(statement, "в7.pdf", store=store)
+    dialog.show()
+    qt_app.processEvents()
+
+    shown: list[str] = []
+    monkeypatch.setattr(
+        QMessageBox,
+        "information",
+        staticmethod(lambda *args: shown.append(args[-1])),
+    )
+    monkeypatch.setattr(
+        QMessageBox,
+        "question",
+        staticmethod(lambda *args, **kwargs: QMessageBox.StandardButton.Yes),
+    )
+    monkeypatch.setattr(
+        StatementDialog, "_ask_about_repeat", lambda self: False
+    )
+    # Получатель не выбран: двух карточек с одним УНП достаточно, чтобы
+    # строка ждала выбора, — и она не должна потеряться молча.
+    assert dialog.matches[0].target == "choose"
+    dialog._continue()
+
+    assert store.data.operations == []  # писать нечего
+    assert shown
+    report = shown[-1]
+    assert "Не разнесено" in report
+    assert "УНП 111222333" in report
