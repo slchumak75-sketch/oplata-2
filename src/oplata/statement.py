@@ -44,6 +44,16 @@ RE_FACT_DATE = re.compile(
 )
 RE_DOC = re.compile(rf"^({DATE})\s+(\S+)\s+(\d+)\s+Счет:")
 RE_AMOUNTS = re.compile(rf"^({AMOUNT})\s+({AMOUNT})$")
+# v0.64.0: у платежей в бюджет перед суммами стоит **код платежа**
+# (в шапке файла есть колонка «Код пл. в бюдж»): «00101 300,00 0,00»
+# — это код 00101, оплата 300,00 и поступление 0,00. Раньше код
+# принимался за старшие разряды суммы, и вместо 300,00 в базу уходило
+# 101 300,00. Код — слитные цифры (без пробела) не меньше четырёх
+# подряд: у суммы разряды разделены пробелами группами по три, поэтому
+# первая группа суммы короче («2 300,00» → «2»).
+RE_AMOUNTS_BUDGET = re.compile(
+    rf"^\s*\d{{4,}}\s+({AMOUNT})\s+({AMOUNT})\s*$"
+)
 RE_PURPOSE = re.compile(r"^Назначение платежа:")
 # v0.55.0: «Комиссия банка - 18.02» в назначении платежа. Банк держит
 # комиссию за зачисление выручки: на счёт приходит сумма за вычетом
@@ -366,6 +376,12 @@ def parse_statement_text(text: str) -> Statement:
             started = True
             continue
 
+        # v0.64.0: сначала пробуем строку с кодом платежа в бюджет: у
+        # неё **три** числа, и первое — не сумма, а код.
+        if match := RE_AMOUNTS_BUDGET.match(line):
+            outgoing = parse_amount(match.group(1))  # Дебет — оплата
+            incoming = parse_amount(match.group(2))  # Кредит — поступление
+            continue
         if match := RE_AMOUNTS.match(line):
             outgoing = parse_amount(match.group(1))  # Дебет — оплата
             incoming = parse_amount(match.group(2))  # Кредит — поступление

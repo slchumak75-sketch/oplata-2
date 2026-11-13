@@ -6801,6 +6801,9 @@ def test_old_excel_without_unp_column_imports(store, tmp_path):
 
 
 SAMPLE_STATEMENT = "tests/fixtures/statement-mir.pdf"
+# v0.64.0: выписка с платежами в бюджет — у них перед суммой стоит
+# код платежа («00101 300,00 0,00»).
+BUDGET_STATEMENT = "tests/fixtures/statement-budget.pdf"
 
 
 def test_statement_parser_reads_bank_statement(store):
@@ -8484,3 +8487,117 @@ def test_distribution_reports_rows_left_unresolved(qt_app, store, monkeypatch):
     report = shown[-1]
     assert "Не разнесено" in report
     assert "УНП 111222333" in report
+
+
+# --------------------------------------------------------------- v0.64.0
+def test_budget_payment_code_is_not_read_as_amount(qt_app):
+    """v0.64.0: код платежа в бюджет — не разряды суммы.
+
+    В выписке за 21.10.2026 у платежей в бюджет перед суммой стоит код
+    (в шапке файла есть колонка «Код пл. в бюдж»): «00101 300,00 0,00»
+    — это код 00101, оплата 300,00, поступление 0,00. Код принимался за
+    старшие разряды, и в базу уходило 101 300,00 вместо 300,00.
+    """
+
+    from oplata.statement import parse_statement_text
+
+    template = (
+        "05.11.2026 1805 6 Счет: BY13 AKBB 3812 0000 0028 1000 0000\n"
+        "БИК: AKBBBY2X УНП: 500563252\n"
+        "%s\n"
+        "ГУ МФ ПО ГРОДНЕНСКОЙ ОБЛАСТИ\n"
+        "Назначение платежа: ПОДОХОДНЫЙ НАЛОГ ЗА ОКТЯБРЬ 2026Г.\n"
+        "Фактическая дата и время совершения операции: 05.11.2026 10:06:07\n"
+    )
+
+    def amounts_of(line: str) -> tuple[str, str]:
+        row = parse_statement_text(template % line).rows[0]
+        return str(row.outgoing), str(row.incoming)
+
+    # Код платежа в бюджет отбрасывается.
+    assert amounts_of("00101 300,00 0,00") == ("300.00", "0.00")
+    assert amounts_of("03511 800,00 0,00") == ("800.00", "0.00")
+    assert amounts_of("03511 1 800,00 0,00") == ("1800.00", "0.00")
+    # Обычные суммы читаются как прежде: разряды разделены пробелами
+    # группами по три, поэтому первая группа короче кода.
+    assert amounts_of("2 300,00 0,00") == ("2300.00", "0.00")
+    assert amounts_of("1,00 0,00") == ("1.00", "0.00")
+    assert amounts_of("0,00 1 505,90") == ("0.00", "1505.90")
+    assert amounts_of("1 234 567,89 0,00") == ("1234567.89", "0.00")
+
+
+def test_budget_statement_totals_match_file_turnover(qt_app):
+    """v0.64.0: выписка с кодом платежа в бюджет читается без расхождений.
+
+    Проверка по самому файлу: суммы строк должны сойтись с оборотами и
+    сальдо, которые банк печатает в шапке и в итоге выписки.
+    """
+
+    from oplata.statement import parse_statement
+
+    statement = parse_statement(BUDGET_STATEMENT)
+    rows = {(row.unp, str(row.amount)): row for row in statement.rows}
+    # ГУ МФ: 300,00 — подоходный налог (код 00101), 800,00 — взносы
+    # (код 03511). Прежде читалось 101 300,00 и 3 511 800,00.
+    assert ("500563252", "300.00") in rows
+    assert ("500563252", "800.00") in rows
+    assert [str(row.amount) for row in statement.rows] == [
+        "1.00",
+        "100.00",
+        "300.00",
+        "800.00",
+        "2300.00",
+        "10.36",
+        "1527.37",  # 1 505,90 + комиссия 21,47 (v0.55.0)
+    ]
+    # Итог строк сошёлся с оборотами файла (с учётом комиссии банка).
+    commission = statement.total_commission
+    assert statement.total_outgoing == statement.turnover_outgoing + commission
+    assert statement.total_incoming == statement.turnover_incoming + commission
+    # И сальдо сошлось: 2 094,47 − 3 522,47 + 1 537,73 = 109,73.
+    assert str(statement.opening_balance) == "2094.47"
+    assert (
+        statement.opening_balance
+        - statement.total_outgoing
+        + statement.total_incoming
+        == statement.closing_balance
+    )
+
+
+def test_statement_warns_when_totals_miss_turnover(qt_app, store, monkeypatch):
+    """v0.64.0: расхождение с оборотами файла — красным.
+
+    Иначе его легко не заметить: именно так выглядела выписка, где
+    код платежа в бюджет прочитался как разряды суммы.
+    """
+
+    from PySide6.QtWidgets import QLabel
+
+    from oplata import styles
+    from oplata.dialogs.statement_dialog import StatementDialog
+    from oplata.statement import Statement, StatementRow
+
+    statement = Statement(
+        rows=[
+            StatementRow(
+                date="05.11.2026", unp="500563252", name="ГУ МФ",
+                outgoing=Decimal("101300"),
+            )
+        ]
+    )
+    # Обороты файла про сумму в 101 300,00 ничего не знают.
+    statement.turnover_outgoing = Decimal("300.00")
+    dialog = StatementDialog(statement, "в7.pdf", store=store)
+    dialog.show()
+    qt_app.processEvents()
+
+    texts = [
+        child.text()
+        for child in dialog.findChildren(QLabel)
+        if "Обороты" in child.text() or "Внимание" in child.text()
+    ]
+    assert texts, "подпись с итогами не найдена"
+    assert "Внимание" in texts[0]
+    assert f"color:{styles.RED}" in texts[0]  # предупреждение красным
+    assert "<br>" in texts[0]  # переносы видны и в rich text
+    dialog.close()
