@@ -186,6 +186,73 @@ def candidate_label(item) -> str:
     return " · ".join(part for part in parts if part)
 
 
+# Обороты, с которых в назначении платежа начинаются реквизиты, а не
+# смысл платежа (v0.63.0).
+PURPOSE_NOTE_STOPS = (
+    " за ",
+    " по сроку",
+    " согласно",
+    " согл ",
+    " от ",
+    " на основании",
+    " в сумме",
+    " в т.ч",
+    " в том числе",
+    " унп",
+    " ндс",
+    " (",
+)
+
+
+def purpose_note(purpose: str, limit: int = 60) -> str:
+    """Примечание вида оплаты из назначения платежа (v0.63.0).
+
+    У одной организации (ГУ МФ по Гродненской области) бывает несколько
+    назначений платежей: подоходный налог, страховые взносы. Виды
+    различают примечанием, а писать его руками каждый раз — лишняя
+    работа, поэтому берём смысл из назначения платежа: «ПОДОХОДНЫЙ
+    НАЛОГ ИЗ ЗАРАБОТНОЙ ПЛАТЫ ЗА ПЕРВУЮ ПОЛОВИНУ ОКТЯБРЯ 2026Г. …»
+    → «ПОДОХОДНЫЙ НАЛОГ ИЗ ЗАРАБОТНОЙ ПЛАТЫ».
+    """
+
+    text = " ".join(str(purpose or "").split())
+    if not text:
+        return ""
+    # Хвост «ЗА …», «ПО СРОКУ ПЛАТЕЖА …», «УНП ФБ: …» — это не смысл
+    # платежа, а его реквизиты: обрезаем по первому такому обороту.
+    lowered = text.lower()
+    cut = len(text)
+    for stop in PURPOSE_NOTE_STOPS:
+        index = lowered.find(stop)
+        if index > 0:
+            cut = min(cut, index)
+    text = text[:cut].strip(" ,;.")
+    if len(text) > limit:
+        text = text[:limit].rsplit(" ", 1)[0].strip(" ,;.")
+    return text
+
+
+def free_payment_name(used_names, base: str) -> str:
+    """Имя вида оплаты, которого ещё нет в блоке (v0.63.0).
+
+    УНП у видов повторяется (одна организация — несколько платежей), а
+    вот **название** в блоке должно быть одно: по нему вид узнаётся в
+    таблице и в базе. Поэтому второму виду той же организации
+    предлагаем имя с номером: «ГУ МФ ПО ГРОДНЕНСКОЙ ОБЛАСТИ (2)».
+    """
+
+    used = {str(name or "").strip().lower() for name in used_names}
+    name = " ".join(str(base or "").split())
+    if not name:
+        return ""
+    if name.lower() not in used:
+        return name
+    number = 2
+    while f"{name} ({number})".lower() in used:
+        number += 1
+    return f"{name} ({number})"
+
+
 def choose_option_data(
     target: str, counterparty_id: str, payment_name: str
 ) -> str:
