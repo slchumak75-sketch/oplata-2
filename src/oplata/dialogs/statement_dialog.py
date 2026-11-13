@@ -180,7 +180,12 @@ class StatementDialog(QDialog):
         title.setStyleSheet(f"font-size:{styles.fs(18)}px;font-weight:800")
         root.addWidget(title)
 
-        root.addWidget(QLabel(self._caption(source_name)))
+        # v0.64.0: подпись — rich text: расхождение с оборотами файла
+        # выделяем красным, иначе его легко не заметить.
+        caption = QLabel(self._caption(source_name))
+        caption.setTextFormat(Qt.TextFormat.RichText)
+        caption.setWordWrap(True)
+        root.addWidget(caption)
 
         self.table = QTableWidget()
         # v0.55.0: строки узкие — по шрифту, без «воздуха» (просьба
@@ -290,15 +295,24 @@ class StatementDialog(QDialog):
         elif matched:
             tail = "Обороты сошлись с итогом файла."
         else:
-            tail = "Внимание: итог строк не совпал с оборотами файла."
+            # v0.64.0: красным — файл прочитан с расхождением, и
+            # разносить такие суммы нельзя. Именно так выглядела
+            # выписка, где код платежа в бюджет приняли за разряды
+            # суммы (300,00 прочиталось как 101 300,00).
+            tail = (
+                f'<span style="color:{styles.RED}">Внимание: итог строк '
+                "не совпал с оборотами файла.</span>"
+            )
         bank_rows = sum(1 for row in statement.rows if self._is_bank(row))
         if bank_rows:
             tail += (
                 f" Строк банка (не поставщик и не покупатель): "
                 f"{bank_rows}."
             )
+        # v0.64.0: подпись показывается как rich text (там бывает
+        # красное предупреждение), поэтому переносы — через <br>.
         return (
-            f"{head}\n"
+            f"{head}<br>"
             f"Входящее сальдо {fmt_money_plain(statement.opening_balance)} · "
             f"Оплата {fmt_money_plain(statement.total_outgoing)} · "
             f"Поступление {fmt_money_plain(statement.total_incoming)} · "
