@@ -416,6 +416,10 @@ class AppData:
     # загрузка того же файла не должна задваивать суммы. Поле добавлено
     # в v0.56.0; в старых файлах его нет — пустой список.
     imported_statement_rows: list[str] = field(default_factory=list)
+    # Подробности разноса: ключ строки + что именно записали (v0.59.0).
+    # По нему «Переразнос» снимает ровно свои прежние записи. Поле
+    # добавлено в v0.59.0; в старых файлах его нет — пустой список.
+    imported_statement_writes: list[dict] = field(default_factory=list)
 
     def to_dict(self) -> dict:
         return {
@@ -439,6 +443,9 @@ class AppData:
             },
             "bank": asdict(self.bank),
             "imported_statement_rows": list(self.imported_statement_rows),
+            "imported_statement_writes": [
+                dict(item) for item in self.imported_statement_writes
+            ],
         }
 
     @classmethod
@@ -463,6 +470,9 @@ class AppData:
             ],
             imported_statement_rows=[
                 str(x) for x in data.get("imported_statement_rows", [])
+            ],
+            imported_statement_writes=[
+                dict(x) for x in data.get("imported_statement_writes", [])
             ],
         )
         # Миграция v0.8.0: у покупателей прежний «Приход» теперь называется

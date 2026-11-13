@@ -322,18 +322,104 @@ class StatementDialog(QDialog):
                 "«Поступление и оплата».",
             )
             return
-        preview = DistributionDialog(self.statement, self.store, self)
+        redo = self._ask_about_repeat()
+        if redo is None:  # пользователь отказался
+            return
+        preview = DistributionDialog(self.statement, self.store, self,
+                                     redo=redo)
         if preview.exec() != QDialog.DialogCode.Accepted:
+            self._report_distribution(preview.result_distribution)
             return
         result = preview.result_distribution
-        if result is None or not result.applied:
-            return
-        if self.on_imported is not None:
+        if self.on_imported is not None and result is not None:
             self.on_imported(result)
-        QMessageBox.information(
-            self,
-            "Готово",
-            f"Разнесено строк: {result.applied_count}.\n\n"
-            + "\n".join(result.applied[:15]),
-        )
+        self._report_distribution(result)
         self.accept()
+
+    def _ask_about_repeat(self) -> bool | None:
+        """Спросить про уже разнесённый файл (v0.59.0).
+
+        Возвращает ``True`` — переразнести целиком, ``False`` — только
+        новые строки, ``None`` — отмена. Раньше в этой ситуации
+        программа молча ничего не делала, и это выглядело как
+        «разнос не работает».
+        """
+
+        seen = set(getattr(self.store.data, "imported_statement_rows", []))
+        keys = [row.import_key() for row in self.statement.rows]
+        old_count = sum(1 for key in keys if key in seen)
+        if not old_count:
+            return False
+        new_count = len(keys) - old_count
+        box = QMessageBox(self)
+        box.setWindowTitle("Выписка уже разносилась")
+        box.setText(
+            f"Из {len(keys)} строк этой выписки {old_count} уже "
+            "разносились раньше"
+            + (f", новых — {new_count}.\n\n" if new_count else ".\n\n")
+            + "«Переразнести» снимет прежние записи этих строк и запишет "
+            "их заново по нынешним правилам: например, поступление "
+            "покупателя станет оплатой, а не реализацией.\nСуммы, "
+            "которые после разноса правили вручную, программа не тронет."
+        )
+        box.addButton("Переразнести", QMessageBox.ButtonRole.AcceptRole)
+        if new_count:
+            box.addButton(
+                "Только новые", QMessageBox.ButtonRole.DestructiveRole
+            )
+        box.addButton("Отмена", QMessageBox.ButtonRole.RejectRole)
+        box.exec()
+        clicked = box.clickedButton()
+        if clicked is None:
+            return None
+        if clicked.text() == "Переразнести":
+            return True
+        if clicked.text() == "Только новые":
+            return False
+        return None
+
+    def _report_distribution(self, result) -> None:
+        """Сообщить итог разноса — всегда, даже когда писать нечего."""
+
+        if result is None:
+            return
+        parts: list[str] = []
+        if result.applied:
+            parts.append(f"Записано: {len(result.applied)}.")
+            parts.extend(result.applied[:12])
+        if result.replaced:
+            parts.append("")
+            parts.append(f"Снято прежних записей: {len(result.replaced)}.")
+            parts.extend(result.replaced[:12])
+        if result.removed:
+            parts.append("")
+            parts.append(
+                f"Убрано лишних «реализаций»: {len(result.removed)}."
+            )
+            parts.extend(result.removed[:12])
+        if result.kept:
+            parts.append("")
+            parts.append(
+                "Оставлено (сумму дня правили вручную): "
+                f"{len(result.kept)}."
+            )
+            parts.extend(result.kept[:12])
+        if result.warnings:
+            parts.append("")
+            parts.extend(result.warnings)
+        if not parts:
+            if result.already:
+                parts.append(
+                    "Новых данных нет: все строки этой выписки уже "
+                    f"разносились ({len(result.already)})."
+                )
+            elif result.unresolved:
+                parts.append(
+                    "Ничего не записано: строкам не хватает контрагентов "
+                    f"или видов оплаты ({len(result.unresolved)})."
+                )
+            else:
+                parts.append("Разносить нечего.")
+        QMessageBox.information(
+            self, "Разнесение выписки", "\n".join(parts)
+        )

@@ -48,6 +48,9 @@ from ..statement_match import (
     iso_date,
     plan_key,
     plan_totals,
+    find_stale_realizations,
+    fmt_amount,
+    remove_operations,
     row_is_blocked,
     TARGET_CARD,
     TARGET_CASH,
@@ -93,10 +96,14 @@ class DistributionDialog(QDialog):
         statement: Statement,
         store,
         parent: QWidget | None = None,
+        redo: bool = False,
     ) -> None:
         super().__init__(parent)
         self.statement = statement
         self.store = store
+        # v0.59.0: ``redo`` — переразнести уже разносившиеся строки:
+        # прежние записи снимаются, пишутся заново по нынешним правилам.
+        self.redo = redo
         self.result_distribution = None
         # Страховка от повторного входа: список «Куда» может дёрнуть
         # создание карточки, пока карточка уже открыта.
@@ -194,6 +201,8 @@ class DistributionDialog(QDialog):
             text = match.note
             if commission.note:
                 text = f"{text} · {commission.note}"
+            if self._is_imported(row_index) and not self.redo:
+                text = f"{text} (уже разносили)"
             note = self._cell(index, COL_NOTE, text)
             if row_is_blocked(match, commission):
                 note.setForeground(QColor(styles.RED))
@@ -238,6 +247,12 @@ class DistributionDialog(QDialog):
             match = self.matches[row_index]
             self.table.takeItem(index, COL_BASE)
             self._base_cell(index, row, match)
+
+    def _is_imported(self, row_index: int) -> bool:
+        """Строку уже разносили раньше? (v0.59.0)"""
+
+        seen = set(getattr(self.store.data, "imported_statement_rows", []))
+        return self.statement.rows[row_index].import_key() in seen
 
     def _cell(self, row: int, column: int, text: str) -> QTableWidgetItem:
         cell = QTableWidgetItem(text)
@@ -497,7 +512,47 @@ class DistributionDialog(QDialog):
         statement = replace(self.statement, rows=[row for row, _a, _b in kept])
         matches = [match for _row, match, _commission in kept]
         commissions = [commission for _row, _match, commission in kept]
-        self.result_distribution = distribute(
-            statement, self.store.data, matches, commissions
+        result = distribute(
+            statement, self.store.data, matches, commissions, redo=self.redo
         )
+        # v0.59.0: при переразносе убираем «реализации», которые
+        # создавали старые версии (0.56.0–0.57.0) вместо оплаты.
+        if self.redo:
+            self._drop_stale_realizations(result, statement, matches)
+        self.result_distribution = result
         self.accept()
+
+    def _drop_stale_realizations(
+        self, result, statement, matches: list[Match]
+    ) -> None:
+        """Снять ошибочные «реализации» прошлых версий (v0.59.0)."""
+
+        stale = find_stale_realizations(
+            self.store.data, statement, matches
+        )
+        if not stale:
+            return
+        names = "\n".join(
+            "• "
+            + f"{operation.date} — {fmt_amount(operation.amount)} "
+            + f"({operation.kind})"
+            for operation in stale[:8]
+        )
+        answer = QMessageBox.question(
+            self,
+            "Лишние «реализации»",
+            "Эти операции «Реализация» создал прошлый разнос выписки: "
+            "те же дата, покупатель и сумма, а теперь строка пишется "
+            "оплатой (строки самой выписки при этом не удаляются):"
+            f"\n{names}\n\nУбрать их?",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.Yes,
+        )
+        if answer != QMessageBox.StandardButton.Yes:
+            return
+        for operation in stale:
+            result.removed.append(
+                f"{operation.date} — "
+                f"{fmt_amount(operation.amount)} ({operation.kind})"
+            )
+        remove_operations(self.store.data, stale)
