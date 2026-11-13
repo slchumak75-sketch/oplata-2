@@ -35,6 +35,8 @@ from dataclasses import dataclass, field
 from decimal import Decimal, InvalidOperation
 from pathlib import Path
 
+from oplata.dates import fmt_money_plain
+
 DATE = r"\d{2}\.\d{2}\.\d{4}"
 AMOUNT = r"\d[\d ]*,\d{2}"
 
@@ -68,6 +70,10 @@ RE_COMMISSION = re.compile(
 RE_OPENING = re.compile(rf"Входящее сальдо:\s*({AMOUNT})")
 RE_CLOSING = re.compile(rf"Исходящее сальдо:\s*({AMOUNT})")
 RE_TURNOVER = re.compile(rf"^ОБОРОТЫ\s+({AMOUNT})\s+({AMOUNT})$")
+# v0.66.0: «Кол-во операций 5 2» — сколько операций по дебету и сколько
+# по кредиту. Сверка по суммам не ловит слипшиеся или потерянные
+# строки, если они взаимно погасились; по числу операций — ловит.
+RE_OPERATIONS = re.compile(r"^Кол-во\s+операций\s+(\d+)\s+(\d+)$")
 RE_ACCOUNT = re.compile(r"Счет клиента:\s*([A-Z0-9 ]+)")
 # v0.56.0: по имени счёта узнаём, чья это выписка — МИР или КОРЕЛИЧИ
 # («Наименование счета: ООО МирСтройМаркет» / «ООО Мирсититорг»).
@@ -198,6 +204,11 @@ class Statement:
     closing_balance: Decimal = Decimal("0")
     turnover_outgoing: Decimal = Decimal("0")  # обороты по дебету
     turnover_incoming: Decimal = Decimal("0")  # обороты по кредиту
+    # v0.66.0: число операций по дебету и кредиту — из строки файла
+    # «Кол-во операций». ``None`` — в файле такой строки нет, и сверять
+    # число операций не с чем.
+    operations_outgoing: int | None = None
+    operations_incoming: int | None = None
     rows: list[StatementRow] = field(default_factory=list)
 
     @property
@@ -213,6 +224,130 @@ class Statement:
         """Сумма комиссий банка по всем строкам (v0.55.0)."""
 
         return sum((row.commission for row in self.rows), Decimal("0"))
+
+
+@dataclass
+class Reconciliation:
+    """Итог сверки прочитанных строк с итогами, напечатанными в файле."""
+
+    problems: list[str] = field(default_factory=list)
+    # Какими должны быть итоги строк по данным файла (оборот плюс
+    # комиссия банка). Нужны таблице: она подсвечивает те ячейки, где
+    # посчитанное разошлось с ожидаемым.
+    expected_outgoing: Decimal = Decimal("0")
+    expected_incoming: Decimal = Decimal("0")
+
+    @property
+    def ok(self) -> bool:
+        """Расхождений нет."""
+
+        return not self.problems
+
+
+def reconcile(statement: Statement) -> Reconciliation:
+    """Сверить прочитанные строки с итогами самого файла (v0.66.0).
+
+    Проверок четыре, и каждая ловит свой дефект разбора:
+
+    1. **Сумма оплат** против оборота по дебету. Ловит главное: сумму,
+       прочитанную неверно. Именно так выглядела выписка, где код
+       платежа в бюджет приняли за разряды суммы — вместо 300,00
+       читалось 101 300,00.
+    2. **Сумма поступлений** против оборота по кредиту — то же самое
+       для прихода.
+    3. **Число операций** против «Кол-во операций». Ловит потерянную
+       или слипшуюся строку, которую проверка сумм не увидела бы.
+    4. **Арифметика сальдо внутри файла**: входящее + кредит − дебет
+       должно дать исходящее. Ловит неверно прочитанные сами итоги —
+       эта проверка не зависит от строк вовсе.
+
+    Комиссия банка удержана из суммы, поэтому в наших строках она
+    добавлена и к поступлению, и к оплате (v0.55.0): ожидаемый итог
+    больше оборота файла ровно на сумму комиссий.
+
+    Проверки, которым не с чем сравнивать (в файле нет нужной строки),
+    молча пропускаются — ложную тревогу поднимать не должны.
+    """
+
+    problems: list[str] = []
+    commission = statement.total_commission
+    known_turnover = statement.turnover_outgoing or statement.turnover_incoming
+    expected_outgoing = statement.turnover_outgoing + commission
+    expected_incoming = statement.turnover_incoming + commission
+
+    if known_turnover:
+        for label, actual, in_file in (
+            ("Оплата", statement.total_outgoing, statement.turnover_outgoing),
+            (
+                "Поступление",
+                statement.total_incoming,
+                statement.turnover_incoming,
+            ),
+        ):
+            expected = (
+                expected_outgoing if label == "Оплата" else expected_incoming
+            )
+            if actual != expected:
+                problems.append(
+                    f"{label}: в файле {fmt_money_plain(in_file)}, "
+                    f"прочитано {fmt_money_plain(actual)} — "
+                    f"разница {_signed(actual - expected)}"
+                )
+
+    for label, in_file, rows_count in (
+        (
+            "Оплат",
+            statement.operations_outgoing,
+            _count(statement, "outgoing"),
+        ),
+        (
+            "Поступлений",
+            statement.operations_incoming,
+            _count(statement, "incoming"),
+        ),
+    ):
+        if in_file is not None and in_file != rows_count:
+            problems.append(
+                f"{label} в файле {in_file}, прочитано {rows_count}"
+            )
+
+    # Сальдо файла проверяем только когда оно в файле действительно
+    # напечатано: пустые (не найденные) значения — нули, и считать на
+    # них нельзя.
+    if statement.opening_balance or statement.closing_balance:
+        expected_closing = (
+            statement.opening_balance
+            + statement.turnover_incoming
+            - statement.turnover_outgoing
+        )
+        if expected_closing != statement.closing_balance:
+            problems.append(
+                "Сальдо файла не сходится: входящее "
+                f"{fmt_money_plain(statement.opening_balance)} + поступление "
+                f"{fmt_money_plain(statement.turnover_incoming)} − оплата "
+                f"{fmt_money_plain(statement.turnover_outgoing)} = "
+                f"{fmt_money_plain(expected_closing)}, а в файле исходящее "
+                f"{fmt_money_plain(statement.closing_balance)}"
+            )
+
+    return Reconciliation(problems, expected_outgoing, expected_incoming)
+
+
+def _count(statement: Statement, side: str) -> int:
+    """Сколько строк с ненулевой суммой на этой стороне."""
+
+    return sum(
+        1
+        for row in statement.rows
+        if (row.outgoing if side == "outgoing" else row.incoming) > 0
+    )
+
+
+def _signed(value: Decimal) -> str:
+    """``Decimal("97799")`` -> ``"+97 799,00"`` (знак минус — типографский)."""
+
+    sign = "+" if value > 0 else "−"
+    return f"{sign}{fmt_money_plain(abs(value))}"
 
 
 def parse_amount(text: str) -> Decimal:
@@ -372,8 +507,16 @@ def parse_statement_text(text: str) -> Statement:
             continue
 
         if match := RE_TURNOVER.match(line):
+            # В многостраничной выписке итог печатается на каждой
+            # странице, поэтому последнее совпадение и есть итог за
+            # период: предыдущие просто перезаписываются.
             statement.turnover_outgoing = parse_amount(match.group(1))
             statement.turnover_incoming = parse_amount(match.group(2))
+            continue
+
+        if match := RE_OPERATIONS.match(line):
+            statement.operations_outgoing = int(match.group(1))
+            statement.operations_incoming = int(match.group(2))
             continue
 
         if match := RE_FACT_DATE.search(line):

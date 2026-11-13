@@ -8810,3 +8810,233 @@ def test_redo_keeps_hands_off_when_rows_and_writes_disagree(
     }
     assert amounts["ГУ МФ ПО ГРОДНЕНСКОЙ ОБЛАСТИ"] == "101300.00"
     assert amounts["ГУ МФ ПО ГРОДНЕНСКОЙ ОБЛАСТИ (2)"] == "3511800.00"
+
+
+# --------------------------------------------------------------- v0.66.0
+def test_statement_parses_operation_counts(qt_app):
+    """v0.66.0: «Кол-во операций 5 2» читается из файла.
+
+    Число операций — вторая проверка разбора после сумм: потерянную
+    или слипшуюся строку по одним суммам не поймать.
+    """
+
+    from oplata.statement import parse_statement
+
+    statement = parse_statement(BUDGET_STATEMENT)
+    assert statement.operations_outgoing == 5  # дебет — оплата
+    assert statement.operations_incoming == 2  # кредит — поступление
+
+
+def test_reconciliation_ok_on_real_files(qt_app):
+    """v0.66.0: оба образца сходятся с файлом — ложной тревоги нет."""
+
+    from oplata.statement import parse_statement, reconcile
+
+    for path in (SAMPLE_STATEMENT, BUDGET_STATEMENT):
+        check = reconcile(parse_statement(path))
+        assert check.ok, f"{path}: {check.problems}"
+
+
+def test_reconciliation_catches_wrong_amount_with_numbers(qt_app):
+    """v0.66.0: расхождение называет обе суммы и разницу.
+
+    Так выглядел дефект, из-за которого appeared жалоба «переразнести
+    не работает»: код платежа в бюджет (00101) читался как разряды
+    суммы, и вместо 300,00 в базу уходило 101 300,00. Прежде подпись
+    говорила лишь «не совпало» — сравнивать числа приходилось в уме.
+    """
+
+    from oplata.statement import parse_statement, reconcile
+
+    statement = parse_statement(BUDGET_STATEMENT)
+    statement.rows[2].outgoing = Decimal("101300")  # 00101 300,00
+    check = reconcile(statement)
+    assert not check.ok
+    text = check.problems[0]
+    assert "3 501,00" in text  # что напечатано в файле
+    assert "104 522,47" in text  # что прочитано (с комиссией банка)
+    assert "разница +101 000,00" in text
+
+
+def test_reconciliation_catches_lost_row_by_count(qt_app):
+    """v0.66.0: слипшиеся строки ловит число операций, а не суммы.
+
+    Две строки по 300,00 и 800,00 превратились в одну на 1 100,00:
+    сумма та же, и проверка по деньгам молчит.
+    """
+
+    from oplata.statement import parse_statement, reconcile
+
+    statement = parse_statement(BUDGET_STATEMENT)
+    statement.rows[2].outgoing = Decimal("1100")
+    statement.rows.pop(3)
+    check = reconcile(statement)
+    assert not check.ok
+    assert any(
+        "Оплат в файле 5, прочитано 4" == text for text in check.problems
+    )
+    # Суммы при этом сошлись — иначе проверка не про ту беду.
+    assert statement.total_outgoing == check.expected_outgoing
+
+
+def test_reconciliation_catches_bad_closing_balance(qt_app):
+    """v0.66.0: сальдо файла сверяется само с собой, без строк.
+
+    Входящее + поступление − оплата должно дать исходящее. Проверка не
+    зависит от того, как прочитались строки: она ловит неверно
+    прочитанные сами итоги файла.
+    """
+
+    from oplata.statement import parse_statement, reconcile
+
+    statement = parse_statement(BUDGET_STATEMENT)
+    statement.closing_balance = Decimal("999.99")
+    check = reconcile(statement)
+    assert not check.ok
+    assert any(
+        text.startswith("Сальдо файла не сходится")
+        for text in check.problems
+    )
+
+
+def test_reconciliation_silent_when_file_has_no_totals(qt_app):
+    """v0.66.0: не с чем сверить — молчим, а не пугаем.
+
+    Выписка, собранная вручную (например, в тесте), не печатает
+    оборотов. Поднимать тревогу на пустых итогах нельзя.
+    """
+
+    from oplata.statement import Statement, StatementRow, reconcile
+
+    statement = Statement(
+        rows=[
+            StatementRow(
+                date="21.10.2026", unp="500563252", name="ГУ МФ",
+                outgoing=Decimal("300.00"),
+            )
+        ]
+    )
+    assert reconcile(statement).ok
+
+
+def test_statement_table_shows_file_totals_when_mismatch(qt_app, store):
+    """v0.66.0: при расхождении в таблице появляется строка «ПО ФАЙЛУ».
+
+    Итог и ожидание по файлу стосят рядом — разницу видно, не
+    перечитывая подпись под заголовком. Когда всё сходится, лишней
+    строки нет: незачем дублировать числа.
+    """
+
+    from oplata.dialogs.statement_dialog import StatementDialog
+    from oplata.statement import Statement, StatementRow
+
+    def build(outgoing):
+        statement = Statement(
+            rows=[
+                StatementRow(
+                    date="21.10.2026", unp="500563252", name="ГУ МФ",
+                    outgoing=Decimal(outgoing),
+                )
+            ]
+        )
+        statement.turnover_outgoing = Decimal("300.00")
+        return StatementDialog(statement, "в7.pdf", store=store)
+
+    ok_dialog = build("300.00")
+    ok_dialog.show()
+    qt_app.processEvents()
+    assert ok_dialog.table.rowCount() == 2  # строка + «ИТОГО»
+    labels = [
+        ok_dialog.table.item(row, 0).text()
+        for row in range(ok_dialog.table.rowCount())
+    ]
+    assert "ПО ФАЙЛУ" not in labels
+    ok_dialog.close()
+
+    bad_dialog = build("101300.00")
+    bad_dialog.show()
+    qt_app.processEvents()
+    assert bad_dialog.table.rowCount() == 3
+    labels = [
+        bad_dialog.table.item(row, 0).text()
+        for row in range(bad_dialog.table.rowCount())
+    ]
+    assert labels[-2:] == ["ИТОГО", "ПО ФАЙЛУ"]
+    assert bad_dialog.table.item(2, 3).text() == "300,00"
+    bad_dialog.close()
+
+
+def test_statement_caption_always_shows_file_turnover(qt_app, store):
+    """v0.66.0: итоги файла видны и тогда, когда всё сошлось.
+
+    Иначе «не совпало» заставляет искать, с чем именно сравнение.
+    """
+
+    from PySide6.QtWidgets import QLabel
+
+    from oplata.dialogs.statement_dialog import StatementDialog
+    from oplata.statement import parse_statement
+
+    statement = parse_statement(BUDGET_STATEMENT)
+    dialog = StatementDialog(statement, "в7.pdf", store=store)
+    dialog.show()
+    qt_app.processEvents()
+    caption = next(
+        child.text()
+        for child in dialog.findChildren(QLabel)
+        if "Обороты файла" in child.text()
+    )
+    assert "3 501,00" in caption  # оплата по файлу
+    assert "1 516,26" in caption  # поступление по файлу
+    assert "операций 5 / 2" in caption
+    assert "комиссия банка 21,47" in caption
+    assert "Внимание" not in caption
+    dialog.close()
+
+
+def test_distribution_report_warns_about_file_mismatch(
+    qt_app, store, monkeypatch
+):
+    """v0.66.0: расхождение повторяется и в отчёте разноса.
+
+    Отчёт — последнее, что видит человек перед записью в базу:
+    подпись под заголовком легко пропустить.
+    """
+
+    from PySide6.QtWidgets import QMessageBox
+    from oplata.dialogs.statement_dialog import StatementDialog
+    from oplata.statement import Statement, StatementRow
+
+    statement = Statement(
+        rows=[
+            StatementRow(
+                date="21.10.2026", unp="500563252", name="ГУ МФ",
+                outgoing=Decimal("101300"),
+            )
+        ]
+    )
+    statement.turnover_outgoing = Decimal("300.00")
+    dialog = StatementDialog(statement, "в7.pdf", store=store)
+    dialog.show()
+    qt_app.processEvents()
+
+    shown: list[str] = []
+    monkeypatch.setattr(
+        QMessageBox,
+        "information",
+        staticmethod(lambda *args, **kwargs: shown.append(args[-1])),
+    )
+    # В offscreen настоящий QMessageBox.question ждёт ввода — подменяем.
+    monkeypatch.setattr(
+        QMessageBox,
+        "question",
+        staticmethod(lambda *args, **kwargs: QMessageBox.StandardButton.Yes),
+    )
+    monkeypatch.setattr(
+        StatementDialog, "_ask_about_repeat", lambda self: False
+    )
+    dialog._continue()
+    assert shown
+    assert "не совпал с итогами файла" in shown[-1]
+    assert "в файле 300,00" in shown[-1]  # обе суммы названы
+    dialog.close()
