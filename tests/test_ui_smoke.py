@@ -143,13 +143,14 @@ def test_main_window_all_pages(qt_app, store):
     # Вкладка «Поступление и оплаты»: два блока один под другим, в каждом
     # таблица с колонками дней недели (v0.38.0: колонки «Сумма» нет).
     view = window.receipts_view
+    # v0.70.0: названия строк набраны заглавными буквами.
     assert [view.incoming.table.item(row, 0).text() for row in range(4)] == [
-        "Поступление наличными",
-        "Поступление по картам",
-        "Покупатели",
-        "Прочие поступления",  # постоянная строка, v0.13.0
+        "ПОСТУПЛЕНИЕ НАЛИЧНЫМИ",
+        "ПОСТУПЛЕНИЕ ПО КАРТАМ",
+        "ПОКУПАТЕЛИ",
+        "ПРОЧИЕ ПОСТУПЛЕНИЯ",  # постоянная строка, v0.13.0
     ]
-    assert view.outgoing.table.item(0, 0).text() == "Поставщики"
+    assert view.outgoing.table.item(0, 0).text() == "ПОСТАВЩИКИ"
     # v0.22.0: вместо «Неделя/Месяц/Квартал/Год» — колонки дней недели.
     # v0.33.0: вторым столбцом стоит «НДС» (в блоке «Поступление»
     # колонка скрыта — виды поступлений своей ставки не имеют).
@@ -7701,7 +7702,8 @@ def test_payment_note_shows_in_block_table(qt_app, store):
             block.table.item(row, COL_NOTE).flags()
             & Qt.ItemFlag.ItemIsEditable
         )
-    assert block.table.item(0, COL_NAME).text() == "Поставщики"
+    # v0.70.0: заглавными, как и все названия строк блока.
+    assert block.table.item(0, COL_NAME).text() == "ПОСТАВЩИКИ"
     assert COL_NOTE < COL_VAT
     window.close()
 
@@ -9792,14 +9794,17 @@ def test_routing_panel_rejects_bad_rule(qt_app, store):
     assert store.data.routing_rules == []
 
 
-def test_routing_panel_warns_about_silent_duplicate_unp(qt_app, store):
-    """v0.69.0: задвоенный УНП без примечания — предупреждение, не запрет.
+def test_routing_panel_has_no_clutter_text(qt_app, store):
+    """v0.70.0: в «Свойствах контрагента» нет пояснений и предупреждений.
 
-    Примечание у таких карточек ключевое: по нему они и различаются в
-    списке «Куда». Но в старых данных оно пустое, поэтому запретом не
-    душим — пишем, что заполнить стоит.
+    Под заголовком «Путь разноса сумм» шла длинная справка, а под
+    таблицей — строка с жёлтым треугольником про задвоенные УНП и
+    слабые слова. Обе только отъедали место: состав строки правила
+    понятен по подписям полей. Остаются заголовок, строки правил и
+    кнопки.
     """
 
+    from PySide6.QtWidgets import QLabel
     from oplata.models import Counterparty
     from oplata.views.data_view import DataView
 
@@ -9811,12 +9816,54 @@ def test_routing_panel_warns_about_silent_duplicate_unp(qt_app, store):
     )
     view = DataView(store)
     view.show()
-    assert "100005713" in view.routing_warning_label.text()
-    assert "Примечание" in view.routing_warning_label.text()
+    texts = [label.text() for label in view.routing_panel.findChildren(QLabel)]
+    # Ни справки, ни предупреждения: только заголовок, статус и подписи.
+    assert not any("УНП на несколько" in text for text in texts)
+    assert not any(text.startswith("\u26a0") for text in texts)
+    assert not any("Примечание" in text for text in texts)
+    assert not any(len(text) > 120 for text in texts)
 
-    store.data.suppliers[-1].note = "Продукты"
-    view._refresh_routing_warning()
-    assert view.routing_warning_label.text() == ""
+
+def test_routing_panel_font_is_smaller(qt_app, store):
+    """v0.70.0: в панели кегль в полтора раза меньше основного.
+
+    Строка правила — пять полей в ряд, и при обычном кегле УНП
+    обрезалось.
+    """
+
+    from oplata import styles
+    from oplata.views.data_view import DataView
+
+    view = DataView(store)
+    view.show()
+    row = view._add_rule_row()
+    # Кегль панели — основной, делённый на полтора.
+    expected = int(round(styles.fs(13) / 1.5))
+    assert view._routing_font.pixelSize() == expected
+    # И строка правила набрана им же, а не основным шрифтом.
+    assert row["widget"].font().pixelSize() == expected
+
+
+def test_rule_unp_field_fits_nine_digits(qt_app, store):
+    """v0.70.0: поле УНП вмещает девять цифр целиком.
+
+    Раньше было 80 px: при прежнем кегле девять цифр занимали 75 px и
+    число обрезалось. Кегль уменьшили и дали полю запас до 92 px.
+    """
+
+    from PySide6.QtGui import QFontMetrics
+
+    from oplata.views.data_view import DataView
+
+    view = DataView(store)
+    view.show()
+    row = view._add_rule_row()
+    field = row["unp"]
+    assert field.width() >= 92
+    metrics = QFontMetrics(field.font())
+    # 12 px — внутренние отступы поля ввода.
+    assert metrics.horizontalAdvance("100325912") + 12 <= field.width()
+
 
 
 def test_rule_and_routing_survive_save_load(qt_app, store):
@@ -9857,40 +9904,6 @@ def test_routing_rules_empty_in_old_data_file(qt_app, store):
     back = DataStore(store.path)
     assert back.data.routing_rules == []
 
-
-def test_routing_panel_warns_about_weak_words(qt_app, store):
-    """v0.69.0: слово, которое правило не уточняет, — предупреждение.
-
-    «ЗА» короче трёх знаков, «БАНК» стоит почти в каждой строке. Такое
-    правило сработает где попало — об этом надо сказать. Запретом не
-    делаем: бывает фраза, где короткое слово как раз решает.
-    """
-
-    from oplata.models import OUTGOING, add_other_payment
-    from oplata.statement_match import rule_weak_words
-    from oplata.views.data_view import DataView
-
-    assert rule_weak_words(["ЗА"]) == ["ЗА"]
-    assert rule_weak_words(["БАНК"]) == ["БАНК"]
-    assert rule_weak_words(["ПОДОХОДНЫЙ", "НАЛОГ"]) == []
-
-    add_other_payment(store.data, "Услуги банка", "2026-11-06", OUTGOING,
-                      unp="100325912", note="")
-    view = DataView(store)
-    view.show()
-    row = view._add_rule_row()
-    row["unp"].setText("100325912")
-    row["words"].setText("Комиссия за БАНК")
-    row["target"].setCurrentIndex(0)
-    assert view.save_routing_rules() is True  # сохранили, но предупредили
-    saved = [
-        word for word in store.data.routing_rules[0].words
-        if word.lower() in ("за", "банк")
-    ]
-    assert "за" in saved and "БАНК" in saved
-    warning = view.routing_warning_label.text()
-    assert "за" in warning
-    assert "БАНК" in warning
 
 
 def test_rule_of_other_direction_never_matches(qt_app, store):
@@ -10108,3 +10121,175 @@ def test_old_rule_without_direction_is_payment(qt_app, store):
     store.path.write_text(json.dumps(raw), encoding="utf-8")
     back = DataStore(store.path)
     assert back.data.routing_rules[0].direction == OUTGOING
+
+
+# =====================================================================
+# v0.70.0 — экран «Поступление и оплата»: компактнее и читаемее
+# =====================================================================
+
+def test_row_titles_are_uppercase(qt_app, store):
+    """v0.70.0: названия строк набраны заглавными буквами.
+
+    «Поставщики», «Поступление наличными» и прочие — заглавными: в
+    узкой таблице так читается быстрее. Ключи строк от этого не
+    меняются, иначе суммы перестали бы находиться в базе.
+    """
+
+    from oplata.views.receipts_view import (
+        CARD_ROW,
+        CASH_ROW,
+        CUSTOMERS_ROW,
+        ROW_TITLES,
+        SUPPLIERS_ROW,
+        MoneyBlock,
+        other_row_key,
+    )
+
+    assert ROW_TITLES[CASH_ROW] == "ПОСТУПЛЕНИЕ НАЛИЧНЫМИ"
+    assert ROW_TITLES[CARD_ROW] == "ПОСТУПЛЕНИЕ ПО КАРТАМ"
+    assert ROW_TITLES[CUSTOMERS_ROW] == "ПОКУПАТЕЛИ"
+    assert ROW_TITLES[SUPPLIERS_ROW] == "ПОСТАВЩИКИ"
+    # Свой вид оплаты тоже подписывается заглавными, а ключ — нет.
+    key = other_row_key("Услуги банка")
+    assert MoneyBlock._row_title(key) == "УСЛУГИ БАНКА"
+    assert key == "other:Услуги банка"
+
+
+def test_outgoing_rows_sorted_alphabetically(qt_app, store):
+    """v0.70.0: свои виды оплаты — по алфавиту, «Поставщики» сверху.
+
+    Раньше порядок был порядком добавления, и нужный вид приходилось
+    искать глазами по всему списку. «Поставщики» остаются первой
+    строкой всегда: это основная строка блока.
+    """
+
+    from oplata.models import OUTGOING, add_other_payment
+    from oplata.views.receipts_view import (
+        SUPPLIERS_ROW,
+        ReceiptsView,
+        other_row_name,
+    )
+
+    # Добавляем в «неправильном» порядке.
+    for name in ("Ярлыки", "Комиссия банка", "Аренда"):
+        add_other_payment(store.data, name, "2026-11-06", OUTGOING)
+    view = ReceiptsView(store)
+    view.show()
+    keys = view._outgoing_rows()
+    assert keys[0] == SUPPLIERS_ROW
+    names = [other_row_name(key) for key in keys[1:]]
+    assert names == ["Аренда", "Комиссия банка", "Ярлыки"]
+
+
+def test_day_column_wide_enough_for_big_amount(qt_app, store):
+    """v0.70.0: в ячейке дня влезает сумма с разрядами.
+
+    Было 96 px — хватало на «88 888,88», а «3 511 800,00» обрезалось.
+    """
+
+    from oplata.views.receipts_view import DAY_COLUMN_WIDTH
+
+    assert DAY_COLUMN_WIDTH >= 112
+
+
+def test_note_column_wider_than_before(qt_app, store):
+    """v0.70.0: колонка «Примечание» шире, название вида — у́же.
+
+    Название растягивается по остатку, поэтому widening примечания и
+    дней как раз и сжимает колонку видов оплат.
+    """
+
+    from oplata.views.receipts_view import COL_NOTE, COLUMN_WIDTHS
+
+    assert COLUMN_WIDTHS[COL_NOTE] >= 200
+
+
+def test_summary_panel_is_narrower(qt_app, store):
+    """v0.70.0: плашка «Сводка» на 20% у́же.
+
+    Было 3:1 (сводка — четверть ширины), стало 4:1 (пятая часть).
+    Освободившееся место уходит таблицам «Поступление» и «Оплата».
+    """
+
+    from oplata.views.receipts_view import ReceiptsView
+    from oplata.views.summary_view import SummaryView
+
+    summary = SummaryView(store, lambda _id: None)
+    view = ReceiptsView(store, summary_widget=summary)
+    view.show()
+    qt_app.processEvents()
+    # Доли раскладки живут в корневой раскладке содержимого (сама
+    # страница завёрнута в область прокрутки).
+    root = view.left.parentWidget().layout()
+    assert root.stretch(0) == 4  # блоки «Поступление» и «Оплата»
+    assert root.stretch(1) == 1  # плашка «Сводка» — пятая часть ширины
+
+
+def test_summary_has_date_arrows(qt_app, store):
+    """v0.70.0: у «Сводки на дату» есть стрелки «←» и «→»."""
+
+    from PySide6.QtWidgets import QPushButton
+    from oplata.views.summary_view import SummaryView
+
+    view = SummaryView(store, lambda _id: None)
+    view.show()
+    captions = [
+        button.text() for button in view.findChildren(QPushButton)
+    ]
+    assert "←" in captions
+    assert "→" in captions
+
+
+def test_summary_arrows_shift_date(qt_app, store):
+    """v0.70.0: стрелки «Сводки» листают дату на день назад и вперёд."""
+
+    from datetime import date
+
+    from PySide6.QtCore import QDate
+    from oplata.views.summary_view import SummaryView
+    from oplata.widgets import date_edit_value
+
+    view = SummaryView(store, lambda _id: None)
+    view.show()
+    view.date_edit.setDate(QDate(2026, 11, 14))
+    view._shift_date(1)
+    assert date_edit_value(view.date_edit) == date(2026, 11, 15)
+    view._shift_date(-1)
+    assert date_edit_value(view.date_edit) == date(2026, 11, 14)
+
+
+def test_rule_phrase_is_found_in_unp_field(qt_app, store):
+    """v0.70.0: ключевая фраза ищется и в поле выписки с УНП.
+
+    Фраза из выписки бывает набрана рядом с УНП организации, поэтому
+    ищем и там, где в таблице стоит УНП, — не только в наименовании и
+    назначении платежа.
+    """
+
+    from decimal import Decimal
+
+    from oplata.models import OUTGOING, RoutingRule, add_other_payment
+    from oplata.statement import StatementRow
+    from oplata.statement_match import (
+        TARGET_OTHER_PAYMENT,
+        classify,
+        rule_text,
+    )
+
+    add_other_payment(
+        store.data, "Услуги банка", "2026-11-06", OUTGOING,
+        unp="100325912", note="",
+    )
+    # Фраза — сам УНП: иначе её в строке не найти нигде, кроме поля УНП.
+    store.data.routing_rules = [
+        RoutingRule(unp="100325912", name="БАНК", words=["100325912"],
+                    target="other_payment", payment_name="Услуги банка")
+    ]
+    row = StatementRow(
+        date="06.11.2026", unp="100325912", name="ОАО АСБ БЕЛАРУСБАНК",
+        purpose="ПЛАТЕЖИ ПО КАРТОЧКАМ", outgoing=Decimal("40"),
+    )
+    assert "100325912" in rule_text(row)
+    match = classify(row, store.data)
+    assert match.target == TARGET_OTHER_PAYMENT
+    assert match.payment_name == "Услуги банка"

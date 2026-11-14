@@ -169,11 +169,14 @@ OTHER_INCOME_NAME = calc.OTHER_INCOME_TITLE
 FIXED_OTHER_ROW = other_row_key(OTHER_INCOME_NAME)
 
 
+# v0.70.0: названия строк набраны заглавными — так их проще читать в
+# узкой таблице (просьба пользователя). Ключи строк от этого не
+# меняются: по ним по-прежнему ищутся суммы в базе.
 ROW_TITLES = {
-    CASH_ROW: "Поступление наличными",
-    CARD_ROW: "Поступление по картам",
-    CUSTOMERS_ROW: "Покупатели",
-    SUPPLIERS_ROW: "Поставщики",
+    CASH_ROW: "ПОСТУПЛЕНИЕ НАЛИЧНЫМИ",
+    CARD_ROW: "ПОСТУПЛЕНИЕ ПО КАРТАМ",
+    CUSTOMERS_ROW: "ПОКУПАТЕЛИ",
+    SUPPLIERS_ROW: "ПОСТАВЩИКИ",
 }
 
 # Строки, сумму которых вводят прямо в ячейку (прочие поступления
@@ -287,14 +290,23 @@ class DayHeaderView(QHeaderView):
 # только ставка («20 %»).
 # Ширина колонки «Примечание» больше ставки НДС: там целая фраза,
 # но название (основная колонка) остаётся самой широкой.
-COLUMN_WIDTHS = {COL_NOTE: 150, COL_VAT: 68}
+# v0.70.0: колонка «Примечание» шире (150 -> 235), а название вида
+# оплаты — уже: оно колонка растягиваемая, и место ей остаётся по
+# остатку. Освободившееся место уходит дням, чтобы сумма влезала
+# целиком (было 96 px — «3 511 800,00» обрезалось).
+COLUMN_WIDTHS = {COL_NOTE: 235, COL_VAT: 68}
 # Колонки дней уже итогов «Неделя/Месяц/Квартал/Год»: в них день и сумма
 # за день («88 888,88» влезает и в 92 px).
-DAY_COLUMN_WIDTH = 96
+# v0.70.0: 96 -> 112 px: в ячейке дня должна целиком влезать сумма
+# с разрядами («3 511 800,00», а не только «88 888,88»).
+DAY_COLUMN_WIDTH = 112
 # Высота строки: с запасом под перенос длинного названия строки на две
 # строки (wordWrap включён, колонка названия ограничена пятью
 # числовыми колонками).
-ROW_HEIGHT = 40
+# v0.70.0: 40 -> 32 px — строки на 20% компактнее (просьба
+# пользователя). Запас под перенос длинного названия остаётся: названия
+# теперь заглавными, но переносятся по-прежнему на две строки.
+ROW_HEIGHT = 32
 
 ZERO = Decimal("0")
 
@@ -1457,6 +1469,11 @@ class MoneyBlock(QFrame):
         self.table.setRowCount(len(self.row_keys))
         for row, key in enumerate(self.row_keys):
             name_item = QTableWidgetItem(self._row_title(key))
+            # v0.70.0: в колонке названий кегль меньше — длинное имя
+            # вида оплаты влезает целиком, а не обрезается.
+            name_font = name_item.font()
+            name_font.setPixelSize(styles.fs(11))
+            name_item.setFont(name_font)
             # v0.21.0: название вида оплаты в ячейке не правится — оно
             # задаётся карточкой при создании, а клик по названию
             # открывает журнал операций (раньше клик открывал и редактор,
@@ -1582,7 +1599,10 @@ class MoneyBlock(QFrame):
 
     @staticmethod
     def _row_title(key: str) -> str:
-        return ROW_TITLES.get(key, other_row_name(key))
+        # v0.70.0: свои виды оплаты подписываются заглавными, как и
+        # постоянные строки. Ключ строки не трогаем: в нём имя вида
+        # записано как в карточке, по нему ищутся суммы.
+        return ROW_TITLES.get(key, other_row_name(key).upper())
 
     @staticmethod
     def _row_tooltip(key: str) -> str:
@@ -1967,7 +1987,10 @@ class ReceiptsView(QWidget):
         # v0.22.0: «Сводка» вдвое у́же — раньше обе половины делили окно
         # поровну (stretch 1 : 1), теперь левым блокам уходит три доли
         # из четырёх, а сводке — одна (было 50% ширины, стало 25%).
-        root.addWidget(left, stretch=3 if summary_widget is not None else 1)
+        # v0.70.0: доля левых блоков 3 -> 4: плашка «Сводка» занимала
+        # четверть ширины, теперь — пятую часть (на 20% у́же), а
+        # освободившееся место уходит таблицам «Поступление» и «Оплата».
+        root.addWidget(left, stretch=4 if summary_widget is not None else 1)
 
         # --- справа на всю высоту — «Сводка» ---
         # v0.27.6: даты платёжек независимы (просьба пользователя) —
@@ -2003,8 +2026,15 @@ class ReceiptsView(QWidget):
         return [CASH_ROW, CARD_ROW, CUSTOMERS_ROW, FIXED_OTHER_ROW]
 
     def _outgoing_rows(self) -> list[str]:
+        # v0.70.0: свои виды оплаты — по алфавиту, чтобы нужный вид
+        # искать в одном месте. «Поставщики» остаются сверху всегда:
+        # это основная строка блока, и искать её среди прочих неудобно.
         return [SUPPLIERS_ROW] + [
-            other_row_key(name) for name in other_payment_names(self.store.data)
+            other_row_key(name)
+            for name in sorted(
+                other_payment_names(self.store.data),
+                key=lambda name: name.lower(),
+            )
         ]
 
     def _block(self, direction: str) -> MoneyBlock:
@@ -2016,11 +2046,16 @@ class ReceiptsView(QWidget):
 
         if direction == INCOMING:
             return [CASH_ROW, CARD_ROW, CUSTOMERS_ROW, FIXED_OTHER_ROW]
-        return [SUPPLIERS_ROW] + [
-            key
-            for key in keys
-            if key.startswith(OTHER_PREFIX) and key != FIXED_OTHER_ROW
-        ]
+        # v0.70.0: тот же порядок, что в ``_outgoing_rows`` — по
+        # алфавиту названия, «Поставщики» сверху.
+        return [SUPPLIERS_ROW] + sorted(
+            (
+                key
+                for key in keys
+                if key.startswith(OTHER_PREFIX) and key != FIXED_OTHER_ROW
+            ),
+            key=lambda key: other_row_name(key).lower(),
+        )
 
     def refresh_rows(self) -> None:
         """Перечитать состав строк обоих блоков (после «+»/«−»)."""
