@@ -7354,8 +7354,15 @@ def test_distribution_redo_replaces_previous_writes(qt_app, store):
     assert store.data.to_dict()["imported_statement_writes"]
 
 
-def test_distribution_redo_keeps_manually_edited_amount(qt_app, store):
-    """v0.59.0: сумму дня правили вручную — переразнос её не трогает."""
+def test_distribution_redo_overwrites_manually_edited_amount(qt_app, store):
+    """v0.67.0: сумму дня правили вручную — переразнос пишет поверх.
+
+    Прежде (v0.59.0) в этом случае запись не снималась, а новая сумма
+    для того же получателя и дня и вовсе не писалась. Человек стирал
+    неверные суммы руками, нажимал «переразнести» — и не получал
+    ничего: программа принимала его же правку за «чужой ввод, который
+    не смеем трогать».
+    """
 
     from oplata.models import CARD_SOURCE, Counterparty
     from oplata.statement_match import distribute
@@ -7369,12 +7376,109 @@ def test_distribution_redo_keeps_manually_edited_amount(qt_app, store):
             receipt.amount = "150.00"      # ручная правка
 
     redo = distribute(_two_row_statement(), store.data, redo=True)
-    assert any("правили вручную" in line for line in redo.kept)
+    assert any("правили вручную" in line for line in redo.overwritten)
+    # Сумма дня стала той, что в файле, — ручная правка перезаписана.
     assert [
         str(receipt.amount)
         for receipt in store.data.cash_receipts
         if receipt.source == CARD_SOURCE
-    ] == ["150.00"]
+    ] == ["100.00"]
+
+
+def test_distribution_writes_over_amounts_erased_by_hand(qt_app, store):
+    """v0.67.0: суммы стёрли руками — разнос пишет их заново.
+
+    Живой случай: неверные миллионы удалили из блока «Оплата» руками,
+    затем заново загрузили выписку. Программа видела в базе 0 вместо
+    записанных ею же сумм, решала, что день правили вручную, — и не
+    писала **ничего**: цифры не появлялись в таблице вовсе.
+    """
+
+    from decimal import Decimal
+
+    from oplata.models import CARD_SOURCE, Counterparty, KIND_PAYMENT
+    from oplata.statement import Statement, StatementRow
+    from oplata.statement_match import distribute
+
+    store.data.suppliers.append(
+        Counterparty(name="ООО \"ОМА\"", unp="100005713")
+    )
+    statement = Statement(
+        rows=[
+            StatementRow(
+                date="05.11.2026", unp="100005713", name="ООО \"ОМА\"",
+                outgoing=Decimal("300.00"),
+            ),
+            StatementRow(
+                date="05.11.2026", unp="100325912", name="БАНК",
+                incoming=Decimal("100.00"),
+                purpose="Перечисление денежных средств по операциям "
+                "с платежными карточками",
+            ),
+        ]
+    )
+    distribute(statement, store.data)
+    assert store.data.operations
+    assert store.data.cash_receipts
+
+    # Стираем всё, что записал разнос: как будто почистили руками.
+    store.data.operations.clear()
+    store.data.cash_receipts.clear()
+
+    again = distribute(statement, store.data, redo=True)
+    assert again.applied_count == 2
+    assert any("правили вручную" in line for line in again.overwritten)
+    assert [
+        (operation.kind, str(operation.amount))
+        for operation in store.data.operations
+    ] == [(KIND_PAYMENT, "300.00")]
+    assert [
+        str(receipt.amount)
+        for receipt in store.data.cash_receipts
+        if receipt.source == CARD_SOURCE
+    ] == ["100.00"]
+
+
+def test_distribution_writes_over_erased_amount_without_redo(qt_app, store):
+    """v0.67.0: то же самое без «переразнести» — файл прочитан заново.
+
+    Суммы строк изменились (исправлен разбор файла), поэтому в реестре
+    эти строки **не узнаются** по старому ключу: срабатывает мягкий
+    ключ «дата · УНП · направление» (v0.65.0). Прежде и здесь ручная
+    правка запирала день: новая сумма не писалась.
+    """
+
+    from decimal import Decimal
+
+    from oplata.models import Counterparty
+    from oplata.statement import Statement, StatementRow
+    from oplata.statement_match import distribute
+
+    store.data.suppliers.append(
+        Counterparty(name="ООО \"ОМА\"", unp="100005713")
+    )
+
+    def statement_with(amount):
+        return Statement(
+            rows=[
+                StatementRow(
+                    date="05.11.2026", unp="100005713", name="ООО \"ОМА\"",
+                    outgoing=Decimal(amount),
+                )
+            ]
+        )
+
+    distribute(statement_with("101300"), store.data)
+    assert store.data.operations
+    # Стираем записанное руками.
+    store.data.operations.clear()
+
+    # Файл прочитан заново и с другими суммами: redo=False, но строка
+    # прежняя — по мягкому ключу.
+    result = distribute(statement_with("300"), store.data)
+    assert result.restated
+    assert [str(op.amount) for op in store.data.operations] == ["300.00"]
+    assert result.applied_count == 1
 
 
 def test_distribution_redo_finds_stale_realizations(qt_app, store):
