@@ -74,7 +74,13 @@ class OperationsJournalDialog(QDialog):
         # заголовке системного окна видно хуже. Остальное по-прежнему
         # без заголовка: ни фильтров, ни кнопок (v0.23.1).
         if person is not None:
-            title_label = QLabel(person.name)
+            # v0.68.0: после имени — примечание из карточки. В журнале
+            # покупателя колонок всего три и имени среди них нет,
+            # поэтому заметку о покупателе показывать больше негде.
+            note = str(getattr(person, "note", "") or "").strip()
+            title_label = QLabel(
+                f"{person.name} · {note}" if note else person.name
+            )
             title_label.setObjectName("SectionTitle")
             title_label.setAlignment(QtCore.Qt.AlignmentFlag.AlignLeft)
             title_label.setStyleSheet(

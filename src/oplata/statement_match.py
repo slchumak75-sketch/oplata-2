@@ -162,16 +162,29 @@ def find_all_payments_by_unp(data: AppData, unp: str) -> list:
 
     У одного плательщика бывает несколько назначений платежей — их
     различают примечанием, поэтому список, а не первый попавшийся.
+
+    v0.68.0: ``other_payments`` хранит запись **за каждый день**, а не
+    карточку: три вида оплаты с суммами за пять дней — это пять записей.
+    Считать их карточками нельзя. Из-за этого программа требовала
+    выбора там, где карточка одна (у ООО «МИРСЕРВИССИТИ» одна карточка,
+    а программа показывала две), и называла неверное число: у ГУ МФ три
+    вида оплаты, а в списке значилось пять. Повторы по названию
+    отбрасываем — карточка вида одна, сколько бы дней в ней ни было.
     """
 
     unp = (unp or "").strip()
     if not unp:
         return []
-    return [
-        payment
-        for payment in data.other_payments
-        if payment.unp == unp and payment.direction == OUTGOING
-    ]
+    found: list = []
+    seen: set[str] = set()
+    for payment in data.other_payments:
+        if payment.unp != unp or payment.direction != OUTGOING:
+            continue
+        if payment.name in seen:
+            continue
+        seen.add(payment.name)
+        found.append(payment)
+    return found
 
 
 def find_payment_by_unp(data: AppData, unp: str):

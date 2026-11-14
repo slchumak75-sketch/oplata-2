@@ -8545,7 +8545,9 @@ def test_statement_table_has_target_column_and_distributes(
     assert [str(operation.amount) for operation in store.data.operations] == [
         "50.00"
     ]
-    assert shown and "Записано: 1." in shown[-1]
+    # v0.68.0: всё разнеслось — отчёт не показываем. Раньше он вставал
+    # после каждого разноса и мешал вернуться к работе.
+    assert shown == []
     assert dialog.table.item(0, COL_IN).text() == "50,00"
     assert "Покупатель" in dialog.table.item(0, COL_NOTE).text()
 
@@ -9143,4 +9145,259 @@ def test_distribution_report_warns_about_file_mismatch(
     assert shown
     assert "не совпал с итогами файла" in shown[-1]
     assert "в файле 300,00" in shown[-1]  # обе суммы названы
+    dialog.close()
+
+
+# --------------------------------------------------------------- v0.68.0
+def test_payment_cards_counted_once_not_by_days(qt_app, store):
+    """v0.68.0: вид оплаты — одна карточка, сколько бы дней в ней ни было.
+
+    ``other_payments`` хранит запись **за каждый день**. Из-за этого
+    программа требовала выбора там, где карточка одна: у ООО
+    «МИРСЕРВИССИТИ» одна карточка, а в списке значилось две; у ГУ МФ
+    три вида оплаты, а программа называла пять. Там, где выбор всё же
+    нужен, число карточек должно быть верным.
+    """
+
+    from oplata.models import (
+        OUTGOING,
+        add_other_payment,
+        set_daily_other_payment,
+    )
+    from oplata.statement_match import find_all_payments_by_unp
+
+    for name, note in (
+        ("ГУ МФ", "ПОДОХОДНЫЙ НАЛОГ"),
+        ("ГУ МФ (2)", "СТРАХОВЫЕ ВЗНОСЫ"),
+        ("ГУ МФ (3)", "ЗЕМЕЛЬНЫЙ НАЛОГ"),
+    ):
+        add_other_payment(
+            store.data, name, "2026-10-21", OUTGOING,
+            unp="500563252", note=note,
+        )
+    # Те же виды с суммами за другие дни — записей становится больше.
+    set_daily_other_payment(
+        store.data, "ГУ МФ", "2026-10-15", Decimal("500")
+    )
+    set_daily_other_payment(
+        store.data, "ГУ МФ (2)", "2026-10-15", Decimal("700")
+    )
+    add_other_payment(
+        store.data, "МИРСЕРВИССИТИ", "2026-10-21", OUTGOING,
+        unp="590205641", note="КОМ.УСЛУГИ",
+    )
+    set_daily_other_payment(
+        store.data, "МИРСЕРВИССИТИ", "2026-10-14", Decimal("420")
+    )
+
+    assert len(find_all_payments_by_unp(store.data, "500563252")) == 3
+    # Одна карточка — и разнос идёт сам, без вопроса.
+    assert len(find_all_payments_by_unp(store.data, "590205641")) == 1
+
+
+def test_statement_asks_choice_only_for_rows_with_several_cards(qt_app, store):
+    """v0.68.0: выбор нужен только там, где карточек и правда несколько.
+
+    В выписке в7.pdf просить выбор должны ровно две строки — 300,00 и
+    800,00 (УНП ГУ МФ, три карточки). Строка ООО «МИРСЕРВИССИТИ» с
+    одной карточкой разносится сама.
+    """
+
+    from oplata.models import (
+        OUTGOING,
+        add_other_payment,
+        set_daily_other_payment,
+    )
+    from oplata.dialogs.statement_dialog import StatementDialog
+    from oplata.statement import parse_statement
+    from oplata.statement_match import TARGET_CHOOSE
+
+    for name, note in (
+        ("ГУ МФ", "ПОДОХОДНЫЙ НАЛОГ"),
+        ("ГУ МФ (2)", "СТРАХОВЫЕ ВЗНОСЫ"),
+        ("ГУ МФ (3)", "ЗЕМЕЛЬНЫЙ НАЛОГ"),
+    ):
+        add_other_payment(
+            store.data, name, "2026-10-21", OUTGOING,
+            unp="500563252", note=note,
+        )
+    set_daily_other_payment(
+        store.data, "ГУ МФ", "2026-10-15", Decimal("500")
+    )
+    set_daily_other_payment(
+        store.data, "ГУ МФ (2)", "2026-10-15", Decimal("700")
+    )
+    add_other_payment(
+        store.data, "МИРСЕРВИССИТИ", "2026-10-21", OUTGOING,
+        unp="590205641", note="КОМ.УСЛУГИ",
+    )
+    set_daily_other_payment(
+        store.data, "МИРСЕРВИССИТИ", "2026-10-14", Decimal("420")
+    )
+
+    statement = parse_statement(BUDGET_STATEMENT)
+    dialog = StatementDialog(
+        statement, "в7.pdf", store=store, bank_unp="100325912"
+    )
+    dialog.show()
+    qt_app.processEvents()
+
+    choosing = [
+        row.amount
+        for row, match in zip(statement.rows, dialog.matches)
+        if match.target == TARGET_CHOOSE
+    ]
+    assert choosing == [Decimal("300.00"), Decimal("800.00")], choosing
+    dialog.close()
+
+
+def test_target_popup_is_wider_than_column(qt_app, store):
+    """v0.68.0: раскрывающийся список «Куда» читается целиком.
+
+    Пункт подписан как «Наименование · УНП · Примечание»: в ширину
+    колонки такая строка не влезала и обрезалась, а по обрезанному
+    началу карточки не различить.
+    """
+
+    from oplata.dialogs.statement_dialog import (
+        COLUMN_WIDTHS,
+        StatementDialog,
+        TARGET_POPUP_WIDTH,
+    )
+    from oplata.statement import Statement, StatementRow
+
+    statement = Statement(
+        rows=[
+            StatementRow(
+                date="05.11.2026", unp="111222333", name="Организация",
+                incoming=Decimal("50"),
+            )
+        ]
+    )
+    dialog = StatementDialog(statement, "вм3.pdf", store=store)
+    dialog.show()
+    qt_app.processEvents()
+    combo = dialog._target_combo(0)
+    assert combo is not None
+    column_width = dict(COLUMN_WIDTHS)
+    # Список шире колонки — иначе длинную подпись не прочитать.
+    assert combo.view().minimumWidth() >= TARGET_POPUP_WIDTH
+    assert TARGET_POPUP_WIDTH > 220  # прежняя ширина колонки
+    dialog.close()
+
+
+def test_successful_distribution_shows_no_report(qt_app, store, monkeypatch):
+    """v0.68.0: всё разнеслось — отчёт не показываем.
+
+    Раньше окно вставало после каждого разноса, и его приходилось
+    закрывать, чтобы вернуться к работе.
+    """
+
+    from PySide6.QtWidgets import QMessageBox
+    from oplata.dialogs.statement_dialog import StatementDialog
+    from oplata.models import Counterparty
+    from oplata.statement import Statement, StatementRow
+
+    store.data.customers.append(Counterparty(name="Покупатель", unp="1"))
+    statement = Statement(
+        rows=[
+            StatementRow(
+                date="05.11.2026", unp="1", name="Покупатель",
+                incoming=Decimal("50"),
+            )
+        ]
+    )
+    dialog = StatementDialog(statement, "вм3.pdf", store=store)
+    dialog.show()
+    qt_app.processEvents()
+
+    shown: list[str] = []
+    monkeypatch.setattr(
+        QMessageBox,
+        "information",
+        staticmethod(lambda *args: shown.append(args[-1])),
+    )
+    monkeypatch.setattr(
+        StatementDialog, "_ask_about_repeat", lambda self: False
+    )
+    dialog._continue()
+
+    assert [str(op.amount) for op in store.data.operations] == ["50.00"]
+    assert shown == []
+    dialog.close()
+
+
+def test_distribution_report_shown_when_rows_unresolved(
+    qt_app, store, monkeypatch
+):
+    """v0.68.0: есть на что посмотреть — отчёт остаётся.
+
+    Молчать можно, только когда всё сошлось. Неразнесённые строки —
+    повод показать отчёт.
+    """
+
+    from PySide6.QtWidgets import QMessageBox
+    from oplata.dialogs.statement_dialog import StatementDialog
+    from oplata.statement import Statement, StatementRow
+
+    statement = Statement(
+        rows=[
+            StatementRow(
+                date="05.11.2026", unp="999888777", name="Незнакомец",
+                outgoing=Decimal("1500"),
+            )
+        ]
+    )
+    dialog = StatementDialog(statement, "вм3.pdf", store=store)
+    dialog.show()
+    qt_app.processEvents()
+
+    shown: list[str] = []
+    monkeypatch.setattr(
+        QMessageBox,
+        "information",
+        staticmethod(lambda *args: shown.append(args[-1])),
+    )
+    monkeypatch.setattr(
+        QMessageBox,
+        "question",
+        staticmethod(lambda *args, **kwargs: QMessageBox.StandardButton.Yes),
+    )
+    monkeypatch.setattr(
+        StatementDialog, "_ask_about_repeat", lambda self: False
+    )
+    dialog._continue()
+
+    assert shown
+    assert "Незнакомец" in shown[-1]
+    dialog.close()
+
+
+def test_customer_journal_title_shows_note(qt_app, store):
+    """v0.68.0: в шапке журнала покупателя — его примечание.
+
+    Колонок в журнале три и имени среди них нет, поэтому заметку о
+    покупателе показывать больше негде. Новых колонок не добавляем.
+    """
+
+    from PySide6.QtWidgets import QLabel
+    from oplata.dialogs.operations_journal_dialog import (
+        OperationsJournalDialog,
+    )
+    from oplata.models import Counterparty
+
+    store.data.customers.append(
+        Counterparty(
+            name="ООО \"ОМА\"", unp="100005713",
+            note="Договор 43/2026, отсрочка 5 дней",
+        )
+    )
+    person = store.data.customers[-1]
+    dialog = OperationsJournalDialog(store, "customer", person.id)
+    dialog.show()
+    qt_app.processEvents()
+    titles = [child.text() for child in dialog.findChildren(QLabel)]
+    assert 'ООО "ОМА" · Договор 43/2026, отсрочка 5 дней' in titles
+    # Колонок по-прежнему три: примечание в шапке, а не в таблице.
+    assert dialog.view.table.columnCount() == 3
     dialog.close()
