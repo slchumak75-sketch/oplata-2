@@ -9825,10 +9825,15 @@ def test_routing_panel_has_no_clutter_text(qt_app, store):
 
 
 def test_routing_panel_font_is_smaller(qt_app, store):
-    """v0.70.0: в панели кегль в полтора раза меньше основного.
+    """v0.71.0: кегль панели на 30% меньше обычного — **у самих полей**.
 
     Строка правила — пять полей в ряд, и при обычном кегле УНП
     обрезалось.
+
+    Проверка идёт по полям, а не по контейнеру строки: в v0.70.0
+    setFont() менял шрифт только у контейнера, а ``QLineEdit`` внутри
+    оставался на 17 px — глобальное правило «* { font-size }» из QSS
+    старше QWidget::font(). Тест тогда проверял контейнер и был зелёным.
     """
 
     from oplata import styles
@@ -9837,18 +9842,20 @@ def test_routing_panel_font_is_smaller(qt_app, store):
     view = DataView(store)
     view.show()
     row = view._add_rule_row()
-    # Кегль панели — основной, делённый на полтора.
-    expected = int(round(styles.fs(13) / 1.5))
-    assert view._routing_font.pixelSize() == expected
-    # И строка правила набрана им же, а не основным шрифтом.
-    assert row["widget"].font().pixelSize() == expected
+    expected = int(round(styles.fs(13) * 0.7))
+    assert view._routing_px == expected
+    assert expected < styles.fs(13)
+    # Кегль дошёл до самих полей — это и было сломано в v0.70.0.
+    for key in ("name", "unp", "words", "direction", "target"):
+        assert row[key].font().pixelSize() == expected, key
 
 
 def test_rule_unp_field_fits_nine_digits(qt_app, store):
-    """v0.70.0: поле УНП вмещает девять цифр целиком.
+    """v0.71.0: поле УНП вмещает девять цифр целиком — при любом кегле.
 
-    Раньше было 80 px: при прежнем кегле девять цифр занимали 75 px и
-    число обрезалось. Кегль уменьшили и дали полю запас до 92 px.
+    Ширина считается по метрикам того шрифта, которым поле набрано, а
+    не константой: в v0.70.0 стояло 92 px, и на части экранов девять
+    цифр (108 px обычным кеглем) обрезались.
     """
 
     from PySide6.QtGui import QFontMetrics
@@ -9859,10 +9866,103 @@ def test_rule_unp_field_fits_nine_digits(qt_app, store):
     view.show()
     row = view._add_rule_row()
     field = row["unp"]
-    assert field.width() >= 92
     metrics = QFontMetrics(field.font())
-    # 12 px — внутренние отступы поля ввода.
-    assert metrics.horizontalAdvance("100325912") + 12 <= field.width()
+    # 16 px — внутренние поля ввода и рамка.
+    assert metrics.horizontalAdvance("100325912") + 16 <= field.width()
+
+
+def test_rule_phrase_is_found_in_account_field(qt_app, store):
+    """v0.71.0: ключевая фраза ищется и в счёте контрагента.
+
+    Фраза вида «Счет: BY85 AKBB 3602 9440 1000 0000 0000» печатается в
+    шапке операции, рядом с УНП, — и именно по ней правило находится
+    надёжнее всего. До v0.71.0 счёт из выписки не читался вовсе.
+    """
+
+    from decimal import Decimal
+
+    from oplata.models import OUTGOING, RoutingRule, add_other_payment
+    from oplata.statement import parse_statement_text
+    from oplata.statement_match import TARGET_OTHER_PAYMENT, classify
+
+    add_other_payment(store.data, "Услуги банка", "2026-11-06", OUTGOING,
+                      unp="100325912", note="")
+    store.data.routing_rules = [
+        RoutingRule(
+            unp="100005713",
+            name='ООО "ОМА"',
+            words="Счет: BY85 AKBB 3602 9440 1000 0000 0000".split(),
+            target="other_payment",
+            payment_name="Услуги банка",
+        ),
+    ]
+    text = (
+        "ВЫПИСКА ИЗ ЛИЦЕВОГО СЧЕТА ЗА 03.11.2026\n"
+        "Счет клиента: BY13 AKBB 3012 0000 0000 0000 0000\n"
+        "03.11.2026 839 1 Счет: BY85 AKBB 3602 9440 1000 0000 0000\n"
+        "БИК: AKBBBY2X УНП: 100005713\n"
+        "5 549,97 0,00\n"
+        'ООО "ОМА"\n'
+        "Назначение платежа: ЗА СТРОЙМАТЕРИАЛЫ\n"
+        "Фактическая дата и время совершения операции: "
+        "03.11.2026 11:44:06\n"
+    )
+    statement = parse_statement_text(text)
+    row = statement.rows[0]
+    # счёт контрагента прочитан — раньше его не было в строке вовсе
+    assert row.account == "BY85 AKBB 3602 9440 1000 0000 0000"
+    match = classify(row, store.data)
+    assert match.target == TARGET_OTHER_PAYMENT
+    assert match.payment_name == "Услуги банка"
+
+
+def test_summary_header_does_not_overlap(qt_app, store):
+    """v0.71.0: шапка «Сводки» влезает в плашку или прячет стрелки.
+
+    Подпись, две стрелки и поле даты требуют ~306 px. На экране 1366
+    плашка «Сводка» — всего 276 px, и в v0.70.0 раскладка сжимала
+    виджеты ниже минимума: они наползали друг на друга. Теперь дата
+    стоит отдельной строкой, а стрелки на узкой плашке прячутся.
+
+    Ширина окна в проверке **не** задаётся: в CI и на машине
+    разработчика экраны разные, и привязка к 1366/1920 делала бы тест
+    нестабильным. Проверяется сам механизм.
+    """
+
+    from oplata.views.summary_view import SUMMARY_ARROW_WIDTH, SummaryView
+
+    view = SummaryView(store, lambda _id: None)
+    view.show()
+    view._fit_date_row()
+
+    def needed() -> int:
+        width = view.date_edit.minimumSizeHint().width()
+        if view.prev_btn.isVisible():
+            width += 2 * SUMMARY_ARROW_WIDTH
+        return width + 2 * view._date_row.spacing()
+
+    # Главное: шапка влезает в плашку — значит, наложения нет.
+    assert needed() <= view.width()
+
+    # Правило само по себе: просторно — стрелки есть, тесно — нет.
+    assert view._arrows_fit(1000)
+    assert not view._arrows_fit(view.date_edit.minimumSizeHint().width())
+
+    # И механизм действительно их прячет, а не просто считает.
+    # Ширины хватает на дату, но не на обе стрелки.
+    tight = (
+        view.date_edit.minimumSizeHint().width()
+        + 2 * view._date_row.spacing()
+        + SUMMARY_ARROW_WIDTH
+    )
+    real_width = view.width
+    try:
+        view.width = lambda: tight
+        view._fit_date_row()
+        assert not view.prev_btn.isVisible()
+        assert needed() <= view.width()
+    finally:
+        view.width = real_width
 
 
 
@@ -10204,11 +10304,11 @@ def test_note_column_wider_than_before(qt_app, store):
     assert COLUMN_WIDTHS[COL_NOTE] >= 200
 
 
-def test_summary_panel_is_narrower(qt_app, store):
-    """v0.70.0: плашка «Сводка» на 20% у́же.
+def test_summary_panel_share_is_21_percent(qt_app, store):
+    """v0.71.0: плашка «Сводка» занимает 21% ширины (в v0.70.0 — 20%).
 
-    Было 3:1 (сводка — четверть ширины), стало 4:1 (пятая часть).
-    Освободившееся место уходит таблицам «Поступление» и «Оплата».
+    Доли 79 : 21. Место берётся у левых блоков, а в них — у
+    растягиваемой колонки «Наименование» видов оплат.
     """
 
     from oplata.views.receipts_view import ReceiptsView
@@ -10221,8 +10321,10 @@ def test_summary_panel_is_narrower(qt_app, store):
     # Доли раскладки живут в корневой раскладке содержимого (сама
     # страница завёрнута в область прокрутки).
     root = view.left.parentWidget().layout()
-    assert root.stretch(0) == 4  # блоки «Поступление» и «Оплата»
-    assert root.stretch(1) == 1  # плашка «Сводка» — пятая часть ширины
+    left, right = root.stretch(0), root.stretch(1)
+    assert left + right == 100
+    assert right == 21  # плашка «Сводка» — 21% ширины
+    assert left == 79  # блоки «Поступление» и «Оплата»
 
 
 def test_summary_has_date_arrows(qt_app, store):

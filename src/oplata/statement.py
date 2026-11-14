@@ -44,7 +44,12 @@ RE_UNP = re.compile(r"УНП:\s*(\d+)")
 RE_FACT_DATE = re.compile(
     r"Фактическая дата и время совершения операции:\s*(" + DATE + r")"
 )
-RE_DOC = re.compile(rf"^({DATE})\s+(\S+)\s+(\d+)\s+Счет:")
+# v0.71.0: из шапки операции забираем и **счёт контрагента**
+# («Счет: BY85 AKBB 3602 9440 1000 0000 0000»). Раньше он терялся: по
+# нему часто ищут ключевую фразу — номер счёта встречается в выписке
+# рядом с УНП и надёжнее, чем наименование.
+RE_ROW_ACCOUNT = re.compile(r"^Счет:\s*([A-Z0-9 ]+)$")
+RE_DOC = re.compile(rf"^({DATE})\s+(\S+)\s+(\d+)\s+Счет:\s*([A-Z0-9 ]+)")
 RE_AMOUNTS = re.compile(rf"^({AMOUNT})\s+({AMOUNT})$")
 # v0.64.0: у платежей в бюджет перед суммами стоит **код платежа**
 # (в шапке файла есть колонка «Код пл. в бюдж»): «00101 300,00 0,00»
@@ -109,6 +114,10 @@ class StatementRow:
     date: str  # ДД.ММ.ГГГГ — как в файле
     unp: str
     name: str
+    # v0.71.0: счёт контрагента из шапки операции («Счет: BY85 …»).
+    # Это **не** наш счёт (он в ``Statement.account``), а счёт того,
+    # кому или от кого ушли деньги. Ищется ключевыми словами правил.
+    account: str = ""
     incoming: Decimal = Decimal("0")
     outgoing: Decimal = Decimal("0")
     purpose: str = ""  # назначение платежа: пригодится при разнесении
@@ -469,6 +478,7 @@ def parse_statement_text(text: str) -> Statement:
     # Накапливаемые поля текущей операции.
     doc_date = ""
     unp = ""
+    account = ""
     name = ""
     purpose: list[str] = []
     incoming = Decimal("0")
@@ -478,7 +488,7 @@ def parse_statement_text(text: str) -> Statement:
 
     def finish(operation_date: str) -> None:
         """Закрыть операцию: всё, что собрали, уходит в строку."""
-        nonlocal unp, name, purpose, incoming, outgoing, in_purpose, started
+        nonlocal unp, account, name, purpose, incoming, outgoing, in_purpose, started
         if not started:
             return
         text = " ".join(" ".join(purpose).split())
@@ -489,6 +499,7 @@ def parse_statement_text(text: str) -> Statement:
             StatementRow(
                 date=operation_date,
                 unp=unp,
+                account=account,
                 name=" ".join(name.split()),
                 incoming=incoming,
                 outgoing=outgoing,
@@ -496,7 +507,7 @@ def parse_statement_text(text: str) -> Statement:
                 commission=commission,
             )
         )
-        unp, name, purpose = "", "", []
+        unp, account, name, purpose = "", "", "", []
         incoming = outgoing = Decimal("0")
         in_purpose = False
         started = False
@@ -538,6 +549,7 @@ def parse_statement_text(text: str) -> Statement:
             # может не быть.
             finish(doc_date)
             doc_date = match.group(1)
+            account = " ".join(match.group(4).split())
             started = True
             continue
 
@@ -557,7 +569,13 @@ def parse_statement_text(text: str) -> Statement:
             incoming = parse_amount(match.group(2))  # Кредит — поступление
             continue
 
-        if line.startswith("Счет:") or line.startswith("БИК:"):
+        # v0.71.0: отдельная строка «Счет: …» — тоже счёт контрагента
+        # (в части выписок он печатается не в шапке, а своей строкой).
+        if match := RE_ROW_ACCOUNT.match(line):
+            account = " ".join(match.group(1).split())
+            started = True
+            continue
+        if line.startswith("БИК:"):
             continue
 
         # Строка с наименованием идёт сразу после сумм; всё остальное

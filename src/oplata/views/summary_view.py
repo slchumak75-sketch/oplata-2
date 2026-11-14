@@ -43,6 +43,10 @@ from ..widgets import (
     make_date_edit,
 )
 
+# v0.71.0: стрелки в шапке «Сводки» у́же обычных (44 px вместо 52):
+# плашка занимает пятую часть окна, и лишние 16 px в ней дороги.
+SUMMARY_ARROW_WIDTH = 44
+
 # Сколько недель вперёд показывать в блоке «Оплата понедельно»
 # (v0.15.0: четыре недели — следующая, ещё две и четвёртая).
 PLAN_WEEKS = 4
@@ -78,24 +82,39 @@ class SummaryView(QWidget):
         # основного (запрос пользователя).
         date_label = QLabel("Сводка на дату")
         date_label.setStyleSheet(
-            f"font-weight:700;font-size:{styles.fs(20)}px"
+            f"font-weight:700;font-size:{styles.fs(14)}px"
         )
         top.addWidget(date_label)
+        top.addStretch(1)
+        top.setSpacing(4)
+        root.addLayout(top)
+
         # v0.70.0: стрелки «←»/«→» листают дату сводки на день назад и
         # вперёд — как стрелки недель в блоках «Поступление» и «Оплата».
         # Раньше дату можно было только открыть календарём и выбрать.
-        prev_btn = arrow_button("←", "День назад")
-        prev_btn.clicked.connect(lambda: self._shift_date(-1))
-        top.addWidget(prev_btn)
+        #
+        # v0.71.0: стрелки и дата ушли на **отдельную строку**. В одну
+        # строку они не влезали: подпись, две стрелки и поле даты
+        # требуют 514 px, а плашка — 276…392 px в зависимости от экрана.
+        # Раскладка сжимала виджеты ниже их минимума, и они наползали
+        # друг на друга.
+        date_row = QHBoxLayout()
+        date_row.setSpacing(4)
+        self.prev_btn = arrow_button("←", "День назад")
+        self.prev_btn.setFixedWidth(SUMMARY_ARROW_WIDTH)
+        self.prev_btn.clicked.connect(lambda: self._shift_date(-1))
+        date_row.addWidget(self.prev_btn)
         self.date_edit = make_date_edit(date.today())
-        self.date_edit.setStyleSheet(f"font-size:{styles.fs(20)}px")
+        self.date_edit.setStyleSheet(f"font-size:{styles.fs(12)}px")
         self.date_edit.dateChanged.connect(self._on_date_changed)
-        top.addWidget(self.date_edit)
-        next_btn = arrow_button("→", "День вперёд")
-        next_btn.clicked.connect(lambda: self._shift_date(1))
-        top.addWidget(next_btn)
-        top.addStretch(1)
-        root.addLayout(top)
+        date_row.addWidget(self.date_edit)
+        self.next_btn = arrow_button("→", "День вперёд")
+        self.next_btn.setFixedWidth(SUMMARY_ARROW_WIDTH)
+        self.next_btn.clicked.connect(lambda: self._shift_date(1))
+        date_row.addWidget(self.next_btn)
+        date_row.addStretch(1)
+        self._date_row = date_row
+        root.addLayout(date_row)
 
         # Вторая строка шапки: только переключатель архивных (v0.33.0:
         # кнопка журнала уехала вниз, под плашку «Сводка»).
@@ -328,6 +347,30 @@ class SummaryView(QWidget):
         self.date_edit.setDate(QDate(day.year, day.month, day.day))
         self.date_edit.blockSignals(False)
         self.refresh()
+
+    def _fit_date_row(self) -> None:
+        """Спрятать стрелки, если плашка уже них (v0.71.0).
+
+        Стрелки и поле даты требуют ~310 px. На узкой плашке (экран
+        1366 — это 276 px) раскладка сжала бы виджеты ниже минимума, и
+        они наползли бы друг на друга. Лучше временно убрать стрелки:
+        дату всё равно можно выбрать календарём.
+        """
+
+        visible = self._arrows_fit(self.width())
+        self.prev_btn.setVisible(visible)
+        self.next_btn.setVisible(visible)
+
+    def _arrows_fit(self, room: int) -> bool:
+        """Помещаются ли стрелки и поле даты в ``room`` точек."""
+
+        need = self.date_edit.minimumSizeHint().width()
+        need += 2 * SUMMARY_ARROW_WIDTH + 2 * self._date_row.spacing()
+        return need <= room
+
+    def resizeEvent(self, event) -> None:  # noqa: N802 — имя задаёт Qt
+        super().resizeEvent(event)
+        self._fit_date_row()
 
     def _shift_date(self, days: int) -> None:
         """Сдвинуть дату «Сводки» на ``days`` дней (стрелки «←»/«→»)."""

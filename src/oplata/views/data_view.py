@@ -38,7 +38,7 @@ from datetime import date, datetime
 from decimal import Decimal
 
 from PySide6.QtCore import QRegularExpression, QUrl, Qt
-from PySide6.QtGui import QRegularExpressionValidator
+from PySide6.QtGui import QFontMetrics, QRegularExpressionValidator
 from PySide6.QtWidgets import (
     QAbstractItemView,
     QButtonGroup,
@@ -572,12 +572,18 @@ class DataView(QWidget):
         # строки правила понятен по подписям полей, а длинная справка
         # только отъедала место у таблицы.
 
-        # Шрифт панели в полтора раза меньше основного: иначе строка
+        # v0.71.0: кегль панели на 30% меньше обычного: иначе строка
         # правила (название, УНП, фраза, направление, «куда») не
-        # влезает по ширине, и УНП обрезается.
-        panel_font = self.font()
-        panel_font.setPixelSize(int(round(styles.fs(13) / 1.5)))
-        self._routing_font = panel_font
+        # влезает по ширине и УНП обрезается.
+        #
+        # Важно: размер задаётся **таблицей стилей**, а не setFont().
+        # В APP_STYLESHEET стоит правило «* { font-size: … }», а кегль
+        # из QSS старше QWidget::font(): в v0.70.0 setFont() менял
+        # шрифт только у контейнера строки, а поля внутри оставались
+        # на 17 px. Отсюда «шрифт не уменьшен».
+        self._routing_px = int(round(styles.fs(13) * 0.7))
+        self._routing_font = self.font()
+        self._routing_font.setPixelSize(self._routing_px)
 
         self._rule_rows: list[dict] = []
         self._rules_box = QVBoxLayout()
@@ -600,12 +606,30 @@ class DataView(QWidget):
 
         self._load_routing_rules()
 
+    def _fit_unp_width(self, field: QLineEdit) -> None:
+        """Растянуть поле УНП ровно под девять цифр (v0.71.0).
+
+        Ширина считается по метрикам **того** шрифта, которым поле
+        реально набрано, — после того как кегль применён. Иначе девять
+        цифр обрезаются: в v0.70.0 стояла константа 92 px, её хватало
+        на одном масштабе экрана и не хватало на другом.
+        """
+
+        metrics = QFontMetrics(field.font())
+        digits = metrics.horizontalAdvance("0" * UNP_LENGTH)
+        # 16 px — внутренние поля ввода + рамка, 8 px — запас.
+        field.setFixedWidth(digits + 16 + 8)
+
     def _add_rule_row(self, rule=None) -> dict:
         """Строка правила: организация, УНП, фраза, куда, «убрать»."""
 
         from PySide6.QtWidgets import QHBoxLayout as _Row
 
         widget = QWidget()
+        # Кегль — через QSS: иначе его перебьёт глобальное правило «*».
+        widget.setStyleSheet(
+            f"QLineEdit, QComboBox, QPushButton {{ font-size: {self._routing_px}px; }}"
+        )
         widget.setFont(self._routing_font)
         row_layout = _Row(widget)
         row_layout.setContentsMargins(0, 0, 0, 0)
@@ -618,11 +642,14 @@ class DataView(QWidget):
         unp_edit = QLineEdit()
         unp_edit.setPlaceholderText("УНП")
         unp_edit.setMaxLength(UNP_LENGTH)
-        # v0.70.0: 80 px было впритык (9 цифр занимают 75), даём запас.
-        unp_edit.setFixedWidth(92)
         unp_edit.setValidator(
             QRegularExpressionValidator(QRegularExpression(r"\d*"))
         )
+        # v0.71.0: ширину берём по факту — сколько девять цифр
+        # занимают этим кеглем. Константа не годится: fs() зависит от
+        # масштаба экрана, и на одном экране 92 px хватало, на другом
+        # девять цифр не влезали. Ширину ставит ``_fit_unp_width``
+        # ниже — уже после того, как кегль применён.
 
         words_edit = QLineEdit()
         words_edit.setPlaceholderText("Ключевая фраза из выписки")
@@ -642,6 +669,11 @@ class DataView(QWidget):
         remove_btn = QPushButton("−")
         remove_btn.setFixedWidth(30)
         remove_btn.setToolTip("Убрать правило")
+
+        for field in (name_edit, unp_edit, words_edit, direction_combo, combo):
+            field.setFont(self._routing_font)
+
+        self._fit_unp_width(unp_edit)
 
         row_layout.addWidget(name_edit)
         row_layout.addWidget(unp_edit)
