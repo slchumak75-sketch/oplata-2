@@ -8,6 +8,7 @@
 import os
 import re
 import sys
+from datetime import date
 from decimal import Decimal
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
@@ -3650,13 +3651,15 @@ def test_user_rights_limit_pages_base_and_input(qt_app, store, monkeypatch, tmp_
     window = MainWindow(store, access_module.Access(admin))
     window.show()
     qt_app.processEvents()
+    # v0.75.0: «Конфигурация» — не вкладка, а пункт меню «+», поэтому
+    # в списке вкладок её больше нет.
     assert [b.text() for b in window.nav_buttons if not b.isHidden()] == [
         "Поступление и оплаты",
         "Отчеты ККМ",  # v0.42.0
         "Поставщики",
         "Покупатели",
-        "Конфигурация",
     ]
+    assert window.plus_button.isVisible()
     assert window.suppliers_view.read_only is False
     assert window.kkm_view.read_only is False
     assert not window.data_view.admin_panel.isHidden()
@@ -3666,7 +3669,9 @@ def test_user_rights_limit_pages_base_and_input(qt_app, store, monkeypatch, tmp_
     window.show()
     qt_app.processEvents()
     # Руководитель видит все вкладки, но без права ввода.
-    assert all(not b.isHidden() for b in window.nav_buttons)
+    # Руководитель видит все четыре вкладки; «Конфигурация» — в меню «+».
+    assert all(not b.isHidden() for b in window.nav_buttons[:4])
+    assert window.nav_buttons[4].isHidden()
     assert window.suppliers_view.read_only is True
     assert window.kkm_view.read_only is True
     assert window.receipts_view.incoming.read_only is True
@@ -3684,7 +3689,6 @@ def test_user_rights_limit_pages_base_and_input(qt_app, store, monkeypatch, tmp_
     # пользователя) — вкладка по-прежнему за паролем.
     assert [b.text() for b in window.nav_buttons if not b.isHidden()] == [
         "Покупатели",
-        "Конфигурация",
     ]
     assert window.base_button.isHidden()
     assert store.base_key == "mir"
@@ -3697,8 +3701,9 @@ def test_user_rights_limit_pages_base_and_input(qt_app, store, monkeypatch, tmp_
     assert store.base_key == "korelichi"
     assert [b.text() for b in window.nav_buttons if not b.isHidden()] == [
         "Покупатели",
-        "Конфигурация",  # v0.50.0: видна всегда
     ]
+    # v0.75.0: «Конфигурация» доступна всем, но из меню «+».
+    assert window.plus_button.isVisible()
     window.close()
 
 
@@ -3879,7 +3884,13 @@ def test_clear_database_confirms_and_exports(qt_app, store, monkeypatch, tmp_pat
 
 
 def test_base_exchange_buttons_are_admin_only(qt_app, store):
-    """«Выгрузить базы»/«Загрузить базы» видит только администратор."""
+    """v0.75.0: меню «База» видит только администратор.
+
+    Раньше в шапке стояли три отдельные кнопки — «Выгрузить базы»,
+    «Загрузить базы» и «Очистить базу». Теперь это пункты одного меню
+    «База», а видимость кнопки по-прежнему одна на всех: только
+    администратор.
+    """
     from oplata.access import ALL_PAGES, Access, User, save_users
     from oplata.app import MainWindow
 
@@ -3896,20 +3907,26 @@ def test_base_exchange_buttons_are_admin_only(qt_app, store):
     window = MainWindow(store, access=Access(admin))
     window.show()  # без показа isVisible() у кнопок был бы False
     qt_app.processEvents()
-    assert window.export_button.isVisible()
-    assert window.import_button.isVisible()
-    # Кнопки работают с обеими базами сразу — подписи во множественном числе.
-    assert window.export_button.text() == "Выгрузить базы"
-    assert window.import_button.text() == "Загрузить базы"
+    assert window.base_menu_button.isVisible()
+    # Пункты меню: выгрузка, загрузка, обе очистки.
+    titles = [
+        action.text()
+        for action in window.base_menu_button.menu().actions()
+        if not action.isSeparator()
+    ]
+    assert titles == [
+        "Выгрузить базу",
+        "Загрузить базу",
+        "Очистить базу",
+        "Очистить таблицы…",
+    ]
 
-    # Сменили текущего пользователя в «Конфигурации» — кнопки скрылись.
+    # Сменили текущего пользователя в «Конфигурации» — меню скрылось.
     window.apply_current_user(viewer)
-    assert not window.export_button.isVisible()
-    assert not window.import_button.isVisible()
+    assert not window.base_menu_button.isVisible()
 
     window.apply_current_user(admin)
-    assert window.export_button.isVisible()
-    assert window.import_button.isVisible()
+    assert window.base_menu_button.isVisible()
     window.close()
 
 
@@ -4124,8 +4141,8 @@ def test_users_table_current_column_applies_user(qt_app, store):
 
     assert load_current_user().name == "Пользователь МИР"
     assert window.access.title == "Пользователь МИР"
-    # У пользователя без права ввода кнопок выгрузки быть не должно.
-    assert not window.export_button.isVisible()
+    # У пользователя без права ввода меню «База» быть не должно.
+    assert not window.base_menu_button.isVisible()
     assert not window.nav_buttons[1].isVisible()  # вкладка «Поставщики»
     window.close()
 
@@ -5588,8 +5605,22 @@ def test_week_tables_fit_width_without_horizontal_scroll(qt_app, store):
     window.close()
 
 
+def _base_menu_action(window, title_substring):
+    """Пункт меню «База» по части подписи (v0.75.0)."""
+
+    for action in window.base_menu_button.menu().actions():
+        if title_substring in action.text():
+            return action
+    raise AssertionError(f"пункт «{title_substring}» не найден")
+
+
 def test_base_tools_use_nav_font_and_clear_button_is_admin_only(qt_app, store):
-    """v0.40.0: шрифт кнопок базы — как у вкладок; «Очистить базу» — админу."""
+    """v0.75.0: шрифт кнопок правого угла — как у вкладок.
+
+    Раньше проверялись три кнопки базы; теперь это «Загрузить выписку»,
+    меню «База» и «+». «Очистить базу» и «Очистить таблицы» стали
+    пунктами меню, поэтому их доступность проверяем по самому меню.
+    """
     from oplata.access import ALL_PAGES, Access, User, save_users
     from oplata.app import MainWindow
 
@@ -5615,15 +5646,21 @@ def test_base_tools_use_nav_font_and_clear_button_is_admin_only(qt_app, store):
 
     nav_size = font_size(window.nav_buttons[0])
     assert nav_size.endswith("px")
-    # Одинаковый шрифт у вкладок («Поставщики», «Покупатели») и у всех
-    # трёх кнопок базы.
-    for button in (window.export_button, window.import_button, window.clear_button):
+    for button in (
+        window.statement_button,
+        window.base_menu_button,
+        window.plus_button,
+    ):
         assert font_size(button) == nav_size
 
-    assert window.clear_button.text() == "Очистить базу"
-    assert window.clear_button.isVisible()
+    # Обе очистки — пункты меню «База», значит доступны ровно тогда,
+    # когда видна сама кнопка меню. Проверяем и подписи: до v0.75.0
+    # это были отдельные кнопки «Выгрузить базы» и «Загрузить базы».
+    assert _base_menu_action(window, "Очистить базу") is not None
+    assert _base_menu_action(window, "Очистить таблицы") is not None
+    assert window.base_menu_button.isVisible()
     window.apply_current_user(viewer)
-    assert not window.clear_button.isVisible()
+    assert not window.base_menu_button.isVisible()
     window.close()
 
 
@@ -5655,14 +5692,14 @@ def test_base_tools_ask_password_before_work(qt_app, store, monkeypatch, tmp_pat
         "getText",
         staticmethod(lambda *args, **kwargs: (answers["текст"], answers["ок"])),
     )
-    window.export_button.click()
-    window.import_button.click()
+    _base_menu_action(window, "Выгрузить").trigger()
+    _base_menu_action(window, "Загрузить").trigger()
     qt_app.processEvents()
     assert calls == [], "с неверным паролем кнопки работать не должны"
 
     answers["текст"] = "1234"
-    window.export_button.click()
-    window.import_button.click()
+    _base_menu_action(window, "Выгрузить").trigger()
+    _base_menu_action(window, "Загрузить").trigger()
     qt_app.processEvents()
     assert calls == ["export", "import"]
     window.close()
@@ -5747,34 +5784,23 @@ def test_clear_base_keeps_partners_and_removes_money(
 
     # 1. Неверный пароль — ничего не трогаем.
     _ask_password_as(monkeypatch, ("0000", True))
-    window.clear_button.click()
+    _base_menu_action(window, "Очистить базу").trigger()
     qt_app.processEvents()
     assert data.operations, "с неверным паролем база не очищается"
 
-    # 2. Верный пароль, но «Отмена» — тоже ничего.
+    # 2. Верный пароль, но «Нет» — тоже ничего.
     _ask_password_as(monkeypatch, ("1234", True))
-    _click_message_box_button(monkeypatch, "Отмена")
-    window.clear_button.click()
+    _click_message_box_button(monkeypatch, "Нет")
+    _base_menu_action(window, "Очистить базу").trigger()
     qt_app.processEvents()
     assert data.operations
 
-    # 3. «Выгрузить и очистить», но выгрузку отменили — не очищаем:
-    #    файл — единственный шанс вернуть данные.
-    def cancelled_export() -> None:
-        window._last_export_path = None
-
-    monkeypatch.setattr(window, "export_bases_to_excel", cancelled_export)
-    _click_message_box_button(monkeypatch, "Выгрузить и очистить")
-    window.clear_button.click()
-    qt_app.processEvents()
-    assert data.operations, "без выгрузки очистка не делается"
-
-    # 4. «Очистить» — операции и суммы удалены, справочники целы.
-    _click_message_box_button(monkeypatch, "Очистить")
+    # 3. «Да» — операции и суммы удалены, справочники целы.
+    _click_message_box_button(monkeypatch, "Да")
     monkeypatch.setattr(
         QMessageBox, "information", staticmethod(lambda *args, **kwargs: None)
     )
-    window.clear_button.click()
+    _base_menu_action(window, "Очистить базу").trigger()
     qt_app.processEvents()
     assert data.operations == []
     assert data.cash_receipts == []
@@ -5786,18 +5812,12 @@ def test_clear_base_keeps_partners_and_removes_money(
     assert data.customers, "покупатели остаются"
     assert data.day_overrides == {"2026-10-27": "work"}, "календарь не тронут"
 
-    # 5. То же самое, но через «Выгрузить и очистить»: выгрузка удалась —
-    #    база очищается.
+    # 4. Повтор «Да» на новой операции — подтверждение спрашивается
+    #    каждый раз, а не один раз за сеанс.
     data.operations.append(
         Operation(kind="Приход", counterparty_id=supplier.id, amount="100.00")
     )
-
-    def done_export() -> None:
-        window._last_export_path = str(tmp_path / "базы.xlsx")
-
-    monkeypatch.setattr(window, "export_bases_to_excel", done_export)
-    _click_message_box_button(monkeypatch, "Выгрузить и очистить")
-    window.clear_button.click()
+    _base_menu_action(window, "Очистить базу").trigger()
     qt_app.processEvents()
     assert data.operations == []
     assert data.suppliers, "справочники и в этом пути остаются"
@@ -5819,16 +5839,113 @@ def test_clear_base_says_when_nothing_to_clear(qt_app, store, monkeypatch, tmp_p
     qt_app.processEvents()
 
     _ask_password_as(monkeypatch, ("1234", True))
-    _click_message_box_button(monkeypatch, "Очистить")
+    _click_message_box_button(monkeypatch, "Да")
     notices: list[str] = []
     monkeypatch.setattr(
         QMessageBox,
         "information",
         staticmethod(lambda *args, **kwargs: notices.append(str(args[-1]))),
     )
-    window.clear_button.click()
+    _base_menu_action(window, "Очистить базу").trigger()
     qt_app.processEvents()
     assert store.data.suppliers, "справочники остаются и без операций"
+    assert notices and "нечего" in notices[-1]
+    window.close()
+
+
+def test_clear_tables_removes_money_only_in_period(qt_app, store, monkeypatch, tmp_path):
+    """v0.75.0: «Очистить таблицы» стирает суммы за выбранный период.
+
+    От «Очистить базу» отличается тем, что работает не со всей базой, а
+    с датами: что попало в период — удаляется, что вне его и что вовсе
+    без даты (справочники, календарь, долги переноса) — остаётся.
+    """
+    from PySide6.QtWidgets import QMessageBox
+
+    from oplata import access as access_module
+    from oplata.app import MainWindow
+    from oplata.dialogs.period_dialog import PeriodDialog
+    from oplata.models import CashReceipt, Operation, OtherPayment
+
+    monkeypatch.setattr(access_module, "data_dir", lambda: tmp_path)
+    access_module.set_password("1234")
+
+    data = store.data
+    data.operations = [
+        Operation(date="2026-02-10", amount="100.00"),
+        Operation(date="2026-03-05", amount="200.00"),
+        Operation(date="2026-03-20", amount="300.00"),
+        Operation(date="2026-04-01", amount="400.00"),
+    ]
+    data.cash_receipts = [
+        CashReceipt(date="2026-03-11", amount="50.00"),
+        CashReceipt(date="2026-05-11", amount="70.00"),
+    ]
+    data.other_payments = [
+        OtherPayment(date="2026-03-31", name="Аренда", amount="30.00")
+    ]
+    data.day_overrides["2026-03-05"] = "work"
+    store.save()
+
+    window = MainWindow(store)
+    window.show()
+    qt_app.processEvents()
+
+    clear_action = _base_menu_action(window, "Очистить таблицы")
+
+    # 1. Неверный пароль — ничего не трогаем.
+    _ask_password_as(monkeypatch, ("0000", True))
+    clear_action.trigger()
+    qt_app.processEvents()
+    assert len(data.operations) == 4, "с неверным паролем ничего не стирается"
+
+    # Период: весь март — обе границы включительно.
+    monkeypatch.setattr(
+        PeriodDialog,
+        "exec",
+        lambda self: True,
+    )
+    monkeypatch.setattr(
+        PeriodDialog,
+        "period",
+        lambda self: (date(2026, 3, 1), date(2026, 3, 31)),
+    )
+
+    # 2. Верный пароль, но «Нет» — тоже ничего.
+    _ask_password_as(monkeypatch, ("1234", True))
+    _click_message_box_button(monkeypatch, "Нет")
+    clear_action.trigger()
+    qt_app.processEvents()
+    assert len(data.operations) == 4
+
+    # 3. «Да» — март стёрт, февраль и апрель целы.
+    _click_message_box_button(monkeypatch, "Да")
+    notices: list[str] = []
+    monkeypatch.setattr(
+        QMessageBox,
+        "information",
+        staticmethod(lambda *args, **kwargs: notices.append(str(args[-1]))),
+    )
+    clear_action.trigger()
+    qt_app.processEvents()
+    assert [item.date for item in data.operations] == ["2026-02-10", "2026-04-01"]
+    assert [item.date for item in data.cash_receipts] == ["2026-05-11"]
+    assert data.other_payments == []
+    # Справочники, календарь и перенос на 1 января не dated — их не тронули.
+    assert data.suppliers
+    assert data.day_overrides == {"2026-03-05": "work"}
+    assert notices and "Удалено" in notices[-1]
+
+    # 4. В периоде без сумм — только сообщение, без подтверждения.
+    monkeypatch.setattr(
+        PeriodDialog,
+        "period",
+        lambda self: (date(2025, 1, 1), date(2025, 12, 31)),
+    )
+    cleared = len(data.operations)
+    clear_action.trigger()
+    qt_app.processEvents()
+    assert len(data.operations) == cleared
     assert notices and "нечего" in notices[-1]
     window.close()
 
@@ -6478,18 +6595,21 @@ def test_config_tab_button_is_always_on_the_top_bar(qt_app, store, monkeypatch, 
     window = MainWindow(store, access_module.Access(user_mir))
     window.show()
     qt_app.processEvents()
-    # У пользователя МИР из вкладок только «Покупатели», но кнопка
-    # «Конфигурация» на плашке есть.
-    assert window.nav_buttons[IDX_DATA].isVisible()
+    # v0.75.0: «Конфигурация» переехала в меню «+», но правило то же:
+    # вход туда есть у любого пользователя, а открывается раздел по
+    # паролю. Кнопки-вкладки у «Конфигурации» больше нет.
+    assert window.plus_button.isVisible()
+    assert not window.nav_buttons[IDX_DATA].isVisible()
     assert window.stack.currentIndex() != IDX_DATA
-    # Пароль спрашивают по-прежнему: с неверным вкладка не открывается.
+    config_action = window.plus_button.menu().actions()[0]
+    # Пароль спрашивают по-прежнему: с неверным раздел не открывается.
     _ask_password_as(monkeypatch, ("0000", True))
-    window.nav_buttons[IDX_DATA].click()
+    config_action.trigger()
     qt_app.processEvents()
     assert window.stack.currentIndex() != IDX_DATA
-    # С верным паролем вкладка открывается и у пользователя МИР.
+    # С верным паролем раздел открывается и у пользователя МИР.
     _ask_password_as(monkeypatch, ("1234", True))
-    window.nav_buttons[IDX_DATA].click()
+    config_action.trigger()
     qt_app.processEvents()
     assert window.stack.currentIndex() == IDX_DATA
     window.close()
@@ -8102,10 +8222,15 @@ def test_week_lead_columns_are_narrower_and_smaller(qt_app, store):
         view.show()
         qt_app.processEvents()
         offset = 1 if kind == "supplier" else 0
-        lead = view.table.columnWidth(1 + offset)
         lead_item = view.table.item(2, 1 + offset)
         assert lead_item is not None
-        assert lead <= week_view.LEAD_WIDTH_BASE
+        # v0.75.0: ниже минимума колонка не ужимается ни при какой
+        # ширине окна. Раньше проверялось и «не шире базовой», но с
+        # v0.75.0 ширина считается по подписи и суммам: «Просрочено»
+        # шире базовых 110 px, и это правильно — подпись читается
+        # целиком (тот же тест test_debt_headers_are_written_in_full).
+        assert view.table.columnWidth(1 + offset) >= 1
+        assert view.min_widths[1 + offset] >= week_view.LEAD_WIDTH_MIN
         # Шрифт значения в итоговой колонке — тот же, что у её подписи.
         assert lead_item.font().pixelSize() == week_view.LEAD_FONT_SIZE
         view.close()
@@ -10585,3 +10710,225 @@ def test_receipts_day_columns_are_aligned(qt_app, store):
     )
     # У самого «Оплаты» резерва нет: там полоса прокрутки и так есть.
     assert outgoing._table_row.contentsMargins().right() == 0
+
+
+# --------------------------------------------------------------- v0.75.0
+def test_config_page_scrolls_when_content_is_tall(qt_app, store):
+    """v0.75.0: страница «Конфигурация» прокручивается целиком.
+
+    Плашек на странице стало пять (последняя — «Поля таблиц»), и с
+    раскрытыми «Настройкой календаря» и «Правилами разноса» содержимое
+    перестало помещаться в экран. Раньше его просто обрезало краем
+    окна — без всякой прокрутки.
+    """
+
+    from oplata.views.data_view import DataView
+
+    view = DataView(store)
+    view.show()
+    qt_app.processEvents()
+
+    assert view.page_scroll.widgetResizable()
+    content = view.page_scroll.widget()
+    assert content is not None
+    viewport = view.page_scroll.viewport().height()
+    # Содержимое выше окна: пятёрка плашек (даже свёрнутых) не влезает.
+    assert content.height() > viewport or (
+        view.page_scroll.verticalScrollBar().maximum() > 0
+    )
+    # Горизонтальной прокрутки нет — общее правило таблиц и страниц.
+    assert (
+        view.page_scroll.horizontalScrollBarPolicy()
+        == Qt.ScrollBarPolicy.ScrollBarAlwaysOff
+    )
+    view.close()
+
+
+def test_frozen_header_grid_matches_table(qt_app, store):
+    """v0.75.0: сетка закреплённой шапки — того же цвета, что у таблицы.
+
+    v0.74.0 подняла накладку поверх таблицы (`raise_`), и её
+    ``gridline-color: transparent`` съел горизонтальные линии шапки:
+    накладка рисуется последней и перекрывает строки под собой. Любое
+    свойство вида накладки теперь должно совпадать с основной таблицей.
+    """
+
+    from oplata import styles
+    from oplata.views.week_view import WeekView
+
+    view = WeekView(store, "supplier", lambda *_a: None)
+    view.show()
+    qt_app.processEvents()
+
+    style = view.frozen_table.styleSheet()
+    assert f"gridline-color:{styles.TABLE_GRID}" in style.replace(" ", "")
+    # И у самой таблицы сетка того же цвета — иначе линии «ступенькой».
+    assert f"gridline-color:{styles.TABLE_GRID}" in view.table.styleSheet().replace(
+        " ", ""
+    ) or styles.TABLE_GRID in view.table.styleSheet()
+    view.close()
+
+
+def test_base_menu_and_plus_button_hold_base_actions(qt_app, store):
+    """v0.75.0: меню «База» и «+» в правом углу шапки.
+
+    Раньше в шапке стояли три отдельные кнопки («Выгрузить базы»,
+    «Загрузить базы», «Очистить базу»), а «Конфигурация» была
+    вкладкой. Теперь всё это — пункты двух меню.
+    """
+
+    from oplata.access import IDX_DATA
+    from oplata.app import MainWindow
+
+    window = MainWindow(store)
+    window._config_unlocked = True
+    window.show()
+    qt_app.processEvents()
+
+    base_titles = [
+        action.text()
+        for action in window.base_menu_button.menu().actions()
+        if not action.isSeparator()
+    ]
+    assert base_titles == [
+        "Выгрузить базу",
+        "Загрузить базу",
+        "Очистить базу",
+        "Очистить таблицы…",
+    ]
+    plus_titles = [
+        action.text() for action in window.plus_button.menu().actions()
+    ]
+    assert plus_titles == ["Конфигурация"]
+
+    # «Конфигурация» открывается из меню «+», а не своей вкладкой.
+    assert not window.nav_buttons[IDX_DATA].isVisible()
+    window.plus_button.menu().actions()[0].trigger()
+    qt_app.processEvents()
+    assert window.stack.currentIndex() == IDX_DATA
+    window.close()
+
+
+def test_week_name_column_is_wider_and_lead_fits_content(qt_app, store):
+    """v0.75.0: колонка наименования шире, итоговые — по содержимому.
+
+    Итоговая колонка занимает столько, сколько нужно самой широкой её
+    надписи (подписи или сумме), но не у́же подписи: «Просрочено»
+    читается целиком, а «Неделя» не занимает лишнего.
+    """
+
+    from oplata.models import Counterparty
+    from oplata.views import week_view
+    from oplata.views.week_view import WeekView
+
+    # Было: 188/150 для обеих таблиц. v0.75.0: база чуть шире, а
+    # точную ширину пользователь настраивает мышью.
+    assert week_view.NAME_WIDTH_BY_KIND["supplier"] == (240, 175)
+    assert week_view.NAME_WIDTH_BY_KIND["customer"] == (215, 170)
+
+    store.data.suppliers.append(Counterparty(name="Поставщик", unp="1"))
+    store.data.customers.append(Counterparty(name="Покупатель", unp="2"))
+    for kind, wide in (("supplier", 240), ("customer", 215)):
+        view = WeekView(store, kind, lambda *_a: None)
+        view.show()
+        qt_app.processEvents()
+        # Колонка наименования тянется к своей базовой ширине и не
+        # ужимается ниже минимума — оба значения выросли.
+        assert view.base_widths[0] == wide
+        assert view.min_widths[0] >= 170
+
+        # Итоговые: минимум — по подписи и по суммам, но не ниже
+        # прежнего предела и не уже подписи.
+        metrics = view._lead_text_metrics()
+        offset = 1 if kind == "supplier" else 0
+        for number, title in enumerate(view.lead_titles):
+            column = 1 + offset + number
+            needed = (
+                metrics.horizontalAdvance(title) + week_view.CONTENT_PADDING
+            )
+            assert view.min_widths[column] >= needed, title
+            assert view.min_widths[column] >= week_view.LEAD_WIDTH_MIN
+            assert view.base_widths[column] > view.min_widths[column]
+        # Подписи разные по длине — «Просрочено» самая широкая.
+        if kind == "supplier":
+            assert (
+                view.min_widths[2 + offset] > view.min_widths[1 + offset]
+            ), "«Просрочено» шире «Итого»"
+        view.close()
+
+
+def test_column_widths_are_dragged_and_saved(qt_app, store, monkeypatch, tmp_path):
+    """v0.75.0: границу столбца тянут мышью, «Сохранить поля» запоминает.
+
+    Ширины пишутся в свой файл настроек рядом с данными (это настройка
+    компьютера, а не общая база) и применяются при следующем запуске.
+    """
+
+    from PySide6.QtCore import QEvent, QPointF, Qt
+    from PySide6.QtGui import QMouseEvent
+
+    from oplata import column_widths, storage
+    from oplata.views.week_view import WeekView
+
+    monkeypatch.setattr(storage, "data_dir", lambda: tmp_path)
+    monkeypatch.setattr(column_widths, "path", lambda: tmp_path / "widths.json")
+
+    view = WeekView(store, "supplier", lambda *_a: None)
+    view.show()
+    qt_app.processEvents()
+    # Сохранённых ширин нет — работают расчётные.
+    assert not view._widths_locked
+
+    resizer = view.table._column_resizer
+    assert resizer is not None, "у таблицы должна быть протяжка границ"
+    start = view.table.columnWidth(0)
+    # Границу ищем по краю ячейки, а не по заголовку: курсор встал на
+    # правый край первой колонки.
+    edge_x = view.table.columnViewportPosition(0) + view.table.columnWidth(0)
+    assert resizer.edge_at(edge_x) == 0
+    assert resizer.edge_at(edge_x - 20) is None
+
+    press = QMouseEvent(
+        QEvent.Type.MouseButtonPress,
+        QPointF(edge_x, 5),
+        Qt.MouseButton.LeftButton,
+        Qt.MouseButton.LeftButton,
+        Qt.KeyboardModifier.NoModifier,
+    )
+    resizer.eventFilter(view.table.viewport(), press)
+    move = QMouseEvent(
+        QEvent.Type.MouseMove,
+        QPointF(edge_x + 60, 5),
+        Qt.MouseButton.NoButton,
+        Qt.MouseButton.LeftButton,
+        Qt.KeyboardModifier.NoModifier,
+    )
+    resizer.eventFilter(view.table.viewport(), move)
+    assert view.table.columnWidth(0) > start, "колонка стала шире"
+    release = QMouseEvent(
+        QEvent.Type.MouseButtonRelease,
+        QPointF(edge_x + 60, 5),
+        Qt.MouseButton.LeftButton,
+        Qt.MouseButton.NoButton,
+        Qt.KeyboardModifier.NoModifier,
+    )
+    resizer.eventFilter(view.table.viewport(), release)
+    assert view._widths_locked, "ширины запомнены до конца сеанса"
+
+    assert view.save_widths()
+    saved = column_widths.load_entry(view._widths_key, view.column_count)
+    assert saved is not None
+    viewport_saved, widths_saved = saved
+    assert len(widths_saved) == view.column_count
+    assert viewport_saved == view.table.viewport().width()
+
+    # Новая таблица применяет сохранённые ширины при создании.
+    again = WeekView(store, "supplier", lambda *_a: None)
+    assert again._widths_locked
+    assert again._saved_widths == widths_saved
+    # «Сбросить поля» возвращает расчётные ширины.
+    again.reset_widths()
+    assert not again._widths_locked
+    assert column_widths.load(view._widths_key, view.column_count) is None
+    view.close()
+    again.close()

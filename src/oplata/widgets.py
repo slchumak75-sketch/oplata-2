@@ -432,3 +432,130 @@ def install_row_hover(table, *delegates) -> None:
     viewport.installEventFilter(filter_obj)
     # Держим ссылку, иначе фильтр соберётся сборщиком мусора.
     table._hover_filter = filter_obj  # noqa: SLF001 - служебное поле Qt
+
+
+class ColumnResizer(QObject):
+    """Протяжка границ столбцов мышью **по телу таблицы** (v0.75.0).
+
+    Штатно Qt тянет границы только за заголовок, а у недельных таблиц
+    заголовок занят закреплённой шапкой, до которой мышью не добраться.
+    Поэтому границу ищем по координатам ячеек: попав в полосу в
+    ``EDGE`` пикселей от края ячейки, курсор становится «разделителем»,
+    и нажатая кнопка тянет границу.
+
+    Ширина пары соседних колонок при этом не меняется — правая
+    отдаёт столько, сколько взяла левая, — поэтому сумма ширин всегда
+    равна ширине таблицы и горизонтальная полоса прокрутки не
+    появляется (просьба пользователя: прокрутки быть не должно).
+    """
+
+    EDGE = 5  # px от края ячейки: ширина «ручки» за которую тянем
+    MIN_WIDTH = 24
+
+    def __init__(self, table, host=None, min_width: int = MIN_WIDTH) -> None:
+        super().__init__(table)
+        self.table = table
+        self.host = host
+        self.min_width = min_width
+        self.column: int | None = None  # колонка **слева** от границы
+        self._start_x = 0
+        self._start_width = 0
+        self._neighbor_width = 0
+        self._on_edge = False
+        viewport = table.viewport()
+        viewport.setMouseTracking(True)
+        viewport.installEventFilter(self)
+
+    # ------------------------------------------------------------- граница
+    def edge_at(self, x: int) -> int | None:
+        """Номер колонки слева от границы под точкой ``x`` (или ``None``)."""
+
+        count = self.table.columnCount()
+        for col in range(count):
+            start = self.table.columnViewportPosition(col)
+            end = start + self.table.columnWidth(col)
+            if start - self.EDGE <= x <= end + self.EDGE:
+                if x - start <= self.EDGE and col > 0:
+                    return col - 1
+                if end - x <= self.EDGE and col + 1 < count:
+                    return col
+                return None
+        return None
+
+    def _notify(self, column: int, width: int) -> None:
+        host = self.host
+        if host is None:
+            return
+        for name in ("_sync_column_width", "_on_column_resized"):
+            handler = getattr(host, name, None)
+            if handler is not None:
+                handler(column, width)
+
+    # -------------------------------------------------------------- события
+    def eventFilter(self, obj, event):  # noqa: N802 - Qt API
+        kind = event.type()
+        if kind == QEvent.Type.MouseButtonPress:
+            if (event.button() == Qt.MouseButton.LeftButton
+                    and self.edge_at(int(event.position().x())) is not None):
+                self.column = self.edge_at(int(event.position().x()))
+                self._start_x = int(event.position().x())
+                self._start_width = self.table.columnWidth(self.column)
+                self._neighbor_width = (
+                    self.table.columnWidth(self.column + 1)
+                    if self.column + 1 < self.table.columnCount()
+                    else 0
+                )
+                return True  # не пускаем клик в ячейку: это не ввод
+        elif kind == QEvent.Type.MouseMove:
+            x = int(event.position().x())
+            if self.column is not None:
+                self._drag_to(x)
+                return True
+            if event.buttons() == Qt.MouseButton.NoButton:
+                edge = self.edge_at(x)
+                self._on_edge = edge is not None
+                self.table.viewport().setCursor(
+                    Qt.CursorShape.SplitHCursor if self._on_edge
+                    else Qt.CursorShape.ArrowCursor
+                )
+        elif kind == QEvent.Type.MouseButtonRelease:
+            if self.column is not None:
+                column = self.column
+                self.column = None
+                host = self.host
+                notify = getattr(host, "_on_column_resized", None)
+                if notify is not None:
+                    notify(column, self.table.columnWidth(column))
+                return True
+        elif kind == QEvent.Type.Leave:
+            self._on_edge = False
+            self.table.viewport().unsetCursor()
+        return False
+
+    def _drag_to(self, x: int) -> None:
+        """Тянем границу: левая забирает, правая отдаёт."""
+
+        taken = max(
+            self.min_width, self._start_width + (x - self._start_x)
+        ) - self._start_width
+        width = self._start_width + taken
+        self.table.setColumnWidth(self.column, width)
+        self._notify(self.column, width)
+        if self._neighbor_width:
+            neighbor = max(
+                self.min_width, self._neighbor_width - taken
+            )
+            self.table.setColumnWidth(self.column + 1, neighbor)
+            self._notify(self.column + 1, neighbor)
+
+
+def install_column_resizer(table, host=None, min_width: int = ColumnResizer.MIN_WIDTH):
+    """Разрешить тянуть границы столбцов мышью по телу таблицы (v0.75.0).
+
+    Ссылку на фильтр держим на самой таблице, иначе сборщик мусора
+    уберёт его и протяжка перестанет работать (как в ``install_row_hover``).
+    """
+
+    resizer = ColumnResizer(table, host, min_width=min_width)
+    table._column_resizer = resizer  # noqa: SLF001 - служебное поле Qt
+    return resizer

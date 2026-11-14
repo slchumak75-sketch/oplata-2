@@ -27,6 +27,7 @@ from PySide6.QtWidgets import (
     QHBoxLayout,
     QLabel,
     QMainWindow,
+    QMenu,
     QMessageBox,
     QPushButton,
     QStackedWidget,
@@ -34,7 +35,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from . import __app_name__, __version__, styles
+from . import __app_name__, __version__, column_widths, styles
 from .access import (
     IDX_CUSTOMERS,
     IDX_DATA,
@@ -46,6 +47,7 @@ from .access import (
 from .dialogs.counterparty_card import CounterpartyCardDialog
 from .dialogs.delivery_dialog import DeliveryDialog
 from .dialogs.operations_journal_dialog import OperationsJournalDialog
+from .dialogs.period_dialog import PeriodDialog
 from .dialogs.realization_dialog import RealizationDialog
 from .dialogs.statement_dialog import StatementDialog
 from .excelio import (
@@ -214,6 +216,9 @@ class MainWindow(QMainWindow):
             # v0.20.0: выбор текущего пользователя в «Конфигурации»
             # применяется сразу, без перезапуска.
             on_users_saved=self.apply_current_user,
+            # v0.75.0: ширины колонок, настроенные мышью.
+            on_save_fields=self._save_column_widths,
+            on_reset_fields=self._reset_column_widths,
         )
 
         # v0.21.0: столбец «на сегодня» считается по настоящей дате,
@@ -292,7 +297,14 @@ class MainWindow(QMainWindow):
             btn.clicked.connect(lambda _checked=False, i=index: self.show_page(i))
             self.nav_group.addButton(btn)
             self.nav_buttons.append(btn)
-            layout.addWidget(btn)
+            # v0.75.0: вкладка «Конфигурация» переехала в меню «+».
+            # Кнопку всё равно создаём (по номеру страницы её ищет
+            # apply_access и подсветка текущей вкладки), но в шапку не
+            # кладём и держим скрытой.
+            if index == IDX_DATA:
+                btn.setVisible(False)
+            else:
+                layout.addWidget(btn)
 
         # v0.40.0: в шапке три кнопки базы вместо двух — отступы справа
         # от вкладок теснее, иначе длинные подписи обрезались бы.
@@ -305,39 +317,10 @@ class MainWindow(QMainWindow):
         self.base_button.clicked.connect(self.toggle_base)
         layout.addWidget(self.base_button)
 
-        layout.addSpacing(6)
-        # v0.20.0: выгрузка и загрузка **обеих** баз (МИР и КОРЕЛИЧИ)
-        # одним файлом Excel. Кнопки видит только администратор — у
-        # остальных пользователей их нет в шапке.
-        self.export_button = QPushButton("Выгрузить базы")
-        self.export_button.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.export_button.setToolTip(
-            "Сохранить обе базы (МИР и КОРЕЛИЧИ) в файл Excel"
-        )
-        # v0.40.0: все три кнопки работают по паролю «Конфигурации».
-        self.export_button.clicked.connect(self._on_export_clicked)
-        layout.addWidget(self.export_button)
-
-        self.import_button = QPushButton("Загрузить базы")
-        self.import_button.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.import_button.setToolTip(
-            "Заменить данные баз (МИР и КОРЕЛИЧИ) данными из файла Excel"
-        )
-        self.import_button.clicked.connect(self._on_import_clicked)
-        layout.addWidget(self.import_button)
-
-        # v0.40.0: «Очистить базу» — удалить операции и суммы текущей
-        # базы; поставщики и покупатели (справочники) остаются.
-        self.clear_button = QPushButton("Очистить базу")
-        self.clear_button.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.clear_button.setToolTip(
-            "Удалить операции и суммы базы «"
-            + BASE_TITLES[self.store.base_key]
-            + "»: поставщики и покупатели остаются"
-        )
-        self.clear_button.clicked.connect(self._on_clear_base_clicked)
-        layout.addWidget(self.clear_button)
-
+        layout.addStretch(1)
+        # v0.75.0: кнопки действий уходят в правый угол шапки, а не
+        # стоят сразу за вкладками: так они не спорят с длинными
+        # подписями вкладок за место.
         # v0.54.0: «Загрузить выписку» — прочитать PDF-выписку банка и
         # показать её таблицей (первый этап; разнесение — второй).
         self.statement_button = QPushButton("Загрузить выписку")
@@ -348,9 +331,32 @@ class MainWindow(QMainWindow):
         self.statement_button.clicked.connect(self._on_load_statement_clicked)
         layout.addWidget(self.statement_button)
 
-        self._apply_base_style()
+        layout.addSpacing(6)
+        # v0.75.0: «База» — меню со всеми действиями над базой. Раньше
+        # это были три отдельные кнопки («Выгрузить базы», «Загрузить
+        # базы», «Очистить базу»); в меню они занимают одну строку.
+        self.base_menu_button = QPushButton("База")
+        self.base_menu_button.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.base_menu_button.setToolTip("Действия с базой данных")
+        base_menu = QMenu(self.base_menu_button)
+        base_menu.addAction("Выгрузить базу", self._on_export_clicked)
+        base_menu.addAction("Загрузить базу", self._on_import_clicked)
+        base_menu.addSeparator()
+        base_menu.addAction("Очистить базу", self._on_clear_base_clicked)
+        base_menu.addAction("Очистить таблицы…", self._on_clear_tables_clicked)
+        self.base_menu_button.setMenu(base_menu)
+        layout.addWidget(self.base_menu_button)
 
-        layout.addStretch(1)
+        # v0.75.0: «+» — сюда переехала вкладка «Конфигурация».
+        self.plus_button = QPushButton("+")
+        self.plus_button.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.plus_button.setToolTip("Конфигурация")
+        plus_menu = QMenu(self.plus_button)
+        plus_menu.addAction("Конфигурация", lambda: self.show_page(IDX_DATA))
+        self.plus_button.setMenu(plus_menu)
+        layout.addWidget(self.plus_button)
+
+        self._apply_base_style()
         # Кнопки «Карточка поставщика»/«Карточка покупателя» с v0.11.0
         # живут в панелях таблиц — там, где была «Очистить суммы»
         # (кнопка убрана в v0.23.1).
@@ -386,15 +392,14 @@ class MainWindow(QMainWindow):
             f"padding:6px 6px;font-weight:700;font-size:{nav_font}px}}"
             f"QPushButton:hover{{background:{styles.HEADER_TOOL_HOVER}}}"
         )
-        for btn in (self.export_button, self.import_button, self.clear_button):
+        # v0.75.0: в правом углу шапки тот же стиль получают
+        # «Загрузить выписку», «База» и «+».
+        for btn in (
+            self.statement_button,
+            self.base_menu_button,
+            self.plus_button,
+        ):
             btn.setStyleSheet(base_tools_style)
-        # v0.40.0: подсказка «Очистить базу» называет текущую базу —
-        # переключатель базы меняет её вместе с шапкой.
-        self.clear_button.setToolTip(
-            "Удалить операции и суммы базы «"
-            + BASE_TITLES[self.store.base_key]
-            + "»: поставщики и покупатели остаются"
-        )
         self.base_button.setStyleSheet(
             f"QPushButton{{background:{styles.HEADER_CHECKED_BG};"
             f"color:{header_bg};"
@@ -500,6 +505,161 @@ class MainWindow(QMainWindow):
                 f"{len(result.already)}.",
             )
 
+    def _on_clear_tables_clicked(self) -> None:
+        """«Очистить таблицы»: убрать цифры за выбранный период (v0.75.0).
+
+        От «Очистить базу» отличается тем, что стирает не всё, а только
+        записи в выбранных границах: операции недельных таблиц,
+        поступления кассы и суммы прочих видов оплат. Справочники,
+        рабочий календарь, пользователи и долги переноса на 1 января не
+        трогаются — это не dated данные.
+        """
+
+        if not self._ask_password("Очистка таблиц", "Пароль администратора:"):
+            return
+        data = self.store.data
+        if not (data.operations or data.cash_receipts or data.other_payments):
+            QMessageBox.information(
+                self,
+                "Очистка таблиц",
+                f"В базе «{BASE_TITLES[self.store.base_key]}» нет ни одной "
+                "суммы — очищать нечего.",
+            )
+            return
+
+        dialog = PeriodDialog(
+            self,
+            title="Очистить таблицы",
+            hint=(
+                f"Суммы базы «{BASE_TITLES[self.store.base_key]}» за "
+                "выбранные даты будут удалены. Обе даты включительно. "
+                "Поставщики, покупатели, календарь и права остаются."
+            ),
+        )
+        if not dialog.exec():
+            return
+        day_from, day_to = dialog.period()
+        counts = self._count_in_period(day_from, day_to)
+        total = sum(counts.values())
+        if total == 0:
+            QMessageBox.information(
+                self,
+                "Очистка таблиц",
+                f"За период с {day_from:%d.%m.%Y} по {day_to:%d.%m.%Y} "
+                "сумм нет — очищать нечего.",
+            )
+            return
+
+        if not self._confirm_yes_no(
+            "Очистка таблиц",
+            f"Удалить суммы с {day_from:%d.%m.%Y} по {day_to:%d.%m.%Y}?",
+            "Будет удалено: операций — "
+            f"{counts['operations']}, поступлений кассы — "
+            f"{counts['cash']}, сумм прочих видов оплат — "
+            f"{counts['other']}. Отменить удаление будет нельзя.",
+        ):
+            return
+        self._clear_period(day_from, day_to)
+        QMessageBox.information(
+            self,
+            "Очистка таблиц",
+            f"Удалено за период с {day_from:%d.%m.%Y} по "
+            f"{day_to:%d.%m.%Y}: операций — {counts['operations']}, "
+            f"поступлений кассы — {counts['cash']}, сумм прочих видов "
+            f"оплат — {counts['other']}.",
+        )
+
+    def _confirm_yes_no(self, title: str, question: str, details: str) -> bool:
+        """Подтверждение «Да / Нет» (v0.75.0) для необратимых действий."""
+
+        box = QMessageBox(self)
+        box.setWindowTitle(title)
+        box.setIcon(QMessageBox.Icon.Warning)
+        box.setText(question)
+        box.setInformativeText(details)
+        yes = box.addButton("Да", QMessageBox.ButtonRole.YesRole)
+        box.addButton("Нет", QMessageBox.ButtonRole.NoRole)
+        box.setDefaultButton(yes)
+        box.exec()
+        return box.clickedButton() is yes
+
+    def _count_in_period(self, day_from, day_to) -> dict[str, int]:
+        """Сколько записей попало в период (для подтверждения)."""
+
+        data = self.store.data
+        return {
+            "operations": sum(
+                1 for item in data.operations if self._in_period(item.date, day_from, day_to)
+            ),
+            "cash": sum(
+                1 for item in data.cash_receipts
+                if self._in_period(item.date, day_from, day_to)
+            ),
+            "other": sum(
+                1 for item in data.other_payments
+                if self._in_period(item.date, day_from, day_to)
+            ),
+        }
+
+    @staticmethod
+    def _in_period(iso_day: str, day_from, day_to) -> bool:
+        """Дата записи (ISO-строка) внутри периода включительно."""
+
+        if not iso_day or len(iso_day) < 10:
+            return False
+        return day_from.isoformat() <= iso_day[:10] <= day_to.isoformat()
+
+    def _clear_period(self, day_from, day_to) -> None:
+        """Удалить суммы за период (v0.75.0)."""
+
+        data = self.store.data
+        data.operations = [
+            item for item in data.operations
+            if not self._in_period(item.date, day_from, day_to)
+        ]
+        data.cash_receipts = [
+            item for item in data.cash_receipts
+            if not self._in_period(item.date, day_from, day_to)
+        ]
+        data.other_payments = [
+            item for item in data.other_payments
+            if not self._in_period(item.date, day_from, day_to)
+        ]
+        self.store.save()
+        self.refresh_all_views()
+
+    # -------------------------------------------------- ширины колонок v0.75.0
+    def _resizable_views(self) -> list:
+        """Таблицы, ширины которых настраивает пользователь."""
+
+        views = [self.suppliers_view, self.customers_view]
+        receipts = getattr(self, "receipts_view", None)
+        if receipts is not None:
+            # Блоки «Поступление» и «Оплата».
+            for name in ("incoming", "outgoing"):
+                block = getattr(receipts, name, None)
+                if block is not None and hasattr(block, "save_widths"):
+                    views.append(block)
+        return [view for view in views if hasattr(view, "save_widths")]
+
+    def _save_column_widths(self) -> str:
+        """«Сохранить поля»: записать ширины колонок в файл настроек."""
+
+        saved = [view for view in self._resizable_views() if view.save_widths()]
+        if not saved:
+            return "Сохранять нечего: таблицы ещё не открывались."
+        return (
+            f"Ширины колонок сохранены ({len(saved)} таблиц). Путь: "
+            f"{column_widths.path()}"
+        )
+
+    def _reset_column_widths(self) -> str:
+        """«Сбросить поля»: вернуть расчётные ширины колонок."""
+
+        for view in self._resizable_views():
+            view.reset_widths()
+        return "Ширины колонок сброшены: как в первый раз."
+
     def _on_clear_base_clicked(self) -> None:
         """«Очистить базу»: удалить операции и суммы (v0.40.0).
 
@@ -527,37 +687,21 @@ class MainWindow(QMainWindow):
             )
             return
 
-        box = QMessageBox(self)
-        box.setWindowTitle("Очистка базы")
-        box.setIcon(QMessageBox.Icon.Warning)
-        box.setText(
+        # v0.75.0: подтверждение «Да / Нет», как у остальных пунктов
+        # меню «База». Прежний вариант с тремя кнопками ушёл: выгрузка
+        # теперь отдельным пунктом меню, а не частью этого вопроса.
+        if not self._confirm_yes_no(
+            "Очистка базы",
             f"Удалить операции и суммы базы "
-            f"«{BASE_TITLES[self.store.base_key]}»?"
-        )
-        box.setInformativeText(
+            f"«{BASE_TITLES[self.store.base_key]}»?",
             f"Будет удалено: операций — {operations}, "
             f"поступлений кассы — {cash}, "
             f"прочих видов оплат — {others}, "
             f"долгов переноса — {debts}.\n\n"
             "Поставщики, покупатели, рабочий календарь, пользователи "
-            "и права остаются. Отменить очистку будет нельзя."
-        )
-        export_btn = box.addButton(
-            "Выгрузить и очистить", QMessageBox.ButtonRole.AcceptRole
-        )
-        clear_btn = box.addButton("Очистить", QMessageBox.ButtonRole.DestructiveRole)
-        box.addButton("Отмена", QMessageBox.ButtonRole.RejectRole)
-        box.setDefaultButton(export_btn)
-        box.exec()
-
-        clicked = box.clickedButton()
-        if clicked is export_btn:
-            self.export_bases_to_excel()
-            # Выгрузку отменили или она не удалась — очистку не делаем:
-            # файл — единственный шанс вернуть данные.
-            if not self._last_export_path:
-                return
-        elif clicked is not clear_btn:  # «Отмена» или закрытие окна
+            "и права остаются. Отменить очистку будет нельзя — при "
+            "нужной копии сначала выгрузите базу тем же меню «База».",
+        ):
             return
         self._clear_current_base()
 
@@ -988,15 +1132,16 @@ class MainWindow(QMainWindow):
         # по-прежнему открывается по паролю, поэтому права она не
         # расширяет: что можно править внутри, решают права роли.
         for index, btn in enumerate(self.nav_buttons):
-            btn.setVisible(index in self.access.pages or index == IDX_DATA)
+            # v0.75.0: «Конфигурация» больше не вкладка — кнопка в
+            # шапке для неё не показывается никогда.
+            btn.setVisible(
+                index != IDX_DATA and index in self.access.pages
+            )
         # Переключатель базы — только тем, кому доступны обе базы.
         self.base_button.setVisible(self.access.can_switch_base)
-        # Выгрузка и загрузка баз — только администратору (v0.20.0).
-        self.export_button.setVisible(self.access.can_admin_data)
-        self.import_button.setVisible(self.access.can_admin_data)
-        # v0.40.0: «Очистить базу» — только администратору, как выгрузка
-        # и загрузка.
-        self.clear_button.setVisible(self.access.can_admin_data)
+        # Меню «База» — только администратору: в нём выгрузка и
+        # загрузка баз (v0.20.0) и обе очистки (v0.40.0, v0.75.0).
+        self.base_menu_button.setVisible(self.access.can_admin_data)
         # Пользователь «посажен» на свою базу: МИР или КОРЕЛИЧИ.
         fixed = self.access.fixed_base
         if fixed and self.store.base_key != fixed:

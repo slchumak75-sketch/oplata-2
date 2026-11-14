@@ -148,12 +148,18 @@ class DataView(QWidget):
         on_calendar_saved: Callable[[], None] | None = None,
         parent: QWidget | None = None,
         on_users_saved: Callable[[User], None] | None = None,
+        on_save_fields: Callable[[], str] | None = None,
+        on_reset_fields: Callable[[], str] | None = None,
     ) -> None:
         super().__init__(parent)
         self.store = store
         self.on_calendar_saved = on_calendar_saved
         # v0.20.0: выбор текущего пользователя применяется сразу.
         self.on_users_saved = on_users_saved
+        # v0.75.0: ширины колонок сохраняет MainWindow — в нём живут
+        # сами таблицы.
+        self.on_save_fields = on_save_fields
+        self.on_reset_fields = on_reset_fields
         self.year = date.today().year
         self._day_buttons: dict[date, QPushButton] = {}
         # Черновик отметок: клики по календарю меняют его, а не файл
@@ -163,7 +169,26 @@ class DataView(QWidget):
         # для просмотра (флаг выставляет MainWindow.apply_access).
         self.read_only = False
 
-        root = QVBoxLayout(self)
+        # v0.75.0: страница «Конфигурация» прокручивается целиком.
+        # Плашек на ней пять, и раскрытые «Настройка календаря» +
+        # «Свойства контрагента» переставали помещаться в экран: место
+        # кончалось, и нижние плашки обрезались без всякой прокрутки.
+        # Теперь всё содержимое лежит в прокручиваемой области —
+        # как на странице «Поступление и оплаты» (v0.48.0).
+        page = QVBoxLayout(self)
+        page.setContentsMargins(0, 0, 0, 0)
+        page.setSpacing(0)
+        self.page_scroll = QScrollArea()
+        self.page_scroll.setWidgetResizable(True)
+        self.page_scroll.setStyleSheet(styles.WIDE_SCROLLBAR_ON_AREA)
+        # Горизонтальной прокрутки нет — общее правило таблиц и страниц.
+        self.page_scroll.setHorizontalScrollBarPolicy(
+            Qt.ScrollBarPolicy.ScrollBarAlwaysOff
+        )
+        page.addWidget(self.page_scroll)
+        content = QWidget()
+        self.page_scroll.setWidget(content)
+        root = QVBoxLayout(content)
         root.setContentsMargins(10, 10, 10, 10)
         root.setSpacing(12)
 
@@ -304,6 +329,43 @@ class DataView(QWidget):
         admin_hint.setWordWrap(True)
         admin_layout.addWidget(admin_hint)
         root.addWidget(self.admin_panel)
+
+        # --- раскрывающаяся плашка «Поля таблиц» (v0.75.0) ---
+        # Ширины колонок настраиваются мышью прямо в таблицах (границу
+        # столбца можно тянуть за край ячейки), а сохраняются здесь.
+        self.fields_panel = CollapsiblePanel("Поля таблиц", expanded=False)
+        fields_layout = self.fields_panel.content_layout
+        fields_hint = QLabel(
+            "Потяните границу столбца мышью прямо в таблице — в «Поставщиках», "
+            "«Покупателях», «Поступлении» и «Оплате». Затем нажмите "
+            "«Сохранить поля»: ширины запомнятся на этом компьютере."
+        )
+        fields_hint.setObjectName("Muted")
+        fields_hint.setWordWrap(True)
+        fields_layout.addWidget(fields_hint)
+
+        fields_buttons = QHBoxLayout()
+        fields_buttons.setSpacing(8)
+        self.save_fields_button = blue_button("Сохранить поля")
+        self.save_fields_button.setToolTip(
+            "Запомнить текущие ширины колонок на этом компьютере"
+        )
+        self.save_fields_button.clicked.connect(self._save_fields)
+        fields_buttons.addWidget(self.save_fields_button)
+        self.reset_fields_button = QPushButton("Сбросить поля")
+        self.reset_fields_button.setToolTip(
+            "Убрать сохранённые ширины и вернуть расчётные"
+        )
+        self.reset_fields_button.clicked.connect(self._reset_fields)
+        fields_buttons.addWidget(self.reset_fields_button)
+        fields_buttons.addStretch(1)
+        fields_layout.addLayout(fields_buttons)
+
+        self.fields_status_label = QLabel("")
+        self.fields_status_label.setObjectName("Muted")
+        self.fields_status_label.setWordWrap(True)
+        fields_layout.addWidget(self.fields_status_label)
+        root.addWidget(self.fields_panel)
         # v0.24.0: пустой отступ внизу больше не забирает свободное
         # место — иначе раскрытая плашка не дорастала до низа экрана
         # и её таблицы оставались низкими (просьба пользователя:
@@ -1183,6 +1245,23 @@ class DataView(QWidget):
             if read_only
             else QAbstractItemView.EditTrigger.AllEditTriggers
         )
+
+    # ------------------------------------------------------------- поля
+    def _save_fields(self) -> None:
+        """«Сохранить поля»: запомнить ширины колонок (v0.75.0)."""
+
+        if self.on_save_fields is None:
+            self.fields_status_label.setText("Сохранение недоступно.")
+            return
+        self.fields_status_label.setText(self.on_save_fields())
+
+    def _reset_fields(self) -> None:
+        """«Сбросить поля»: вернуть расчётные ширины (v0.75.0)."""
+
+        if self.on_reset_fields is None:
+            self.fields_status_label.setText("Сброс недоступен.")
+            return
+        self.fields_status_label.setText(self.on_reset_fields())
 
     # ------------------------------------------------------------- календарь
     def refresh(self) -> None:
