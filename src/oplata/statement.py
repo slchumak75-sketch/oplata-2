@@ -49,7 +49,20 @@ RE_FACT_DATE = re.compile(
 # нему часто ищут ключевую фразу — номер счёта встречается в выписке
 # рядом с УНП и надёжнее, чем наименование.
 RE_ROW_ACCOUNT = re.compile(r"^Счет:\s*([A-Z0-9 ]+)$")
-RE_DOC = re.compile(rf"^({DATE})\s+(\S+)\s+(\d+)\s+Счет:\s*([A-Z0-9 ]+)")
+# Счёт — это IBAN: две буквы, две цифры, дальше группы по четыре знака
+# («BY79 ALFA 3012 2399 3600 5027 0000»).
+RE_IBAN = re.compile(r"[A-Z]{2}\d{2}(?:\s?[A-Z0-9]{4})*")
+# v0.72.0: на стыке страниц pypdf склеивает строку операции со строкой
+# сумм, и обе суммы оказываются в хвосте заголовка:
+#   «14.10.2026 789 1 Счет: BY79 ALFA … 0000 11 765,34 0,00».
+RE_TRAIL_AMOUNTS = re.compile(rf"\s+({AMOUNT})\s+({AMOUNT})\s*$")
+# Колонтитул страницы: pypdf вставляет его и внутрь текста выписки.
+RE_HEADER_URL = re.compile(r"^https?://")
+RE_DOC = re.compile(
+    rf"^({DATE})\s+(\S+)\s+(\d+)\s+Счет:\s*"
+    rf"(?P<account>[A-Z]{{2}}\d{{2}}(?:\s?[A-Z0-9]{{4}})*)"
+    rf"(?P<rest>.*)$"
+)
 RE_AMOUNTS = re.compile(rf"^({AMOUNT})\s+({AMOUNT})$")
 # v0.64.0: у платежей в бюджет перед суммами стоит **код платежа**
 # (в шапке файла есть колонка «Код пл. в бюдж»): «00101 300,00 0,00»
@@ -543,13 +556,26 @@ def parse_statement_text(text: str) -> Statement:
             purpose.append(line.removeprefix("Назначение платежа:").strip())
             continue
 
+        if RE_HEADER_URL.match(line):
+            # Колонтитул страницы. Пропускаем явно: при разрыве
+            # страницы он может встать между суммами и наименованием,
+            # и тогда ссылка ушла бы в название контрагента.
+            continue
+
         if match := RE_DOC.match(line):
             # Начало новой операции. Предыдущую закрываем датой
             # документа: «Фактической даты» в предварительной выписке
             # может не быть.
             finish(doc_date)
             doc_date = match.group(1)
-            account = " ".join(match.group(4).split())
+            # v0.72.0: счёт берём по формату IBAN, а не «все буквы и
+            # цифры подряд» — иначе счёт съедал хвост суммы
+            # («… 0000 11 765» вместо «… 0000»), и сумма пропадала.
+            account = " ".join(match.group("account").split())
+            # Если pypdf склеил суммы с заголовком — забираем их отсюда.
+            if tail := RE_TRAIL_AMOUNTS.search(match.group("rest")):
+                outgoing = parse_amount(tail.group(1))
+                incoming = parse_amount(tail.group(2))
             started = True
             continue
 
