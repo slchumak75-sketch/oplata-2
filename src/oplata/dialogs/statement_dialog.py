@@ -99,9 +99,15 @@ COLUMN_WIDTHS = (
     (COL_UNP, 110),
     (COL_OUT, 130),
     (COL_IN, 130),
-    (COL_TARGET, 220),
+    (COL_TARGET, 300),
     (COL_BASE, 160),
 )
+
+# v0.68.0: ширина раскрывающегося списка «Куда». Пункт подписан как
+# «Наименование · УНП · Примечание», и в ширину колонки такая строка не
+# влезает — список обрезал её, а по обрезанному началу карточки не
+# различить. Сам список поэтому шире колонки.
+TARGET_POPUP_WIDTH = 460
 
 # Окно не меньше этих размеров, даже если экран узкий (v0.63.0).
 MIN_WINDOW_WIDTH = 1180
@@ -632,6 +638,12 @@ class StatementDialog(QDialog):
         # он компактный — без «воздуха» по высоте.
         height = self.table.verticalHeader().defaultSectionSize()
         combo.setFixedHeight(height)
+        # v0.68.0: раскрывающийся список шире самой колонки — иначе
+        # подпись «Наименование · УНП · Примечание» обрезается.
+        combo.setSizeAdjustPolicy(
+            QComboBox.SizeAdjustPolicy.AdjustToContents
+        )
+        combo.view().setMinimumWidth(TARGET_POPUP_WIDTH)
         combo.setStyleSheet(
             "QComboBox{padding:0px 4px;margin:0px;"
             f"font-size:{styles.fs(11)}px;}}"
@@ -1220,6 +1232,36 @@ class StatementDialog(QDialog):
                 )
             else:
                 parts.append("Разносить нечего.")
+        if not self._needs_report(result):
+            # v0.68.0: всё разнеслось — окно не нужно. Раньше отчёт
+            # вставал после каждого разноса, и его приходилось
+            # закрывать, чтобы вернуться к работе.
+            return
         QMessageBox.information(
             self, "Разнесение выписки", "\n".join(parts)
+        )
+
+    def _needs_report(self, result) -> bool:
+        """Надо ли показывать отчёт после разноса (v0.68.0).
+
+        Показываем, только когда есть на что посмотреть: что-то не
+        разнеслось, ждёт выбора получателя, прежняя запись снята без
+        новой, итог разошёлся с файлом или ручную правку пришлось
+        перезаписать. Если всё сошлось — молчим: человек и так видит
+        результат в таблице.
+        """
+
+        if result is None:
+            return False
+        return bool(
+            result.unresolved
+            or result.needs_choice
+            or result.rolled_unwritten
+            or result.warnings
+            or result.overwritten
+            or result.removed
+            or not self.reconciliation.ok
+            # v0.68.0: ничего не записано — молчать нельзя, иначе
+            # непонятно, сработал разнос или нет.
+            or not result.applied
         )
