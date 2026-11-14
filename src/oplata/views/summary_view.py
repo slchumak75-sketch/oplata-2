@@ -36,7 +36,12 @@ from PySide6.QtWidgets import (
 from .. import calc, styles
 from ..dates import fmt_money_plain
 from ..storage import DataStore
-from ..widgets import CollapsiblePanel, date_edit_value, make_date_edit
+from ..widgets import (
+    CollapsiblePanel,
+    arrow_button,
+    date_edit_value,
+    make_date_edit,
+)
 
 # Сколько недель вперёд показывать в блоке «Оплата понедельно»
 # (v0.15.0: четыре недели — следующая, ещё две и четвёртая).
@@ -76,10 +81,19 @@ class SummaryView(QWidget):
             f"font-weight:700;font-size:{styles.fs(20)}px"
         )
         top.addWidget(date_label)
+        # v0.70.0: стрелки «←»/«→» листают дату сводки на день назад и
+        # вперёд — как стрелки недель в блоках «Поступление» и «Оплата».
+        # Раньше дату можно было только открыть календарём и выбрать.
+        prev_btn = arrow_button("←", "День назад")
+        prev_btn.clicked.connect(lambda: self._shift_date(-1))
+        top.addWidget(prev_btn)
         self.date_edit = make_date_edit(date.today())
         self.date_edit.setStyleSheet(f"font-size:{styles.fs(20)}px")
         self.date_edit.dateChanged.connect(self._on_date_changed)
         top.addWidget(self.date_edit)
+        next_btn = arrow_button("→", "День вперёд")
+        next_btn.clicked.connect(lambda: self._shift_date(1))
+        top.addWidget(next_btn)
         top.addStretch(1)
         root.addLayout(top)
 
@@ -314,6 +328,11 @@ class SummaryView(QWidget):
         self.date_edit.setDate(QDate(day.year, day.month, day.day))
         self.date_edit.blockSignals(False)
         self.refresh()
+
+    def _shift_date(self, days: int) -> None:
+        """Сдвинуть дату «Сводки» на ``days`` дней (стрелки «←»/«→»)."""
+
+        self.date_edit.setDate(self.date_edit.date().addDays(days))
 
     def _on_date_changed(self) -> None:
         self.refresh()

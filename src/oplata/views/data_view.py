@@ -91,7 +91,6 @@ from ..statement_match import (
     TARGET_OTHER_INCOME,
     TARGET_OTHER_PAYMENT,
     TARGET_SUPPLIERS,
-    rule_weak_words,
 )
 
 # v0.54.0: УНП — 9 цифр (как в карточке поставщика/покупателя).
@@ -569,20 +568,16 @@ class DataView(QWidget):
         title.setObjectName("PanelTitle")
         layout.addWidget(title)
 
-        hint = QLabel(
-            "Для организаций, у которых в выписке **один УНП на несколько "
-            "назначений**. Укажите УНП, ключевую фразу из выписки, "
-            "направление и карточку, куда нести сумму. Одна фраза — одно "
-            "правило. Фраза разбирается на слова, ищется и в наименовании, и "
-            "в назначении платежа; правило срабатывает, когда найдены все его "
-            "слова. Направление отсекает путаницу там, где у одной "
-            "организации в одном файле есть и приход, и расход: у банка это "
-            "поступление по картам и комиссия за него. Что не подошло ни под "
-            "одно правило — всегда можно разнести вручную в колонке «Куда»."
-        )
-        hint.setObjectName("Muted")
-        hint.setWordWrap(True)
-        layout.addWidget(hint)
+        # v0.70.0: пояснительного текста под заголовком нет — состав
+        # строки правила понятен по подписям полей, а длинная справка
+        # только отъедала место у таблицы.
+
+        # Шрифт панели в полтора раза меньше основного: иначе строка
+        # правила (название, УНП, фраза, направление, «куда») не
+        # влезает по ширине, и УНП обрезается.
+        panel_font = self.font()
+        panel_font.setPixelSize(int(round(styles.fs(13) / 1.5)))
+        self._routing_font = panel_font
 
         self._rule_rows: list[dict] = []
         self._rules_box = QVBoxLayout()
@@ -603,13 +598,6 @@ class DataView(QWidget):
         actions.addWidget(self.routing_save_btn)
         layout.addLayout(actions)
 
-        # Карточки с задвоенным УНП обязаны иметь примечание: по нему
-        # карточки и различаются.
-        self.routing_warning_label = QLabel("")
-        self.routing_warning_label.setObjectName("Muted")
-        self.routing_warning_label.setWordWrap(True)
-        layout.addWidget(self.routing_warning_label)
-
         self._load_routing_rules()
 
     def _add_rule_row(self, rule=None) -> dict:
@@ -618,6 +606,7 @@ class DataView(QWidget):
         from PySide6.QtWidgets import QHBoxLayout as _Row
 
         widget = QWidget()
+        widget.setFont(self._routing_font)
         row_layout = _Row(widget)
         row_layout.setContentsMargins(0, 0, 0, 0)
         row_layout.setSpacing(8)
@@ -629,7 +618,8 @@ class DataView(QWidget):
         unp_edit = QLineEdit()
         unp_edit.setPlaceholderText("УНП")
         unp_edit.setMaxLength(UNP_LENGTH)
-        unp_edit.setFixedWidth(80)
+        # v0.70.0: 80 px было впритык (9 цифр занимают 75), даём запас.
+        unp_edit.setFixedWidth(92)
         unp_edit.setValidator(
             QRegularExpressionValidator(QRegularExpression(r"\d*"))
         )
@@ -784,57 +774,12 @@ class DataView(QWidget):
         for rule in getattr(self.store.data, "routing_rules", []):
             self._add_rule_row(rule)
         self.routing_status_label.setText("")
-        self._refresh_routing_warning()
-
-    def _refresh_routing_warning(self) -> None:
-        """Предупредить про задвоенные УНП без примечания (v0.69.0).
-
-        Примечание — ключевое: по нему карточки с одним УНП и
-        различаются. Пустое примечание значит, что в списке «Куда»
-        человек увидит две одинаковые строки.
-        """
-
-        cards: dict[str, list[str]] = {}
-        for person in list(self.store.data.suppliers) + list(
-            self.store.data.customers
-        ):
-            if person.unp:
-                cards.setdefault(person.unp, []).append(
-                    getattr(person, "note", "") or ""
-                )
-        names: set[str] = set()
-        for payment in self.store.data.other_payments:
-            if payment.direction == OUTGOING and payment.unp:
-                if payment.name not in names:
-                    names.add(payment.name)
-                    cards.setdefault(payment.unp, []).append(
-                        getattr(payment, "note", "") or ""
-                    )
-        parts: list[str] = []
-        silent = []
-        for unp, notes in cards.items():
-            if len(notes) > 1 and any(not note for note in notes):
-                silent.append(unp)
-        if silent:
-            parts.append(
-                "У этих УНП несколько карточек, и у части из них пустое "
-                "«Примечание»: " + ", ".join(sorted(silent)) + ". Заполните "
-                "примечание — по нему карточки различаются в списке «Куда»."
-            )
-        parts.extend(getattr(self, "_rule_warnings", []))
-        if not parts:
-            self.routing_warning_label.setText("")
-            return
-        self.routing_warning_label.setText(
-            "⚠  " + " ".join(f"{text}" for text in parts)
-        )
 
     def save_routing_rules(self) -> bool:
         """Сохранить правила разноса (v0.69.0)."""
 
         rules = []
         problems: list[str] = []
-        warnings: list[str] = []
         for entry in self._rule_rows:
             unp = entry["unp"].text().strip()
             words = entry["words"].text().split()
@@ -855,11 +800,6 @@ class DataView(QWidget):
                     "куда разносить."
                 )
                 continue
-            for word in rule_weak_words(words):
-                warnings.append(
-                    f"УНП {unp}: слово «{word}» правило не уточняет — "
-                    "оно короткое или встречается почти в каждой строке."
-                )
             target, key = chosen.split("|", 1)
             rule = RoutingRule(
                 unp=unp,
@@ -880,9 +820,7 @@ class DataView(QWidget):
             return False
         self.store.data.routing_rules = rules
         self.store.save()
-        self._rule_warnings = warnings
         self.routing_status_label.setText(f"Сохранено правил: {len(rules)}.")
-        self._refresh_routing_warning()
         return True
 
     def _load_bank(self) -> None:
