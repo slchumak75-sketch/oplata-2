@@ -381,9 +381,21 @@ def rule_text(row: StatementRow) -> str:
     стоит в колонке «УНП» таблицы выписки. Фраза из выписки бывает
     набрана рядом с УНП, и искать её только в наименовании и назначении
     недостаточно.
+
+    v0.71.0: добавлен и **счёт контрагента** — «Счет: BY85 AKBB 3602
+    9440 1000 0000 0000». Он печатается в той же шапке операции, что и
+    УНП, и по нему правило находится надёжнее, чем по наименованию.
+    Подпись «Счет:» в тексте оставляем: если во фразу правила она
+    входит («Счет: BY85 …»), слово должно найтись.
     """
 
-    return f"{row.name or ''} {row.purpose or ''} {row.unp or ''}"
+    account = getattr(row, "account", "") or ""
+    if account:
+        account = f"Счет: {account}"
+    return (
+        f"{row.name or ''} {row.purpose or ''} "
+        f"{row.unp or ''} {account}"
+    )
 
 
 def find_rule(row: StatementRow, data: AppData, direction: str = ""):

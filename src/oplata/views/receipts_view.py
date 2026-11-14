@@ -1987,10 +1987,11 @@ class ReceiptsView(QWidget):
         # v0.22.0: «Сводка» вдвое у́же — раньше обе половины делили окно
         # поровну (stretch 1 : 1), теперь левым блокам уходит три доли
         # из четырёх, а сводке — одна (было 50% ширины, стало 25%).
-        # v0.70.0: доля левых блоков 3 -> 4: плашка «Сводка» занимала
-        # четверть ширины, теперь — пятую часть (на 20% у́же), а
-        # освободившееся место уходит таблицам «Поступление» и «Оплата».
-        root.addWidget(left, stretch=4 if summary_widget is not None else 1)
+        # v0.71.0: доли 79 : 21 — плашка «Сводка» на 5% шире, чем в
+        # v0.70.0 (было 20% ширины, стало 21%). Место берётся у левых
+        # блоков, а в них — у растягиваемой колонки «Наименование»
+        # видов оплат.
+        root.addWidget(left, stretch=79 if summary_widget is not None else 1)
 
         # --- справа на всю высоту — «Сводка» ---
         # v0.27.6: даты платёжек независимы (просьба пользователя) —
@@ -2002,7 +2003,8 @@ class ReceiptsView(QWidget):
             summary_widget.setSizePolicy(
                 QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Expanding
             )
-            root.addWidget(summary_widget, stretch=1)
+            # v0.71.0: 21% против 79% у блоков (было 20% — 1 из 5).
+            root.addWidget(summary_widget, stretch=21)
 
         self.refresh()
 

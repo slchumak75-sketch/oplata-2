@@ -964,11 +964,22 @@ def rule_words_found(words: list[str], text: str) -> bool:
     оно уводило бы **все** строки этого УНП.
     """
 
-    wanted = [word.strip().upper() for word in words if word.strip()]
+    wanted = [_clean(word) for word in words if _clean(word)]
     if not wanted:
         return False
     haystack = (text or "").upper()
     return all(word in haystack for word in wanted)
+
+
+def _clean(word: str) -> str:
+    """Слово правила без знаков препинания, в верхнем регистре.
+
+    v0.71.0: во фразе из выписки встречается «Счет: BY85 …» — с
+    двоеточием. В самом тексте разделители могут быть другими, поэтому
+    знаки по краям слова отбрасываем: ищем «СЧЕТ», а не «СЧЕТ:».
+    """
+
+    return word.strip().strip(".,;:()\"'").upper()
 
 
 def delete_other_payment(
