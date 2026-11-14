@@ -35,3 +35,6 @@ preview-*.png
 icons/v[1-9]*
 icons/options-sheet.png
 icons/oplata-source.png
+
+# Песочница агента: восстановление окружения и заглушки Qt (не в репозитории)
+.diag/

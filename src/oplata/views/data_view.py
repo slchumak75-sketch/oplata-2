@@ -78,9 +78,20 @@ from ..access import (
 )
 from ..dates import MONTHS_RU, WEEKDAYS_RU_TITLE, fmt_money_plain, parse_money
 from ..models import (
+    INCOMING,
+    OUTGOING,
     AppData,
     Bank,
+    RoutingRule,
     YearStart,
+)
+from ..statement_match import (
+    OTHER_INCOME_ROW_TITLE,
+    TARGET_CUSTOMERS,
+    TARGET_OTHER_INCOME,
+    TARGET_OTHER_PAYMENT,
+    TARGET_SUPPLIERS,
+    rule_weak_words,
 )
 
 # v0.54.0: УНП — 9 цифр (как в карточке поставщика/покупателя).
@@ -227,6 +238,13 @@ class DataView(QWidget):
         )
         self._build_bank_panel(self.bank_panel.content_layout)
         root.addWidget(self.bank_panel)
+
+        # --- раскрывающаяся плашка «Свойства контрагента» (v0.69.0) ---
+        self.routing_panel = CollapsiblePanel(
+            "Свойства контрагента", expanded=False
+        )
+        self._build_routing_panel(self.routing_panel.content_layout)
+        root.addWidget(self.routing_panel)
 
         # --- раскрывающаяся плашка «Пользователи и права» (v0.18.0) ---
         self.users_panel = CollapsiblePanel("Пользователи и права", expanded=False)
@@ -535,6 +553,337 @@ class DataView(QWidget):
         layout.addLayout(actions)
 
         self._load_bank()
+
+    # ------------------------------------------- правила разноса (v0.69.0)
+    def _build_routing_panel(self, layout) -> None:
+        """Путь разноса для организаций с задвоенным УНП.
+
+        Один и тот же ГУ МФ принимает и подоходный налог, и страховые
+        взносы: УНП у них один, и программе нечем их различить, кроме
+        назначения платежа. Человек один раз объявляет правило: «если
+        в строке выписки есть эти слова — сумма идёт в такую-то
+        карточку». Угадывать программа не станет.
+        """
+
+        title = QLabel("🧭  Путь разноса сумм")
+        title.setObjectName("PanelTitle")
+        layout.addWidget(title)
+
+        hint = QLabel(
+            "Для организаций, у которых в выписке **один УНП на несколько "
+            "назначений**. Укажите УНП, ключевую фразу из выписки, "
+            "направление и карточку, куда нести сумму. Одна фраза — одно "
+            "правило. Фраза разбирается на слова, ищется и в наименовании, и "
+            "в назначении платежа; правило срабатывает, когда найдены все его "
+            "слова. Направление отсекает путаницу там, где у одной "
+            "организации в одном файле есть и приход, и расход: у банка это "
+            "поступление по картам и комиссия за него. Что не подошло ни под "
+            "одно правило — всегда можно разнести вручную в колонке «Куда»."
+        )
+        hint.setObjectName("Muted")
+        hint.setWordWrap(True)
+        layout.addWidget(hint)
+
+        self._rule_rows: list[dict] = []
+        self._rules_box = QVBoxLayout()
+        self._rules_box.setSpacing(6)
+        layout.addLayout(self._rules_box)
+
+        actions = QHBoxLayout()
+        add_btn = QPushButton("＋ Добавить правило")
+        add_btn.clicked.connect(lambda: self._add_rule_row())
+        actions.addWidget(add_btn)
+        actions.addStretch(1)
+        self.routing_status_label = QLabel("")
+        self.routing_status_label.setObjectName("Muted")
+        self._rule_warnings: list[str] = []
+        actions.addWidget(self.routing_status_label, stretch=1)
+        self.routing_save_btn = blue_button("Сохранить")
+        self.routing_save_btn.clicked.connect(self.save_routing_rules)
+        actions.addWidget(self.routing_save_btn)
+        layout.addLayout(actions)
+
+        # Карточки с задвоенным УНП обязаны иметь примечание: по нему
+        # карточки и различаются.
+        self.routing_warning_label = QLabel("")
+        self.routing_warning_label.setObjectName("Muted")
+        self.routing_warning_label.setWordWrap(True)
+        layout.addWidget(self.routing_warning_label)
+
+        self._load_routing_rules()
+
+    def _add_rule_row(self, rule=None) -> dict:
+        """Строка правила: организация, УНП, фраза, куда, «убрать»."""
+
+        from PySide6.QtWidgets import QHBoxLayout as _Row
+
+        widget = QWidget()
+        row_layout = _Row(widget)
+        row_layout.setContentsMargins(0, 0, 0, 0)
+        row_layout.setSpacing(8)
+
+        name_edit = QLineEdit()
+        name_edit.setPlaceholderText("Название организации")
+        name_edit.setFixedWidth(220)
+
+        unp_edit = QLineEdit()
+        unp_edit.setPlaceholderText("УНП")
+        unp_edit.setMaxLength(UNP_LENGTH)
+        unp_edit.setFixedWidth(80)
+        unp_edit.setValidator(
+            QRegularExpressionValidator(QRegularExpression(r"\d*"))
+        )
+
+        words_edit = QLineEdit()
+        words_edit.setPlaceholderText("Ключевая фраза из выписки")
+
+        # v0.69.0: «Оплата» или «Поступление». У ОАО «АСБ
+        # БЕЛАРУСБАНК» в одном файле бывает и то, и другое: приход по
+        # картам и комиссия за него. Без этой колонки правило про
+        # комиссию утянуло бы в расход весь приход.
+        direction_combo = QComboBox()
+        direction_combo.setFixedWidth(120)
+        direction_combo.addItem("Оплата", OUTGOING)
+        direction_combo.addItem("Поступление", INCOMING)
+
+        combo = QComboBox()
+        combo.setMinimumWidth(260)
+
+        remove_btn = QPushButton("−")
+        remove_btn.setFixedWidth(30)
+        remove_btn.setToolTip("Убрать правило")
+
+        row_layout.addWidget(name_edit)
+        row_layout.addWidget(unp_edit)
+        row_layout.addWidget(words_edit, stretch=1)
+        row_layout.addWidget(direction_combo)
+        row_layout.addWidget(combo, stretch=1)
+        row_layout.addWidget(remove_btn)
+
+        entry = {
+            "widget": widget,
+            "name": name_edit,
+            "unp": unp_edit,
+            "words": words_edit,
+            "direction": direction_combo,
+            "target": combo,
+        }
+        remove_btn.clicked.connect(lambda: self._remove_rule_row(entry))
+        unp_edit.textChanged.connect(lambda: self._refill_targets(entry))
+        direction_combo.currentIndexChanged.connect(
+            lambda _index: self._refill_targets(entry)
+        )
+        self._rule_rows.append(entry)
+        self._rules_box.addWidget(widget)
+
+        if rule is not None:
+            name_edit.setText(rule.name)
+            unp_edit.setText(rule.unp)
+            words_edit.setText(rule.label())
+            index = direction_combo.findData(
+                getattr(rule, "direction", OUTGOING)
+            )
+            if index >= 0:
+                direction_combo.setCurrentIndex(index)
+        self._refill_targets(entry)
+        if rule is not None:
+            index = combo.findData(self._rule_key(rule))
+            if index >= 0:
+                combo.setCurrentIndex(index)
+        return entry
+
+    def _remove_rule_row(self, entry: dict) -> None:
+        """Убрать строку правила из панели."""
+
+        if entry not in self._rule_rows:
+            return
+        self._rule_rows.remove(entry)
+        self._rules_box.removeWidget(entry["widget"])
+        entry["widget"].setParent(None)
+        entry["widget"].deleteLater()
+
+    @staticmethod
+    def _rule_key(rule) -> str:
+        """Ключ карточки — как он лежит в данных списка «Куда»."""
+
+        if rule.target == TARGET_OTHER_PAYMENT:
+            return f"{rule.target}|{rule.payment_name}"
+        return f"{rule.target}|{rule.counterparty_id}"
+
+    def _candidate_cards(
+        self, unp: str, direction: str = OUTGOING
+    ) -> list[tuple[str, str, str]]:
+        """Карточки, куда можно нести сумму: (куда, ключ, подпись).
+
+        Список зависит от направления. Оплата идёт поставщику или в
+        вид оплаты; поступление — покупателю или в прочие поступления.
+        Пересечений нет: к приходной строке вид оплаты не привяжешь.
+        """
+
+        result: list[tuple[str, str, str]] = []
+        if direction == INCOMING:
+            for person in self.store.data.customers:
+                if unp and person.unp != unp:
+                    continue
+                note = getattr(person, "note", "") or ""
+                label = f"Покупатель: {person.name}"
+                if note:
+                    label = f"{label} · {note}"
+                result.append((TARGET_CUSTOMERS, person.id, label))
+            # Одна общая строка блока «Поступление», без карточки.
+            result.append((TARGET_OTHER_INCOME, "", OTHER_INCOME_ROW_TITLE))
+            return result
+        for person in self.store.data.suppliers:
+            if unp and person.unp != unp:
+                continue
+            note = getattr(person, "note", "") or ""
+            label = f"Поставщик: {person.name}"
+            if note:
+                label = f"{label} · {note}"
+            result.append((TARGET_SUPPLIERS, person.id, label))
+        # Вид оплаты — одна карточка, сколько бы дней в ней ни было
+        # (v0.68.0), поэтому повторы по названию отбрасываем.
+        seen: set[str] = set()
+        for payment in self.store.data.other_payments:
+            if payment.direction != OUTGOING:
+                continue
+            if unp and payment.unp != unp:
+                continue
+            if payment.name in seen:
+                continue
+            seen.add(payment.name)
+            note = getattr(payment, "note", "") or ""
+            label = f"Вид оплаты: {payment.name}"
+            if note:
+                label = f"{label} · {note}"
+            result.append((TARGET_OTHER_PAYMENT, payment.name, label))
+        return result
+
+    def _refill_targets(self, entry: dict) -> None:
+        """Пересобрать список «Куда» под УНП и направление правила."""
+
+        combo = entry["target"]
+        current = combo.currentData()
+        unp = entry["unp"].text().strip()
+        direction = entry["direction"].currentData() or OUTGOING
+        combo.blockSignals(True)
+        combo.clear()
+        for target, key, label in self._candidate_cards(unp, direction):
+            combo.addItem(label, f"{target}|{key}")
+        if current:
+            index = combo.findData(current)
+            if index >= 0:
+                combo.setCurrentIndex(index)
+        combo.blockSignals(False)
+
+    def _load_routing_rules(self) -> None:
+        """Показать сохранённые правила (v0.69.0)."""
+
+        while self._rule_rows:
+            self._remove_rule_row(self._rule_rows[0])
+        for rule in getattr(self.store.data, "routing_rules", []):
+            self._add_rule_row(rule)
+        self.routing_status_label.setText("")
+        self._refresh_routing_warning()
+
+    def _refresh_routing_warning(self) -> None:
+        """Предупредить про задвоенные УНП без примечания (v0.69.0).
+
+        Примечание — ключевое: по нему карточки с одним УНП и
+        различаются. Пустое примечание значит, что в списке «Куда»
+        человек увидит две одинаковые строки.
+        """
+
+        cards: dict[str, list[str]] = {}
+        for person in list(self.store.data.suppliers) + list(
+            self.store.data.customers
+        ):
+            if person.unp:
+                cards.setdefault(person.unp, []).append(
+                    getattr(person, "note", "") or ""
+                )
+        names: set[str] = set()
+        for payment in self.store.data.other_payments:
+            if payment.direction == OUTGOING and payment.unp:
+                if payment.name not in names:
+                    names.add(payment.name)
+                    cards.setdefault(payment.unp, []).append(
+                        getattr(payment, "note", "") or ""
+                    )
+        parts: list[str] = []
+        silent = []
+        for unp, notes in cards.items():
+            if len(notes) > 1 and any(not note for note in notes):
+                silent.append(unp)
+        if silent:
+            parts.append(
+                "У этих УНП несколько карточек, и у части из них пустое "
+                "«Примечание»: " + ", ".join(sorted(silent)) + ". Заполните "
+                "примечание — по нему карточки различаются в списке «Куда»."
+            )
+        parts.extend(getattr(self, "_rule_warnings", []))
+        if not parts:
+            self.routing_warning_label.setText("")
+            return
+        self.routing_warning_label.setText(
+            "⚠  " + " ".join(f"{text}" for text in parts)
+        )
+
+    def save_routing_rules(self) -> bool:
+        """Сохранить правила разноса (v0.69.0)."""
+
+        rules = []
+        problems: list[str] = []
+        warnings: list[str] = []
+        for entry in self._rule_rows:
+            unp = entry["unp"].text().strip()
+            words = entry["words"].text().split()
+            chosen = entry["target"].currentData() or ""
+            if not unp and not words and not chosen:
+                continue  # пустая строка: правило просто не заполняли
+            if len(unp) != UNP_LENGTH:
+                problems.append(
+                    f"УНП «{unp or 'не указан'}» — это {UNP_LENGTH} цифр."
+                )
+                continue
+            if not words:
+                problems.append(f"УНП {unp}: не указана ключевая фраза.")
+                continue
+            if "|" not in chosen:
+                problems.append(
+                    f"УНП {unp}, фраза «{' '.join(words)}»: не выбрано, "
+                    "куда разносить."
+                )
+                continue
+            for word in rule_weak_words(words):
+                warnings.append(
+                    f"УНП {unp}: слово «{word}» правило не уточняет — "
+                    "оно короткое или встречается почти в каждой строке."
+                )
+            target, key = chosen.split("|", 1)
+            rule = RoutingRule(
+                unp=unp,
+                name=entry["name"].text().strip(),
+                words=words,
+                target=target,
+                direction=entry["direction"].currentData() or OUTGOING,
+            )
+            if target == TARGET_OTHER_PAYMENT:
+                rule.payment_name = key
+            elif target != TARGET_OTHER_INCOME:
+                rule.counterparty_id = key
+            rules.append(rule)
+        if problems:
+            QMessageBox.warning(
+                self, "Проверьте правила", "\n".join(problems)
+            )
+            return False
+        self.store.data.routing_rules = rules
+        self.store.save()
+        self._rule_warnings = warnings
+        self.routing_status_label.setText(f"Сохранено правил: {len(rules)}.")
+        self._refresh_routing_warning()
+        return True
 
     def _load_bank(self) -> None:
         """Показать карточку банка из данных (v0.54.0)."""

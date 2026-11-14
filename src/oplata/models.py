@@ -430,6 +430,10 @@ class AppData:
     # По нему «Переразнос» снимает ровно свои прежние записи. Поле
     # добавлено в v0.59.0; в старых файлах его нет — пустой список.
     imported_statement_writes: list[dict] = field(default_factory=list)
+    # Правила разноса: куда отправлять суммы с задвоенным УНП
+    # (панель «Свойства контрагента» в «Конфигурации»). Поле добавлено
+    # в v0.69.0; в старых файлах его нет — пустой список.
+    routing_rules: list[RoutingRule] = field(default_factory=list)
 
     def to_dict(self) -> dict:
         return {
@@ -456,6 +460,7 @@ class AppData:
             "imported_statement_writes": [
                 dict(item) for item in self.imported_statement_writes
             ],
+            "routing_rules": [asdict(rule) for rule in self.routing_rules],
         }
 
     @classmethod
@@ -483,6 +488,26 @@ class AppData:
             ],
             imported_statement_writes=[
                 dict(x) for x in data.get("imported_statement_writes", [])
+            ],
+            routing_rules=[
+                RoutingRule(
+                    unp=str(x.get("unp", "") or "").strip(),
+                    name=str(x.get("name", "") or ""),
+                    words=[str(w) for w in x.get("words", [])],
+                    target=str(x.get("target", "") or ""),
+                    counterparty_id=str(x.get("counterparty_id", "") or ""),
+                    payment_name=str(x.get("payment_name", "") or ""),
+                    # «Направление» появилось следом за первым выпуском
+                    # панели: в файлах, где поля ещё нет, правило
+                    # считаем правилом оплаты — так оно и работало до
+                    # появления колонки.
+                    direction=(
+                        INCOMING
+                        if str(x.get("direction", "") or "") == INCOMING
+                        else OUTGOING
+                    ),
+                )
+                for x in data.get("routing_rules", [])
             ],
         )
         # Миграция v0.8.0: у покупателей прежний «Приход» теперь называется
@@ -887,6 +912,63 @@ def rename_other_payment(
             and getattr(item, "direction", OUTGOING) == direction
         ):
             item.name = cleaned
+
+
+@dataclass
+class RoutingRule:
+    """Правило разноса: куда отправлять сумму из выписки (v0.69.0).
+
+    У одной организации бывает несколько платежей с разными
+    назначениями — подоходный налог и страховые взносы у того же ГУ МФ.
+    УНП у них один, и программа **не угадывает**, какой платёж куда
+    (правило v0.61.0). Поэтому человек один раз объявляет путь: «если
+    в строке выписки есть эти слова — сумма идёт в такую-то карточку».
+
+    ``words`` — ключевые слова из выписки: фраза разбирается на слова, и
+    совпадение ищется и в наименовании, и в назначении платежа.
+    ``target`` — куда писать: поставщик, покупатель или вид оплаты;
+    ``counterparty_id`` / ``payment_name`` — какая именно карточка.
+
+    ``direction`` — к каким строкам правило относится: ``OUTGOING``
+    (оплата) или ``INCOMING`` (поступление). У ОАО «АСБ БЕЛАРУСБАНК»
+    в одном файле бывает и то, и другое: поступление по картам и
+    комиссия за него. Без направления правило про комиссию могло бы
+    утянуть в расход весь приход. Комиссия строки — всегда расход,
+    поэтому её ищут только правила ``OUTGOING``.
+    """
+
+    unp: str = ""
+    name: str = ""  # название организации — чтобы правило читалось
+    words: list[str] = field(default_factory=list)
+    target: str = ""
+    counterparty_id: str = ""
+    payment_name: str = ""
+    direction: str = OUTGOING
+
+    def label(self) -> str:
+        """Ключевые слова правила одной строкой — для отчётов."""
+
+        return " ".join(word for word in self.words if word.strip())
+
+    def direction_label(self) -> str:
+        """«Оплата» или «Поступление» — как в панели."""
+
+        return "Поступление" if self.direction == INCOMING else "Оплата"
+
+
+def rule_words_found(words: list[str], text: str) -> bool:
+    """Все ключевые слова правила встретились в тексте (v0.69.0).
+
+    Регистр не важен: в выписке «Комиссия банка» и «КОМИССИЯ БАНКА» —
+    одна и та же фраза. Пустое правило не срабатывает никогда, иначе
+    оно уводило бы **все** строки этого УНП.
+    """
+
+    wanted = [word.strip().upper() for word in words if word.strip()]
+    if not wanted:
+        return False
+    haystack = (text or "").upper()
+    return all(word in haystack for word in wanted)
 
 
 def delete_other_payment(
