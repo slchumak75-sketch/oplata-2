@@ -300,6 +300,19 @@ COLUMN_WIDTHS = {COL_NOTE: 235, COL_VAT: 68}
 # v0.70.0: 96 -> 112 px: в ячейке дня должна целиком влезать сумма
 # с разрядами («3 511 800,00», а не только «88 888,88»).
 DAY_COLUMN_WIDTH = 112
+# v0.73.0: блоки «Поступление» и «Оплата» стоят друг под другом, и их
+# колонки дней должны попадать ровно день в день. У «Оплаты» полоса
+# прокрутки закреплена (v0.23.1) и отъедает часть полотна, у
+# «Поступления» её нет (v0.14.0: полоса мешала). Полотно получалось
+# разной ширины, а колонка названия — растягиваемая и стоит ДО дней,
+# поэтому она вбирала разницу и уводила все шесть дней вправо.
+# Теперь блок без полосы резервирует её ширину пустым полем справа от
+# таблицы: полотна становятся одинаковыми, и названия в двух таблицах
+# различаются ровно на скрытую колонку НДС (v0.33.0) — то есть дни
+# начинаются на одном и том же месте.
+# Ограничение сверху: если стиль вернул несуразную ширину, резерв не
+# делаем — пусть таблица останется во всю ширину, как раньше.
+SCROLLBAR_RESERVE_MAX = 60
 # Высота строки: с запасом под перенос длинного названия строки на две
 # строки (wordWrap включён, колонка названия ограничена пятью
 # числовыми колонками).
@@ -1255,6 +1268,14 @@ class MoneyBlock(QFrame):
         # --- таблица: строка + сумма + дни текущей недели (v0.22.0) ---
         self.table = QTableWidget(0, COLUMN_COUNT)
         self.days: list[date] = []  # дни недели, показанные в шапке
+        # v0.73.0: пустой правый отступ строки с таблицей — резерв под
+        # полосу прокрутки, чтобы полотно обоих блоков было одной
+        # ширины (см. _reserve_scrollbar_space). Отступ, а не виджет:
+        # обычный QWidget залился бы серым цветом окна поверх фона
+        # панели (проверено отрисовкой).
+        self._table_row = QHBoxLayout()
+        self._table_row.setContentsMargins(0, 0, 0, 0)
+        self._table_row.setSpacing(0)
         self.refresh_columns()
         self.table.verticalHeader().setVisible(False)
         self.table.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
@@ -1299,7 +1320,11 @@ class MoneyBlock(QFrame):
         header_view.setDefaultAlignment(Qt.AlignmentFlag.AlignCenter)
         header_view.setSectionResizeMode(COL_NAME, QHeaderView.ResizeMode.Stretch)
         self._apply_column_widths()
-        root.addWidget(self.table)
+        # v0.73.0: таблица лежит в собственной горизонтальной строке
+        # (создана выше, до refresh_columns): у строки есть правый
+        # отступ под полосу прокрутки.
+        self._table_row.addWidget(self.table)
+        root.addLayout(self._table_row)
         # Подсветка всей строки бежевым при наведении (v0.13.0).
         self._hover_delegate = _HoverDelegate(self.table)
         self.table.setItemDelegate(self._hover_delegate)
@@ -1358,9 +1383,43 @@ class MoneyBlock(QFrame):
                 )
         self._apply_column_widths()
 
+    def _reserve_scrollbar_space(self) -> None:
+        """Зарезервировать справа от таблицы ширину полосы прокрутки.
+
+        v0.73.0: колонки дней блоков «Поступление» и «Оплата» должны
+        стоять друг под другом. Полотно таблицы у «Оплаты» у́же на
+        постоянную полосу прокрутки, а колонка названия —
+        растягиваемая и стоит до дней, поэтому без резерва она
+        раздвигалась и сдвигала все шесть дней вправо. Резерв нужен
+        только блоку без полосы прокрутки.
+
+        Резерв делается правым отступом строки, в которой лежит
+        таблица, — не отдельным виджетом: тот залился бы серым
+        цветом окна поверх фона панели.
+
+        Ширину берём из ``sizeHint`` собственной скрытой полосы: он
+        учитывает широкий скроллбар из стиля (v0.23.1), тогда как
+        ``width()`` у скрытого виджета произвольный. До первого показа
+        виджета стиль ещё не применён и ``sizeHint`` отдаёт обычные
+        16 px, поэтому резерв пересчитывается и в ``showEvent``.
+        """
+
+        if self._stretch_table:  # у «Оплаты» полоса есть и так
+            return
+        width = self.table.verticalScrollBar().sizeHint().width()
+        if 0 < width <= SCROLLBAR_RESERVE_MAX:
+            self._table_row.setContentsMargins(0, 0, width, 0)
+
+    def showEvent(self, event) -> None:  # noqa: N802
+        """Пересчитать резерв под полосу прокрутки после показа (v0.73.0)."""
+
+        super().showEvent(event)
+        self._reserve_scrollbar_space()
+
     def _apply_column_widths(self) -> None:
         """Ширины колонок фиксированы; шапка — по центру (v0.23.9)."""
 
+        self._reserve_scrollbar_space()
         for column in range(COL_NOTE, COLUMN_COUNT):
             self.table.setColumnWidth(
                 column,

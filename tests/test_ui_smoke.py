@@ -10472,3 +10472,49 @@ def test_statement_ignores_page_header_inside_operation(store):
     assert row.outgoing == Decimal("160.95")
     assert row.name == 'ООО "ТД КОМПЛЕКТ"'
     assert "http" not in row.name
+
+
+def test_receipts_day_columns_are_aligned(qt_app, store):
+    """v0.73.0: колонки дней «Поступления» и «Оплаты» стоят день в день.
+
+    У «Оплаты» полоса прокрутки закреплена (v0.23.1) и отъедает часть
+    полотна таблицы, у «Поступления» её нет — её убрали в v0.14.0 как
+    мешающую. Полотно выходило разной ширины, а растягиваемая колонка
+    названия стоит ДО дней: она вбирала разницу и уводила все шесть
+    дней вправо, из-за чего Пн «Поступления» не попадал в Пн «Оплаты».
+    Теперь блок без полосы резервирует её ширину пустым полем справа.
+    """
+
+    from oplata.app import IDX_RECEIPTS, MainWindow
+    from oplata.views.receipts_view import COLUMN_COUNT, FIRST_DAY_COL
+
+    window = MainWindow(store)
+    window.resize(1920, 1040)
+    window.show()
+    window.show_page(IDX_RECEIPTS)
+    qt_app.processEvents()
+    view = window.receipts_view
+    incoming, outgoing = view.blocks
+
+    def day_positions(block):
+        header = block.table.horizontalHeader()
+        return [
+            header.sectionPosition(column)
+            for column in range(FIRST_DAY_COL, COLUMN_COUNT)
+        ]
+
+    # Шесть дней (Пн–Сб) начинаются на одном и том же месте в обоих
+    # блоках — именно этого и добивались.
+    positions = [day_positions(block) for block in (incoming, outgoing)]
+    assert len(positions[0]) == 6
+    assert positions[0] == positions[1], (
+        f"дни съехали: {positions[0]} против {positions[1]}"
+    )
+    # Причина съезда — разная ширина полотна: теперь она одинакова.
+    assert incoming.table.viewport().width() == outgoing.table.viewport().width()
+    # Резерв занял ровно ширину настоящей полосы прокрутки «Оплаты».
+    assert incoming._table_row.contentsMargins().right() == (
+        outgoing.table.verticalScrollBar().width()
+    )
+    # У самого «Оплаты» резерва нет: там полоса прокрутки и так есть.
+    assert outgoing._table_row.contentsMargins().right() == 0
