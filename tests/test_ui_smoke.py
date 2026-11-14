@@ -10725,17 +10725,27 @@ def test_config_page_scrolls_when_content_is_tall(qt_app, store):
     from oplata.views.data_view import DataView
 
     view = DataView(store)
+    # Высота заведомо меньше содержимого: иначе проверка зависит от
+    # размера окна, который в CI и на рабочем месте разный.
+    view.setFixedHeight(300)
+    for panel in (
+        view.calendar_panel,
+        view.bank_panel,
+        view.routing_panel,
+        view.users_panel,
+        view.admin_panel,
+        view.fields_panel,
+    ):
+        panel.set_expanded(True)
     view.show()
     qt_app.processEvents()
 
     assert view.page_scroll.widgetResizable()
     content = view.page_scroll.widget()
     assert content is not None
-    viewport = view.page_scroll.viewport().height()
-    # Содержимое выше окна: пятёрка плашек (даже свёрнутых) не влезает.
-    assert content.height() > viewport or (
-        view.page_scroll.verticalScrollBar().maximum() > 0
-    )
+    # Содержимое выше окна — значит, есть чем прокручивать.
+    assert content.height() > view.page_scroll.viewport().height()
+    assert view.page_scroll.verticalScrollBar().maximum() > 0
     # Горизонтальной прокрутки нет — общее правило таблиц и страниц.
     assert (
         view.page_scroll.horizontalScrollBarPolicy()
