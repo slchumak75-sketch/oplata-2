@@ -48,7 +48,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from .. import calc, styles
+from .. import calc, column_widths, styles
 from ..dates import (
     WEEKDAYS_RU_SHORT,
     fmt_date,
@@ -77,6 +77,7 @@ from ..widgets import (
     set_date_edit,
     RowHoverMixin,
     arrow_button,
+    install_column_resizer,
     install_row_hover,
 )
 
@@ -102,8 +103,18 @@ NAME_ROW_HEIGHT = 30
 # текст не подбирался вплотную к следующей колонке.
 NAME_TEXT_MARGIN = 10
 LEAD_FONT_SIZE = styles.fs(10)   # итоговые колонки: «Итого»/«Всего» …
+# v0.75.0: колонка наименования стала чуть шире (просьба пользователя),
+# а точную ширину каждый настраивает мышью: границу столбца можно
+# тянуть прямо в таблице и сохранить кнопкой «Сохранить поля»
+# (настройка хранится в column-widths.json). Базовые значения поэтому
+# держим скромными — это лишь отправная точка, а не окончательная
+# ширина. У поставщиков колонка шире: их названия длиннее.
 NAME_WIDTH_BASE = 188
 NAME_WIDTH_MIN = 150
+NAME_WIDTH_BY_KIND = {"supplier": (240, 175), "customer": (215, 170)}
+# v0.75.0: поля ячейки при расчёте ширины «по содержимому» — столько
+# добавляем к ширине самого широкого текста колонки.
+CONTENT_PADDING = 14
 # Ниже 100 px опускаться нельзя: подпись «Просрочено» жирным fs(10)
 # занимает 91 px, а с полями ячейки нужно 99 (проверено тестом
 # ``test_debt_headers_are_written_in_full``). Сужать итоговые дальше
@@ -285,25 +296,38 @@ class WeekView(QWidget):
         for _ in range(self.table_days):
             for subcolumn in range(self.columns_per_day):
                 if subcolumn == self.mark_index:
-                    day_base.append(34)
-                    day_min.append(30)
+                    # v0.75.0: узкая колонка метки — ещё у́же: у
+                    # покупателей текста в ней нет (только цвет), а
+                    # шире стала колонка названия.
+                    day_base.append(28)
+                    day_min.append(24)
                 else:
                     day_base.append(92)
                     day_min.append(72)
         # v0.55.0: итоговые колонки у́же, а шрифт названий мельче
         # (просьба пользователя) — длинные наименования поставщиков и
         # покупателей перестали съедать место у дней недели.
+        name_base, name_min = NAME_WIDTH_BY_KIND.get(
+            kind, (NAME_WIDTH_BASE, NAME_WIDTH_MIN)
+        )
         self.base_widths = (
-            [NAME_WIDTH_BASE]
+            [name_base]
             + ([46] if self.lead_offset else [])
             + [LEAD_WIDTH_BASE] * self.lead_columns
             + day_base
         )
         self.min_widths = (
-            [NAME_WIDTH_MIN]
+            [name_min]
             + ([40] if self.lead_offset else [])
             + [LEAD_WIDTH_MIN] * self.lead_columns
             + day_min
+        )
+        # v0.75.0: подписи итоговых колонок (их же мерим при расчёте
+        # ширины «по содержимому»).
+        self.lead_titles = (
+            ("Итого", "Просрочено", "Неделя")
+            if kind == "supplier"
+            else ("Всего", "Выписано", "В работе")
         )
         self.week_start = week_monday(date.today())
         self._partners: list[Counterparty] = []
@@ -373,7 +397,12 @@ class WeekView(QWidget):
         self.frozen_table.setObjectName("FrozenWeekHeader")
         self.frozen_table.setStyleSheet(
             f"QTableWidget{{font-size:{styles.fs(12)}px;"
-            f"background:#fffdf8;border:0px;gridline-color:transparent}}"
+            f"background:#fffdf8;border:0px;"
+            # v0.75.0: цвет сетки — как у основной таблицы. Прозрачная
+            # сетка была незаметна, пока накладка пряталась за таблицей
+            # (v0.74.0 подняла её наверх); теперь без неё в шапке не
+            # рисуются горизонтальные линии между строками.
+            f"gridline-color:{styles.TABLE_GRID}}}"
         )
         self.frozen_table.horizontalHeader().setVisible(False)
         self.frozen_table.verticalHeader().setVisible(False)
@@ -416,6 +445,21 @@ class WeekView(QWidget):
             self._keep_frozen_on_top
         )
         root.addWidget(self.table, stretch=1)
+        # v0.75.0: границы столбцов тянутся мышью прямо по телу таблицы
+        # (просьба пользователя) — не только за заголовок.
+        self._resize_column: int | None = None  # колонка, которую тянем
+        self._resize_start_x = 0                # где взяли границу
+        self._resize_start_width = 0            # ширина колонки до протяжки
+        self._widths_key = f"week_{kind}"
+        self._saved_widths: list[int] | None = None
+        self._saved_viewport = 0
+        self._widths_locked = False  # True — ширины подогнал пользователь
+        # Ниже этого порога при протяжке колонку не сжать: число должно
+        # остаться читаемым (v0.75.0).
+        self._saved_min_width = 16
+        install_column_resizer(self.table, self)
+        # v0.75.0: сохранённые пользователем ширины применяем сразу.
+        self.load_saved_widths()
         self.refresh()
 
     # ------------------------------------------------------------------ UI
@@ -1196,6 +1240,53 @@ class WeekView(QWidget):
         self._rebuild_table(partners, days[: self.table_days], today)
 
     # --------------------------------------------------------------- таблица
+    def _lead_text_metrics(self) -> QFontMetrics:
+        """Метрика шрифта подписей итоговых колонок (v0.75.0)."""
+
+        font = QFont(self.table.font())
+        font.setPixelSize(LEAD_FONT_SIZE)
+        font.setBold(True)  # подписи жирные — берём худший случай
+        return QFontMetrics(font)
+
+    def _fit_lead_widths(self) -> None:
+        """Ширина итоговых колонок по содержимому (v0.75.0).
+
+        Колонка «Всего»/«Просрочено»/«Неделя» занимает ровно столько,
+        сколько нужно самой широкой её надписи — подписи или сумме, —
+        но не меньше: подпись всегда читается целиком. Раньше все три
+        колонки были одной фиксированной ширины (110 px), из-за чего
+        «Просрочено» обрезалось, а «Неделя» занимала лишнее.
+        """
+
+        if not hasattr(self, "table") or self.table.columnCount() < 1:
+            return
+        # v0.75.0: пользователь сам расставил колонки мышью — расчёт
+        # по содержимому больше не применяем.
+        if self._widths_locked:
+            return
+        metrics = self._lead_text_metrics()
+        first = 1 + self.lead_offset
+        for number in range(self.lead_columns):
+            column = first + number
+            title = self.lead_titles[number]
+            needed = (
+                metrics.horizontalAdvance(title) + CONTENT_PADDING
+            )
+            for row in range(FIRST_DATA_ROW - 1, self.table.rowCount()):
+                item = self.table.item(row, column)
+                if item is None or not item.text():
+                    continue
+                cell_font = QFont(item.font())
+                cell_font.setBold(True)  # строка ВСЕГО — жирная
+                width = (
+                    QFontMetrics(cell_font).horizontalAdvance(item.text())
+                    + CONTENT_PADDING
+                )
+                needed = max(needed, width)
+            needed = max(needed, LEAD_WIDTH_MIN)
+            self.min_widths[column] = needed
+            self.base_widths[column] = needed + LEAD_WIDTH_BASE - LEAD_WIDTH_MIN
+
     def _rebuild_table(self, partners, days, today) -> None:
         # Программная перестройка не должна срабатывать как «ввод пользователя».
         self._rebuilding = True
@@ -1203,6 +1294,8 @@ class WeekView(QWidget):
             self._rebuild_table_inner(partners, days, today)
         finally:
             self._rebuilding = False
+        # v0.75.0: итоговые колонки — по ширине подписи и сумм в них.
+        self._fit_lead_widths()
         self._fit_columns_to_width()
         # v0.23.1: закреплённая шапка повторяет перестроенную таблицу.
         self._sync_frozen()
@@ -1314,20 +1407,16 @@ class WeekView(QWidget):
             put(2, 1, "От-\nсрочка", size=styles.fs(12))
             # v0.22.1: вместо «на сегодня» — «Итого», оно слева от
             # «Просрочено».
-            put(2, 1 + self.lead_offset, "Итого", bold=True,
-                size=LEAD_FONT_SIZE)
-            # v0.28.3: подписи целиком и с большой буквы — «Просрочено»
-            # и «Неделя» (были «просрочено» и «за неделю»).
-            put(2, 2 + self.lead_offset, "Просрочено", bold=True,
-                size=LEAD_FONT_SIZE)
-            put(2, 3 + self.lead_offset, "Неделя", bold=True,
-                size=LEAD_FONT_SIZE)
+            # v0.75.0: подписи — из ``self.lead_titles``: по ним же
+            # считается ширина колонки «по содержимому».
+            for number, title in enumerate(self.lead_titles):
+                put(2, 1 + self.lead_offset + number, title, bold=True,
+                    size=LEAD_FONT_SIZE)
         else:
             # v0.29.0: «Всего» = «Выписано» + «В работе»; порядок — по
             # просьбе пользователя (итог левее слагаемых).
-            put(2, 1, "Всего", bold=True, size=LEAD_FONT_SIZE)
-            put(2, 2, "Выписано", bold=True, size=LEAD_FONT_SIZE)
-            put(2, 3, "В работе", bold=True, size=LEAD_FONT_SIZE)
+            for number, title in enumerate(self.lead_titles):
+                put(2, 1 + number, title, bold=True, size=LEAD_FONT_SIZE)
         for i, day in enumerate(days):
             for j, sub in enumerate(self.subheaders):
                 cell = put(2, self._day_column(i, j), sub,
@@ -1619,6 +1708,11 @@ class WeekView(QWidget):
             widths = list(self.base_widths)
         else:
             widths = self._column_widths(available)
+        # v0.75.0: ширины, которые пользователь настроил мышью и
+        # сохранил кнопкой «Сохранить поля», важнее расчётных.
+        saved = self._scaled_saved_widths(available)
+        if saved is not None:
+            widths = saved
         for col, width in enumerate(widths):
             table.setColumnWidth(col, width)
             if self.frozen_table.columnCount() == self.column_count:
@@ -1641,6 +1735,112 @@ class WeekView(QWidget):
         self._fit_name_column(widths[0])
         # v0.40.0: закреплённая шапка должна лечь на те же колонки.
         self._update_frozen_geometry()
+
+    # ------------------------------------------- ширины, настроенные вручную
+    def _scaled_saved_widths(self, available: int) -> list[int] | None:
+        """Сохранённые ширины, растянутые под текущую ширину таблицы.
+
+        В файле лежат пиксели той ширины, при которой их подобрали,
+        поэтому на другом окне их масштабируем: колонки сохраняют свои
+        доли, а сумма остаётся ровно ``available`` — иначе появится
+        горизонтальная полоса прокрутки.
+        """
+
+        saved = self._saved_widths
+        if saved is None or len(saved) != self.column_count:
+            return None
+        if self._saved_viewport <= 0 or available <= 0:
+            return None
+        widths = [
+            # Скрытая колонка (ширина 0) скрытой и остаётся.
+            0 if item == 0
+            else max(self._saved_min_width, item * available // self._saved_viewport)
+            for item in saved
+        ]
+        diff = available - sum(widths)
+        while diff > 0:
+            for col in range(self.column_count):
+                if diff == 0:
+                    break
+                widths[col] += 1
+                diff -= 1
+        while diff < 0:
+            for col in range(self.column_count, 0, -1):
+                if diff == 0:
+                    break
+                if widths[col - 1] > self._saved_min_width:
+                    widths[col - 1] -= 1
+                    diff += 1
+        return widths
+
+    def _sync_column_width(self, column: int, width: int) -> None:
+        """Протяжка мышью: та же ширина у закреплённой шапки (v0.75.0)."""
+
+        if self.frozen_table.columnCount() == self.column_count:
+            self.frozen_table.setColumnWidth(column, width)
+
+    def _on_column_resized(self, column: int, width: int) -> None:
+        """Границу отпустили: запоминаем новую раскладку (v0.75.0).
+
+        Запоминаем в пикселях текущей ширины таблицы и выключаем
+        расчёт по содержимому: дальше колонки стоят так, как их
+        поставил пользователь, пока он не сохранит их кнопкой
+        «Сохранить поля» (или не закроет программу — без сохранения
+        правка живёт до конца сеанса).
+        """
+
+        available = self.table.viewport().width()
+        if available <= 0:
+            return
+        self._widths_locked = True
+        self._saved_viewport = available
+        self._saved_widths = [
+            self.table.columnWidth(col) for col in range(self.column_count)
+        ]
+        self._sync_column_width(column, width)
+
+    def load_saved_widths(self) -> bool:
+        """Применить сохранённые ширины; ``True``, если они были."""
+
+        entry = column_widths.load_entry(self._widths_key, self.column_count)
+        if entry is None:
+            return False
+        self._saved_viewport, self._saved_widths = entry
+        self._widths_locked = True
+        return True
+
+    def current_widths(self) -> list[int] | None:
+        """Текущие ширины колонок — для кнопки «Сохранить поля»."""
+
+        if self.table.columnCount() != self.column_count:
+            return None
+        viewport = self.table.viewport().width()
+        if viewport <= 0:
+            return None
+        return [self.table.columnWidth(col) for col in range(self.column_count)]
+
+    def save_widths(self) -> bool:
+        """Записать ширины в файл настроек (кнопка «Сохранить поля»)."""
+
+        widths = self.current_widths()
+        if widths is None:
+            return False
+        viewport = self.table.viewport().width()
+        column_widths.save(self._widths_key, viewport, widths)
+        self._saved_widths = list(widths)
+        self._saved_viewport = viewport
+        self._widths_locked = True
+        return True
+
+    def reset_widths(self) -> None:
+        """Вернуть расчётные ширины (убрать сохранённые)."""
+
+        column_widths.drop(self._widths_key)
+        self._saved_widths = None
+        self._saved_viewport = 0
+        self._widths_locked = False
+        self._fit_lead_widths()
+        self._fit_columns_to_width()
 
     def _fit_name_column(self, name_width: int) -> None:
         """Наименование контрагента — всегда одна строка (v0.74.0).

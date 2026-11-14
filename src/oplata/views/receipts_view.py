@@ -88,7 +88,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from .. import calc, styles
+from .. import calc, column_widths, styles
 from ..dates import (
     MONTHS_RU,
     WEEKDAYS_RU_TITLE,
@@ -123,6 +123,7 @@ from ..widgets import (
     RowHoverMixin,
     arrow_button,
     blue_button,
+    install_column_resizer,
     install_row_hover,
     make_amount_edit,
     make_date_edit,
@@ -1276,6 +1277,14 @@ class MoneyBlock(QFrame):
         self._table_row = QHBoxLayout()
         self._table_row.setContentsMargins(0, 0, 0, 0)
         self._table_row.setSpacing(0)
+        # v0.75.0: ширины колонок настраиваются мышью и сохраняются
+        # кнопкой «Сохранить поля» в «Конфигурации». Ключ — по
+        # направлению блока: «Поступление» и «Оплата» стоят друг под
+        # другом, и их колонки дней должны попадать день в день.
+        # Инициализируем до ``refresh_columns``: он их и применяет.
+        self._widths_key = f"receipts_{direction}"
+        self._saved_widths: dict[int, int] = {}
+        self.load_saved_widths()
         self.refresh_columns()
         self.table.verticalHeader().setVisible(False)
         self.table.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
@@ -1320,6 +1329,8 @@ class MoneyBlock(QFrame):
         header_view.setDefaultAlignment(Qt.AlignmentFlag.AlignCenter)
         header_view.setSectionResizeMode(COL_NAME, QHeaderView.ResizeMode.Stretch)
         self._apply_column_widths()
+        # v0.75.0: границы столбцов тянутся мышью по телу таблицы.
+        install_column_resizer(self.table, self, min_width=32)
         # v0.73.0: таблица лежит в собственной горизонтальной строке
         # (создана выше, до refresh_columns): у строки есть правый
         # отступ под полосу прокрутки.
@@ -1416,15 +1427,69 @@ class MoneyBlock(QFrame):
         super().showEvent(event)
         self._reserve_scrollbar_space()
 
+    # ------------------------------------------- ширины, настроенные вручную
+    def load_saved_widths(self) -> bool:
+        """Прочитать сохранённые ширины колонок (v0.75.0)."""
+
+        saved = column_widths.load(self._widths_key, COLUMN_COUNT)
+        if saved is None:
+            return False
+        self._saved_widths = {
+            column: width for column, width in enumerate(saved)
+        }
+        return True
+
+    def current_widths(self) -> list[int] | None:
+        """Текущие ширины колонок — для кнопки «Сохранить поля»."""
+
+        if self.table.columnCount() != COLUMN_COUNT:
+            return None
+        if self.table.viewport().width() <= 0:
+            return None
+        return [
+            self.table.columnWidth(column) for column in range(COLUMN_COUNT)
+        ]
+
+    def save_widths(self) -> bool:
+        """Записать ширины колонок в файл настроек (v0.75.0)."""
+
+        widths = self.current_widths()
+        if widths is None:
+            return False
+        column_widths.save(
+            self._widths_key, self.table.viewport().width(), widths
+        )
+        self._saved_widths = {n: w for n, w in enumerate(widths)}
+        return True
+
+    def reset_widths(self) -> None:
+        """Вернуть расчётные ширины колонок (v0.75.0)."""
+
+        column_widths.drop(self._widths_key)
+        self._saved_widths = {}
+        self._apply_column_widths()
+
+    def _on_column_resized(self, column: int, width: int) -> None:
+        """Границу отпустили: запомнить ширину (v0.75.0).
+
+        Колонка названия растягивается сама (Stretch), поэтому её
+        ширину не запоминаем: она зависит от свободного места.
+        """
+
+        if column == COL_NAME:
+            return
+        self._saved_widths[column] = width
+
     def _apply_column_widths(self) -> None:
-        """Ширины колонок фиксированы; шапка — по центру (v0.23.9)."""
+        """Ширины колонок: сохранённые или расчётные (v0.75.0)."""
 
         self._reserve_scrollbar_space()
         for column in range(COL_NOTE, COLUMN_COUNT):
-            self.table.setColumnWidth(
-                column,
-                COLUMN_WIDTHS.get(column, DAY_COLUMN_WIDTH),
+            # v0.75.0: настроенная вручную ширина важнее расчётной.
+            width = self._saved_widths.get(
+                column, COLUMN_WIDTHS.get(column, DAY_COLUMN_WIDTH)
             )
+            self.table.setColumnWidth(column, width)
             header_item = self.table.horizontalHeaderItem(column)
             if header_item is not None:
                 # v0.23.9: по центру, раньше числа были по правому краю.
