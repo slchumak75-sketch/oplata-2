@@ -1099,7 +1099,8 @@ class StatementDialog(QDialog):
             + "«Переразнести» снимет прежние записи этих строк и запишет "
             "их заново по нынешним правилам: например, поступление "
             "покупателя станет оплатой, а не реализацией.\nСуммы, "
-            "которые после разноса правили вручную, программа не тронет."
+            "которые после разноса правили вручную, будут перезаписаны "
+            "— в отчёте будет видно, какие именно и на что."
         )
         box.addButton("Переразнести", QMessageBox.ButtonRole.AcceptRole)
         if new_count:
@@ -1146,13 +1147,15 @@ class StatementDialog(QDialog):
                 f"Убрано лишних «реализаций»: {len(result.removed)}."
             )
             parts.extend(result.removed[:12])
-        if result.kept:
+        if result.overwritten:
+            # v0.67.0: переразнос пишет поверх ручной правки — но
+            # человек должен видеть, какие его цифры затёрты.
             parts.append("")
             parts.append(
-                "Оставлено (сумму дня правили вручную): "
-                f"{len(result.kept)}."
+                "Дни, которые правили вручную, перезаписаны: "
+                f"{len(result.overwritten)}."
             )
-            parts.extend(result.kept[:12])
+            parts.extend(result.overwritten[:12])
         if result.restated:
             # v0.65.0: файл прочитан по-новому — прежние суммы этих
             # строк сняты, записаны нынешние.

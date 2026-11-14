@@ -87,10 +87,12 @@ class Distribution:
 
     applied: list[str] = field(default_factory=list)   # строки отчёта
     already: list[str] = field(default_factory=list)   # уже разносили раньше
-    # v0.59.0: что сняли при переразносе и чего не тронули (сумму дня
-    # правили вручную — снимать её мы не смеем).
+    # v0.59.0: что сняли при переразносе.
     replaced: list[str] = field(default_factory=list)
-    kept: list[str] = field(default_factory=list)
+    # v0.67.0: снятые записи, у которых сумму дня правили вручную.
+    # Переразнос пишет поверх такой правки, но говорит об этом: иначе
+    # человек не узнал бы, что его цифры затёрты.
+    overwritten: list[str] = field(default_factory=list)
     removed: list[str] = field(default_factory=list)   # снятые «реализации»
     warnings: list[str] = field(default_factory=list)  # на что посмотреть
     unresolved: list[StatementRow] = field(default_factory=list)
@@ -634,12 +636,16 @@ def target_title(
     return f"{who}: {name or counterparty_id}"
 
 
-def rollback_write(result: Distribution, data: AppData, item: dict) -> bool:
+def rollback_write(result: Distribution, data: AppData, item: dict) -> None:
     """Снять запись, сделанную прошлым разносом (v0.59.0).
 
-    Очищаем только если сумма дня с тех пор не менялась: правили её
-    вручную — не трогаем, чтобы не стереть чужой ввод. Возвращает
-    ``True``, если запись снята.
+    v0.67.0: снимаем **всегда**, даже если сумму дня после разноса
+    правили вручную. Прежде в этом случае запись не снималась, а новая
+    сумма для того же получателя и дня и вовсе не писалась: человек
+    стирал неверные суммы руками, нажимал «переразнести» — и не
+    получал ничего, потому что программа принимала его же правку за
+    «чужой ввод, который не смеем трогать». Теперь переразнос пишет
+    поверх, но честно показывает в отчёте, что затёр.
     """
 
     amount = Decimal(str(item.get("amount") or "0"))
@@ -652,17 +658,15 @@ def rollback_write(result: Distribution, data: AppData, item: dict) -> bool:
     )
     title = target_title(target, counterparty_id, payment_name, data)
     if current != amount:
-        result.kept.append(
-            f"{title}: {date_iso} — разнос писал {fmt_amount(amount)}, "
-            f"сейчас в базе {fmt_amount(current)}; правили вручную — "
-            "оставили как есть"
+        result.overwritten.append(
+            f"{title}: {date_iso} — день правили вручную, было "
+            f"{fmt_amount(current)} (разнос писал {fmt_amount(amount)}); "
+            "перезаписано нынешней суммой"
         )
-        return False
     write_target(data, target, counterparty_id, payment_name, date_iso, None)
     result.replaced.append(
         f"{title}: {date_iso} — {fmt_amount(amount)} (снято)"
     )
-    return True
 
 
 def find_stale_realizations(
@@ -763,8 +767,6 @@ def distribute(
     redone: list[tuple[str, str]] = []  # (ключ строки, мягкий ключ)
     rolled_back: list[dict] = []
     planned_keys: dict[tuple, list[str]] = {}
-    kept_items: list[dict] = []      # снятию не подлежат — правили вручную
-    kept_targets: set[tuple] = set()
 
     for index, row in enumerate(statement.rows):
         match = (
@@ -816,16 +818,7 @@ def distribute(
                 if item in rolled_back:
                     continue
                 rolled_back.append(item)
-                if not rollback_write(result, data, item):
-                    kept_items.append(item)
-                    kept_targets.add(
-                        (
-                            str(item.get("target") or ""),
-                            str(item.get("counterparty_id") or ""),
-                            str(item.get("payment_name") or ""),
-                            str(item.get("date") or ""),
-                        )
-                    )
+                rollback_write(result, data, item)
             if row_is_blocked(match, commission):
                 # Прежнюю запись сняли, а новой пока нет — об этом
                 # надо сказать: иначе сумма пропадёт незаметно.
@@ -853,9 +846,6 @@ def distribute(
     for (target, counterparty_id, payment_name, date_iso), amount in sorted(
         planned.items()
     ):
-        if (target, counterparty_id, payment_name, date_iso) in kept_targets:
-            # Сумму дня правили вручную — переразнос её не переписывает.
-            continue
         write_target(
             data, target, counterparty_id, payment_name, date_iso, amount
         )
@@ -878,9 +868,6 @@ def distribute(
             }
         )
 
-    # Записи, которые трогать не стали, остаются в реестре, чтобы и
-    # следующий переразнос знал про них.
-    new_writes.extend(kept_items)
     if redo:
         # Файл разносили версией до 0.59.0: подробного реестра нет,
         # поэтому снять прежние записи мы не можем — новые суммы легли
