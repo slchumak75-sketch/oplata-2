@@ -3624,9 +3624,13 @@ def test_base_switch_button_changes_database_and_header(qt_app, store, monkeypat
     assert styles.BASE_GREEN in window.header.styleSheet()  # шапка зелёная
     assert store.path == mir_path
     assert any(s.name == "Поставщик МИР" for s in store.data.suppliers)
-    # Таблица поставщиков перерисована по активной базе.
+    # Таблица поставщиков перерисована по активной базе. Название в
+    # ячейке обрезано под ширину колонки (v0.74.0), поэтому берём
+    # полное — из той же ячейки, но по роли NAME_ROLE.
+    from oplata.views.week_view import NAME_ROLE
+
     names = [
-        window.suppliers_view.table.item(row, 0).text()
+        window.suppliers_view.table.item(row, 0).data(NAME_ROLE)
         for row in range(4, window.suppliers_view.table.rowCount())
     ]
     assert "Поставщик МИР" in names
@@ -7071,6 +7075,7 @@ def test_week_tables_are_sorted_alphabetically(qt_app, store):
 
     from oplata.app import MainWindow
     from oplata.models import Counterparty
+    from oplata.views.week_view import NAME_ROLE
 
     store.data.suppliers = [
         Counterparty(name=name) for name in ("Ясень", "ёлка", "Акация", "Берёза")
@@ -7084,8 +7089,10 @@ def test_week_tables_are_sorted_alphabetically(qt_app, store):
 
     for view in (window.suppliers_view, window.customers_view):
         table = view.table
+        # v0.74.0: в ячейке лежит обрезанный под колонку текст, поэтому
+        # порядок проверяем по полному названию (роль NAME_ROLE).
         names = [
-            table.item(row, 0).text()
+            table.item(row, 0).data(NAME_ROLE)
             for row in range(4, 4 + len(view.counterparties()))
         ]
         assert names == [c.name for c in view.counterparties()]
@@ -7757,7 +7764,7 @@ def test_counterparty_note_shows_in_week_table_tooltip(qt_app, store):
     """v0.60.0: примечание контрагента видно в подсказке строки."""
 
     from oplata.models import Counterparty
-    from oplata.views.week_view import WeekView
+    from oplata.views.week_view import NAME_ROLE, WeekView
 
     store.data.suppliers.append(
         Counterparty(
@@ -7768,31 +7775,35 @@ def test_counterparty_note_shows_in_week_table_tooltip(qt_app, store):
     view = WeekView(store, "supplier", lambda *_a: None)
     view.show()
     qt_app.processEvents()
+    # v0.74.0: ищем строку по полному названию (роль NAME_ROLE) —
+    # текст ячейки обрезан под ширину колонки.
     rows = [
         row
         for row in range(view.table.rowCount())
         if view.table.item(row, 0) is not None
-        and view.table.item(row, 0).text() == "Оптовик"
+        and view.table.item(row, 0).data(NAME_ROLE) == "Оптовик"
     ]
     assert rows, "строка поставщика не найдена"
     item = view.table.item(rows[0], 0)
-    assert item is not None and item.text() == "Оптовик"
+    assert item is not None and item.data(NAME_ROLE) == "Оптовик"
     assert "Примечание: оплату присылает со второго счёта" in item.toolTip()
     view.close()
 
 
-def test_long_partner_name_wraps_to_two_lines(qt_app, store):
-    """v0.60.0: длинное наименование переносится, а не обрезается.
+def test_long_partner_name_fits_one_line(qt_app, store):
+    """v0.74.0: наименование контрагента — всегда одна строка.
 
-    Расширять колонку названия некуда — шесть дней по три колонки
-    съедают всю ширину окна, а сужать итоговые ниже 100 px нельзя
-    (подпись «Просрочено» занимает 91 px). Поэтому строка с длинным
-    наименованием становится выше.
+    Раньше длинное название переносилось по словам (v0.60.0), и строка
+    становилась вдвое-втрое выше: таблица выходила неровной, а на
+    экран помещалось меньше контрагентов. Теперь текст обрезается под
+    ширину колонки с «…» на конце, высота строки одна и та же, а
+    название целиком видно в подсказке.
     """
 
     from oplata.models import Counterparty
     from oplata.views.week_view import (
         FIRST_DATA_ROW,
+        NAME_ROLE,
         NAME_ROW_HEIGHT,
         WeekView,
     )
@@ -7806,20 +7817,76 @@ def test_long_partner_name_wraps_to_two_lines(qt_app, store):
     view.show()
     qt_app.processEvents()
 
-    def row_of(name: str) -> int:
+    def row_of(prefix: str) -> int:
         for row in range(FIRST_DATA_ROW, view.table.rowCount()):
             item = view.table.item(row, 0)
-            if item is not None and item.text() == name:
+            if item is not None and item.text().startswith(prefix):
                 return row
-        raise AssertionError(f"нет строки «{name}»")
+        raise AssertionError(f"нет строки, начинающейся на «{prefix}»")
 
-    short = row_of('ЧПУП "МАВ"')
-    long_row = row_of('ООО "КУЛЬТБЫТХОЗТОРГПЛЮС"')
-    # Короткое наименование — одна строка, длинное занимает две.
-    assert view.table.rowHeight(short) == NAME_ROW_HEIGHT
-    assert view.table.rowHeight(long_row) > NAME_ROW_HEIGHT
-    assert view.table.wordWrap() is True
+    short_item = view.table.item(row_of("ЧПУП"), 0)
+    long_item = view.table.item(row_of("ООО"), 0)
+    # Высота одна и та же — переноса больше нет.
+    heights = {
+        view.table.rowHeight(row)
+        for row in range(FIRST_DATA_ROW, view.table.rowCount())
+    }
+    assert heights == {NAME_ROW_HEIGHT}
+    # Длинное имя обрезано под колонку и кончается многоточием.
+    assert long_item.text() != long_item.data(NAME_ROLE)
+    assert long_item.text().endswith("…")
+    # Полное название сохранено и показано в подсказке.
+    assert long_item.data(NAME_ROLE) == 'ООО "КУЛЬТБЫТХОЗТОРГПЛЮС"'
+    assert long_item.data(NAME_ROLE) in long_item.toolTip()
+    # Короткое имя влезает целиком, многоточия нет.
+    assert short_item.text() == 'ЧПУП "МАВ"'
+    assert short_item.data(NAME_ROLE) in short_item.toolTip()
     view.close()
+
+
+def test_week_header_stays_above_table(qt_app, store):
+    """v0.74.0: закреплённая шапка рисуется поверх таблицы.
+
+    Шапка — отдельная таблица-накладка (v0.23.1). Основная таблица
+    создаётся без родителя и попадает в раскладку позже, поэтому в
+    списке детей она оказывалась последней и перекрывала накладку:
+    шапка была спрятана за таблицей, и при прокрутке уезжали
+    собственные строки шапки самой таблицы. Теперь накладка
+    поднимается наверх при каждом пересчёте геометрии.
+    """
+
+    from PySide6.QtCore import QPoint
+
+    from oplata.app import MainWindow
+    from oplata.views.week_view import TOTAL_ROW
+
+    window = MainWindow(store)
+    window.resize(1920, 1040)
+    window.show()
+    qt_app.processEvents()
+
+    for view in (window.suppliers_view, window.customers_view):
+        window.stack.setCurrentWidget(view)
+        qt_app.processEvents()
+        kids = list(view.children())
+        assert kids.index(view.frozen_table) > kids.index(view.table), (
+            "шапка оказалась под таблицей — при прокрутке она уедет"
+        )
+        # Накладка закрывает ровно строки шапки и «ВСЕГО».
+        assert view.frozen_table.height() == sum(
+            view.table.rowHeight(row) for row in range(TOTAL_ROW + 1)
+        )
+        # и стоит на верхней кромке таблицы.
+        frame = view.table.frameWidth()
+        top = view.table.mapTo(view, QPoint(frame, frame)).y()
+        assert view.frozen_table.geometry().y() == top
+        # После прокрутки шапка остаётся сверху.
+        view.table.verticalScrollBar().setValue(
+            view.table.verticalScrollBar().maximum()
+        )
+        qt_app.processEvents()
+        kids = list(view.children())
+        assert kids.index(view.frozen_table) > kids.index(view.table)
 
 
 def _ambiguous_statement(unp: str = "111222333", incoming: bool = False):

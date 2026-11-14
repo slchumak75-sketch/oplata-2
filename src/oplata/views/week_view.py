@@ -94,11 +94,13 @@ def alphabetical_key(item) -> str:
 
 
 NAME_FONT_SIZE = styles.fs(10)   # названия контрагентов
-# v0.60.0: высота строки контрагента. Одна строка — обычная; если
-# наименование не влезает, строка становится выше (перенос по словам),
-# но не более чем на NAME_ROW_MAX_LINES строк.
+# Высота строки контрагента. v0.74.0: всегда одна — наименование
+# обрезается под ширину колонки. Раньше (v0.60.0) длинное название
+# переносилось по словам, и строка становилась вдвое-втрое выше.
 NAME_ROW_HEIGHT = 30
-NAME_ROW_MAX_LINES = 3
+# v0.74.0: поля ячейки имени — столько оставляем справа, чтобы обрезанный
+# текст не подбирался вплотную к следующей колонке.
+NAME_TEXT_MARGIN = 10
 LEAD_FONT_SIZE = styles.fs(10)   # итоговые колонки: «Итого»/«Всего» …
 NAME_WIDTH_BASE = 188
 NAME_WIDTH_MIN = 150
@@ -137,6 +139,10 @@ MAX_AMOUNT_TEXT = "88 888,88"  # под это число подгоняется
 META_ROLE = Qt.ItemDataRole.UserRole        # "id|дата|kind" редактируемых ячеек
 # v0.29.0: "id|дата" узкой колонки метки «выписано».
 MARK_ROLE = Qt.ItemDataRole.UserRole + 1
+# v0.74.0: полное наименование контрагента. В ячейке лежит обрезанный
+# под ширину колонки текст (имя всегда в одну строку), поэтому
+# исходное название храним отдельно — по нему же ставится подсказка.
+NAME_ROLE = Qt.ItemDataRole.UserRole + 2
 # Веса и минимумы ширин колонок поставщика для растягивания на всю ширину.
 BASE_WIDTHS = [180, 96, 96] + [60] * 21
 MIN_WIDTHS = [146, 80, 80] + [52] * 21
@@ -397,6 +403,17 @@ class WeekView(QWidget):
         )
         self.table.horizontalScrollBar().valueChanged.connect(
             self._sync_frozen_offset
+        )
+        # v0.74.0: при вертикальной прокрутке закреплённую шапку надо
+        # возвращать на место и перерисовывать. Без этого на длинной
+        # прокрутке она уезжала вместе со строками: Qt сдвигает
+        # содержимое таблицы поблочно, и накладка сверху «затиралась»
+        # до следующей перерисовки.
+        self.table.verticalScrollBar().valueChanged.connect(
+            self._keep_frozen_on_top
+        )
+        self.table.verticalScrollBar().rangeChanged.connect(
+            self._keep_frozen_on_top
         )
         root.addWidget(self.table, stretch=1)
         self.refresh()
@@ -1106,6 +1123,12 @@ class WeekView(QWidget):
         self.frozen_table.setGeometry(
             origin.x(), origin.y(), self.table.viewport().width(), height
         )
+        # v0.74.0: поднять накладку над таблицей. Основная таблица
+        # создаётся без родителя и попадает в раскладку позже, поэтому
+        # в списке детей она оказывается последней и рисуется поверх
+        # закреплённой шапки: шапка была спрятана за таблицей, и при
+        # прокрутке уезжали собственные строки шапки самой таблицы.
+        self.frozen_table.raise_()
         self._sync_frozen_offset()
 
     def _sync_frozen_offset(self) -> None:
@@ -1114,6 +1137,24 @@ class WeekView(QWidget):
         self.frozen_table.horizontalScrollBar().setValue(
             self.table.horizontalScrollBar().value()
         )
+
+    def _keep_frozen_on_top(self, *_args) -> None:
+        """Держать закреплённую шапку поверх таблицы (v0.74.0).
+
+        Вызывается на каждое движение вертикальной полосы прокрутки и
+        на смену её диапазона. Накладка лежит отдельным виджетом
+        поверх основной таблицы, и при поблочном сдвиге содержимого
+        (так Qt делает быструю прокрутку) она остаётся прежней
+        картинкой — поэтому её приходится ставить на место и
+        перерисовывать.
+        """
+
+        frozen = self.frozen_table
+        if not frozen.isVisible() or frozen.height() <= 0:
+            return
+        self._update_frozen_geometry()
+        frozen.raise_()
+        frozen.update()
 
 
     # --------------------------------------------------------------- данные
@@ -1401,6 +1442,10 @@ class WeekView(QWidget):
                             color=styles.LINK_BLUE, underline=True,
                             size=NAME_FONT_SIZE)
             name_item.setData(Qt.ItemDataRole.UserRole, partner.id)
+            # v0.74.0: полное название — в роль. Текст ячейки потом
+            # обрежется под ширину колонки (_fit_name_column), а в
+            # подсказке должно быть название целиком.
+            name_item.setData(NAME_ROLE, partner.name)
             if self.kind == "supplier":
                 name_item.setToolTip(
                     "Клик — журнал операций этого поставщика; двойной "
@@ -1591,21 +1636,24 @@ class WeekView(QWidget):
             if subcolumn != self.mark_index
         ]
         self._fit_amount_font(min(widths[column] for column in money_columns))
-        # v0.60.0: длинное наименование переносим на две строки — иначе
-        # в узкой колонке оно обрезается, а расширять колонку некуда
-        # (шесть дней по три колонки съедают всю ширину окна).
-        self._fit_name_rows(widths[0])
+        # v0.74.0: длинное наименование обрезается под ширину колонки
+        # (переносить на две строки больше не нужно — v0.60.0).
+        self._fit_name_column(widths[0])
         # v0.40.0: закреплённая шапка должна лечь на те же колонки.
         self._update_frozen_geometry()
 
-    def _fit_name_rows(self, name_width: int) -> None:
-        """Высота строк контрагентов под перенос наименования (v0.60.0).
+    def _fit_name_column(self, name_width: int) -> None:
+        """Наименование контрагента — всегда одна строка (v0.74.0).
 
-        Ширина колонки названия на узком окне меньше самого названия,
-        поэтому текст переносится по словам. Qt высоту строки под
-        перенос не подбирает (``resizeRowsToContents`` считает одну
-        строку), поэтому считаем её сами — не больше трёх строк:
-        дальше наименование всё равно нечитаемо.
+        Раньше длинное название переносилось по словам, и строка
+        становилась вдвое-втрое выше (v0.60.0): таблица получалась
+        неровной, а на экране помещалось меньше контрагентов.
+
+        Теперь текст обрезается под ширину колонки с «…» на конце,
+        высота строки всегда одна и та же, а название целиком видно
+        в подсказке. Обрезаем сами, а не полагаемся на Qt: у таблицы
+        включён перенос по словам (в шапке есть «От-\\nсрочка»),
+        поэтому готовый обрезанный текст — надёжнее.
         """
 
         table = self.table
@@ -1614,37 +1662,41 @@ class WeekView(QWidget):
         font = QFont(table.font())
         font.setPixelSize(NAME_FONT_SIZE)
         metrics = QFontMetrics(font)
-        line_height = metrics.height() + 4
+        available = max(0, name_width - NAME_TEXT_MARGIN)
         for row in range(FIRST_DATA_ROW, table.rowCount()):
             item = table.item(row, 0)
             if item is None:
                 continue
-            lines = self._name_lines(
-                item.text(), name_width - 6, metrics
+            full = item.data(NAME_ROLE) or item.text()
+            shown = (
+                full
+                if available <= 0
+                else metrics.elidedText(
+                    full, Qt.TextElideMode.ElideRight, available
+                )
             )
-            height = max(NAME_ROW_HEIGHT, lines * line_height + 6)
-            table.setRowHeight(row, height)
-            if self.frozen_table.rowCount() > row:
-                self.frozen_table.setRowHeight(row, height)
+            if shown != item.text():
+                item.setText(shown)
+            # Подсказку дополняем всегда: при изменении ширины окна
+            # обрезанное имя может стать полным, и наоборот.
+            self._add_name_tooltip(item, full)
+            # Высота одна для всех: переноса больше нет.
+            if table.rowHeight(row) != NAME_ROW_HEIGHT:
+                table.setRowHeight(row, NAME_ROW_HEIGHT)
 
     @staticmethod
-    def _name_lines(text: str, width: int, metrics) -> int:
-        """Сколько строк займёт ``text`` в колонке шириной ``width``."""
+    def _add_name_tooltip(item, full_name: str) -> None:
+        """Дописать полное название в начало подсказки (v0.74.0).
 
-        if not text or width <= 0:
-            return 1
-        lines = 1
-        current = ""
-        for word in text.split():
-            probe = f"{current} {word}".strip()
-            if metrics.horizontalAdvance(probe) <= width:
-                current = probe
-                continue
-            lines += 1
-            if lines >= NAME_ROW_MAX_LINES:
-                return NAME_ROW_MAX_LINES
-            current = word
-        return lines
+        Подсказка про клик и примечание уже стоит; дописываем название
+        один раз — иначе при каждом изменении ширины окна оно
+        прибавлялось бы снова.
+        """
+
+        tip = item.toolTip()
+        if full_name in tip:
+            return
+        item.setToolTip(f"{full_name}\n\n{tip}" if tip else full_name)
 
     def _fit_amount_font(self, day_column_width: int) -> None:
         """Подобрать размер шрифта сумм так, чтобы «88 888,88» влезало целиком."""
