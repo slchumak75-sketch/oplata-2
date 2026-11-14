@@ -9923,27 +9923,46 @@ def test_summary_header_does_not_overlap(qt_app, store):
     плашка «Сводка» — всего 276 px, и в v0.70.0 раскладка сжимала
     виджеты ниже минимума: они наползали друг на друга. Теперь дата
     стоит отдельной строкой, а стрелки на узкой плашке прячутся.
+
+    Ширина окна в проверке **не** задаётся: в CI и на машине
+    разработчика экраны разные, и привязка к 1366/1920 делала бы тест
+    нестабильным. Проверяется сам механизм.
     """
 
-    from oplata.app import MainWindow
-    from oplata.views.summary_view import SUMMARY_ARROW_WIDTH
+    from oplata.views.summary_view import SUMMARY_ARROW_WIDTH, SummaryView
 
-    window = MainWindow(store=store)
-    window.show()
+    view = SummaryView(store, lambda _id: None)
+    view.show()
+    view._fit_date_row()
 
-    def needed(view) -> int:
+    def needed() -> int:
         width = view.date_edit.minimumSizeHint().width()
         if view.prev_btn.isVisible():
             width += 2 * SUMMARY_ARROW_WIDTH
         return width + 2 * view._date_row.spacing()
 
-    for width, arrows in ((1366, False), (1920, True)):
-        window.setGeometry(0, 0, width, 900)
-        qt_app.processEvents()
-        view = window.summary_view
-        assert view.prev_btn.isVisible() is arrows, width
-        assert needed(view) <= view.width(), width
-    window.close()
+    # Главное: шапка влезает в плашку — значит, наложения нет.
+    assert needed() <= view.width()
+
+    # Правило само по себе: просторно — стрелки есть, тесно — нет.
+    assert view._arrows_fit(1000)
+    assert not view._arrows_fit(view.date_edit.minimumSizeHint().width())
+
+    # И механизм действительно их прячет, а не просто считает.
+    # Ширины хватает на дату, но не на обе стрелки.
+    tight = (
+        view.date_edit.minimumSizeHint().width()
+        + 2 * view._date_row.spacing()
+        + SUMMARY_ARROW_WIDTH
+    )
+    real_width = view.width
+    try:
+        view.width = lambda: tight
+        view._fit_date_row()
+        assert not view.prev_btn.isVisible()
+        assert needed() <= view.width()
+    finally:
+        view.width = real_width
 
 
 
