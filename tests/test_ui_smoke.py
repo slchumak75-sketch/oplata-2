@@ -9401,3 +9401,710 @@ def test_customer_journal_title_shows_note(qt_app, store):
     # Колонок по-прежнему три: примечание в шапке, а не в таблице.
     assert dialog.view.table.columnCount() == 3
     dialog.close()
+
+# =====================================================================
+# v0.69.0 — «Свойства контрагента»: путь разноса для задвоенных УНП
+# =====================================================================
+
+def test_routing_rule_matches_all_words_anywhere(qt_app, store):
+    """v0.69.0: фраза разбирается на слова, ищется везде и вся целиком.
+
+    Буквально фразу «ОПЛАТА СТРАХОВЫХ ВЗНОСОВ» искать нельзя: в выписке
+    она перенесена по строкам и стоит в обратном порядке слов. Ищем
+    каждое слово правила отдельно в имени и назначении вместе.
+    """
+
+    from oplata.models import OUTGOING, RoutingRule, add_other_payment
+    from oplata.statement import StatementRow
+    from oplata.statement_match import (
+        TARGET_OTHER_PAYMENT,
+        classify,
+        rule_text,
+        rule_words_found,
+    )
+
+    add_other_payment(
+        store.data, "ГУ МФ (2)", "2026-11-06", OUTGOING,
+        unp="500563252", note="СТРАХОВЫЕ ВЗНОСЫ",
+    )
+    store.data.routing_rules = [
+        RoutingRule(
+            unp="500563252", name="ГУ МФ",
+            words=["СТРАХОВЫХ", "ВЗНОСОВ"], target="other_payment",
+            payment_name="ГУ МФ (2)",
+        )
+    ]
+    row = StatementRow(
+        date="06.11.2026", unp="500563252",
+        name="ГУ МФ ПО ГРОДНЕНСКОЙ ОБЛАСТИ",
+        purpose="ОПЛАТА СТРАХОВЫХ\nВЗНОСОВ",
+        outgoing=Decimal("3900"),
+    )
+    assert rule_words_found(["СТРАХОВЫХ", "ВЗНОСОВ"], rule_text(row)) is True
+    match = classify(row, store.data)
+    assert match.target == TARGET_OTHER_PAYMENT
+    assert match.payment_name == "ГУ МФ (2)"
+
+
+def test_routing_rule_does_not_cross_unp(qt_app, store):
+    """v0.69.0: правило не забирает чужой УНП.
+
+    У страхового взноса в Белгосстрах своя организация и свой УНП:
+    правило, написанное для ГУ МФ, к ней не относится.
+    """
+
+    from oplata.models import OUTGOING, RoutingRule, add_other_payment
+    from oplata.statement import StatementRow
+    from oplata.statement_match import TARGET_OTHER_PAYMENT, classify
+
+    add_other_payment(
+        store.data, "ГУ МФ (2)", "2026-11-06", OUTGOING,
+        unp="500563252", note="СТРАХОВЫЕ ВЗНОСЫ",
+    )
+    store.data.routing_rules = [
+        RoutingRule(
+            unp="500563252", name="ГУ МФ",
+            words=["СТРАХОВЫХ", "ВЗНОСОВ"], target="other_payment",
+            payment_name="ГУ МФ (2)",
+        )
+    ]
+    row = StatementRow(
+        date="06.11.2026", unp="500008110", name="БРУСП БЕЛГОССТРАХ",
+        purpose="СТРАХОВЫЕ ВЗНОСЫ ЗА 2026 ГОД",
+        outgoing=Decimal("86"),
+    )
+    assert classify(row, store.data).target != TARGET_OTHER_PAYMENT
+
+
+def test_routing_rule_empty_never_matches(qt_app, store):
+    """v0.69.0: правило без слов — не правило.
+
+    С пустым набором слов подошло бы всё подряд, и весь файл уехал бы
+    в одну карточку. Такое правило не срабатывает никогда.
+    """
+
+    from oplata.models import OUTGOING, RoutingRule, add_other_payment
+    from oplata.statement import StatementRow
+    from oplata.statement_match import TARGET_CHOOSE, classify
+
+    # Две карточки с одним УНП: без правила здесь всё равно выбор, и
+    # пустое правило этот выбор не должно разрешать.
+    add_other_payment(
+        store.data, "Услуги банка", "2026-11-06", OUTGOING,
+        unp="100325912", note="комиссия",
+    )
+    add_other_payment(
+        store.data, "Прочее", "2026-11-06", OUTGOING,
+        unp="100325912", note="вознаграждение",
+    )
+    store.data.routing_rules = [
+        RoutingRule(unp="100325912", name="БАНК", words=[],
+                    target="other_payment", payment_name="Услуги банка")
+    ]
+    row = StatementRow(
+        date="06.11.2026", unp="100325912", name="ОАО АСБ БЕЛАРУСБАНК",
+        purpose="ЧТО УГОДНО", outgoing=Decimal("10"),
+    )
+    assert classify(row, store.data).target == TARGET_CHOOSE
+
+
+def test_routing_rule_sends_commission_to_bank_services(qt_app, store):
+    """v0.69.0: комиссия банка уходит в услуги банка по правилу.
+
+    Дефект: строка с комиссией упиралась в «уточните получателя», а
+    выбора для неё в окне не было — разнос останавливался.
+    """
+
+    from oplata.models import OUTGOING, RoutingRule, add_other_payment
+    from oplata.statement import StatementRow
+    from oplata.statement_match import (
+        TARGET_OTHER_PAYMENT,
+        classify_commission,
+    )
+
+    add_other_payment(
+        store.data, "Услуги банка", "2026-11-06", OUTGOING,
+        unp="100325912", note="",
+    )
+    store.data.routing_rules = [
+        RoutingRule(unp="100325912", name="БАНК", words=["КОМИССИЯ"],
+                    target="other_payment", payment_name="Услуги банка")
+    ]
+    row = StatementRow(
+        date="06.11.2026", unp="100325912", name="ОАО АСБ БЕЛАРУСБАНК",
+        purpose="ПЛАТЕЖИ В СИСТЕМЕ РАСЧЕТОВ ПО КАРТОЧКАМ",
+        incoming=Decimal("1136.74"), commission=Decimal("15.92"),
+    )
+    match = classify_commission(row, store.data)
+    assert match.target == TARGET_OTHER_PAYMENT
+    assert match.payment_name == "Услуги банка"
+
+
+def test_incoming_rule_waits_for_cards_and_cash(qt_app, store):
+    """v0.69.0: приходное правило не перехватывает строку по картам.
+
+    В назначении строки по картам написано «Комиссия банка», поэтому
+    правило для комиссии обязано уступать дорогу картам — иначе вся
+    выручка уедет в услуги банка.
+    """
+
+    from oplata.models import (
+        INCOMING,
+        OUTGOING,
+        RoutingRule,
+        add_other_payment,
+    )
+    from oplata.statement import StatementRow
+    from oplata.statement_match import TARGET_CARD, classify
+
+    add_other_payment(
+        store.data, "Услуги банка", "2026-11-06", OUTGOING,
+        unp="100325912", note="",
+    )
+    store.data.routing_rules = [
+        RoutingRule(unp="100325912", name="БАНК", words=["КОМИССИЯ"],
+                    target="other_payment", payment_name="Услуги банка",
+                    direction=INCOMING)
+    ]
+    row = StatementRow(
+        date="06.11.2026", unp="100325912", name="ОАО АСБ БЕЛАРУСБАНК",
+        purpose=(
+            "Комиссия банка - 15.92 ПЕРЕЧИСЛЕНИЕ ДЕНЕЖНЫХ СРЕДСТВ "
+            "ПО ОПЕРАЦИЯМ С ПЛАТЕЖНЫМИ КАРТОЧКАМИ"
+        ),
+        incoming=Decimal("1136.74"),
+    )
+    assert classify(row, store.data).target == TARGET_CARD
+
+
+def test_manual_choice_beats_rule(qt_app, store):
+    """v0.69.0: ручной выбор в «Куда» старше любого правила.
+
+    Правило подсказывает, но не принуждает: что человек выбрал в
+    списке «Куда», то и записывается.
+    """
+
+    from PySide6.QtWidgets import QComboBox
+    from oplata.dialogs.statement_dialog import COL_TARGET, StatementDialog
+    from oplata.models import (
+        OUTGOING,
+        Counterparty,
+        RoutingRule,
+        add_other_payment,
+    )
+    from oplata.statement import Statement, StatementRow
+    from oplata.statement_match import TARGET_SUPPLIERS
+
+    add_other_payment(
+        store.data, "Услуги банка", "2026-11-06", OUTGOING,
+        unp="100325912", note="",
+    )
+    store.data.suppliers.append(
+        Counterparty(name="ОАО АСБ БЕЛАРУСБАНК", unp="100325912", note="сборы")
+    )
+    store.data.routing_rules = [
+        RoutingRule(unp="100325912", name="БАНК", words=["КОМИССИЯ"],
+                    target="other_payment", payment_name="Услуги банка")
+    ]
+    store.data.bank.unp = "100325912"
+    statement = Statement(
+        rows=[StatementRow(
+            date="06.11.2026", unp="100325912", name="ОАО АСБ БЕЛАРУСБАНК",
+            purpose="КОМИССИЯ ЗА ОБСЛУЖИВАНИЕ",
+            outgoing=Decimal("50"),
+        )]
+    )
+    dialog = StatementDialog(statement, "вм3.pdf", store=store,
+                             bank_unp="100325912")
+    dialog.show()
+    qt_app.processEvents()
+
+    # Правило своё дело сделало: список стоит на «Услуги банка».
+    combo = dialog.table.cellWidget(0, COL_TARGET).findChild(QComboBox)
+    assert "Услуги банка" in combo.currentText()
+
+    # Человек выбрал другое — слушаем человека, а не правило.
+    combo.setCurrentIndex(combo.findData(TARGET_SUPPLIERS))
+    qt_app.processEvents()
+
+    monkeypatch = pytest.MonkeyPatch()
+    monkeypatch.setattr(
+        QMessageBox, "question",
+        staticmethod(lambda *args, **kwargs: QMessageBox.StandardButton.Yes),
+    )
+    monkeypatch.setattr(
+        StatementDialog, "_ask_about_repeat", lambda self: False
+    )
+    dialog._continue()
+    monkeypatch.undo()
+    assert any(
+        "Поставщик: ОАО АСБ БЕЛАРУСБАНК" in line
+        for line in dialog.result_distribution.applied
+    )
+    assert not any(
+        "Услуги банка" in line
+        for line in dialog.result_distribution.applied
+    )
+    dialog.close()
+
+
+def test_no_rule_match_says_so_in_note(qt_app, store):
+    """v0.69.0: о неразобранной строке пишем в «Примечании», не молчим.
+
+    Строка без карточки и без правила не исчезает бесследно: в
+    примечании сказано, что правило не подошло и путь надо выбрать.
+    """
+
+    from oplata.models import OUTGOING, RoutingRule, add_other_payment
+    from oplata.statement import StatementRow
+    from oplata.statement_match import TARGET_CHOOSE, classify
+
+    # УНП общий у двух карточек — по нему их не различить.
+    for name, note in (
+        ("Услуги банка", "комиссия"),
+        ("Прочее", "зарплата"),
+    ):
+        add_other_payment(store.data, name, "2026-11-06", OUTGOING,
+                          unp="100325912", note=note)
+    row = StatementRow(
+        date="06.11.2026", unp="100325912", name="ОАО АСБ БЕЛАРУСБАНК",
+        purpose="ПЕРЕЧИСЛЕНИЕ ЗАРАБОТНОЙ ПЛАТЫ",
+        outgoing=Decimal("8586.99"),
+    )
+    # Правил для этого УНП ещё нет — подсказываем, где их завести.
+    match = classify(row, store.data)
+    assert match.target == TARGET_CHOOSE
+    assert "100325912" in match.note
+    assert "Конфигурации" in match.note
+
+    # Правило есть, но его фраза в этой строке не встречается: писать
+    # «подошло правило» нельзя, а молчать — тем более.
+    store.data.routing_rules = [
+        RoutingRule(unp="100325912", name="БАНК", words=["КОМИССИЯ"],
+                    target="other_payment", payment_name="Услуги банка")
+    ]
+    match = classify(row, store.data)
+    assert match.target == TARGET_CHOOSE
+    assert "УНП 100325912" in match.note
+    assert "не подошло ни одно правило" in match.note
+    assert "Куда" in match.note
+
+
+def test_data_view_has_routing_panel(qt_app, store):
+    """v0.69.0: в «Конфигурации» есть плашка «Свойства контрагента»."""
+
+    from oplata.views.data_view import DataView
+    from oplata.widgets import CollapsiblePanel
+
+    view = DataView(store)
+    view.show()
+    qt_app.processEvents()
+    titles = [
+        panel.toggle.text()
+        for panel in view.findChildren(CollapsiblePanel)
+    ]
+    assert any("Свойства контрагента" in title for title in titles)
+
+
+def test_routing_panel_lists_only_cards_of_that_unp(qt_app, store):
+    """v0.69.0: в списке «Куда» — только карточки этого УНП.
+
+    УНП 500563252 — общий у налогов и взносов. Показываем только эти
+    две карточки, а не весь список: выбирать не из чего лишнего.
+    """
+
+    from oplata.models import OUTGOING, add_other_payment
+    from oplata.views.data_view import DataView
+
+    for name, note in (
+        ("ГУ МФ", "ПОДОХОДНЫЙ НАЛОГ"),
+        ("ГУ МФ (2)", "СТРАХОВЫЕ ВЗНОСЫ"),
+    ):
+        add_other_payment(store.data, name, "2026-11-06", OUTGOING,
+                          unp="500563252", note=note)
+    add_other_payment(store.data, "Услуги банка", "2026-11-06", OUTGOING,
+                      unp="100325912", note="")
+    view = DataView(store)
+    view.show()
+    row = view._add_rule_row()
+    row["unp"].setText("500563252")
+    labels = [
+        row["target"].itemText(i) for i in range(row["target"].count())
+    ]
+    assert len(labels) == 2
+    assert all("ГУ МФ" in label for label in labels)
+    assert not any("Услуги банка" in label for label in labels)
+
+
+def test_routing_panel_saves_and_reloads_rules(qt_app, store):
+    """v0.69.0: правила сохраняются и встают на место при перезагрузке."""
+
+    from oplata.models import OUTGOING, add_other_payment
+    from oplata.views.data_view import DataView
+
+    add_other_payment(store.data, "Услуги банка", "2026-11-06", OUTGOING,
+                      unp="100325912", note="")
+    view = DataView(store)
+    view.show()
+    row = view._add_rule_row()
+    row["name"].setText("ОАО АСБ БЕЛАРУСБАНК")
+    row["unp"].setText("100325912")
+    row["words"].setText("Комиссия банка")
+    row["target"].setCurrentIndex(0)
+    assert view.save_routing_rules() is True
+    assert len(store.data.routing_rules) == 1
+    rule = store.data.routing_rules[0]
+    assert rule.unp == "100325912"
+    assert rule.words == ["Комиссия", "банка"]
+    assert rule.payment_name == "Услуги банка"
+
+    view._load_routing_rules()
+    assert len(view._rule_rows) == 1
+    assert view._rule_rows[0]["words"].text() == "Комиссия банка"
+    assert "Услуги банка" in view._rule_rows[0]["target"].currentText()
+
+
+def test_routing_panel_rejects_bad_rule(qt_app, store):
+    """v0.69.0: незаполненное правило не сохраняется молча.
+
+    Короткий УНП, пустая фраза и невыбранная карточка — это ошибка, а
+    не «пусть будет правило без адреса».
+    """
+
+    from oplata.views.data_view import DataView
+
+    view = DataView(store)
+    view.show()
+    row = view._add_rule_row()
+    row["unp"].setText("12345")
+    row["words"].setText("ЧТО-ТО")
+    monkeypatch = pytest.MonkeyPatch()
+    shown: list[str] = []
+    monkeypatch.setattr(
+        QMessageBox, "warning",
+        staticmethod(lambda *args: shown.append(args[-1])),
+    )
+    ok = view.save_routing_rules()
+    monkeypatch.undo()
+    assert ok is False
+    assert shown
+    assert "9 цифр" in shown[-1]
+    assert store.data.routing_rules == []
+
+
+def test_routing_panel_warns_about_silent_duplicate_unp(qt_app, store):
+    """v0.69.0: задвоенный УНП без примечания — предупреждение, не запрет.
+
+    Примечание у таких карточек ключевое: по нему они и различаются в
+    списке «Куда». Но в старых данных оно пустое, поэтому запретом не
+    душим — пишем, что заполнить стоит.
+    """
+
+    from oplata.models import Counterparty
+    from oplata.views.data_view import DataView
+
+    store.data.suppliers.append(
+        Counterparty(name='ООО "ОМА"', unp="100005713", note="Стройматериалы")
+    )
+    store.data.suppliers.append(
+        Counterparty(name='ООО "ОМА" (2)', unp="100005713", note="")
+    )
+    view = DataView(store)
+    view.show()
+    assert "100005713" in view.routing_warning_label.text()
+    assert "Примечание" in view.routing_warning_label.text()
+
+    store.data.suppliers[-1].note = "Продукты"
+    view._refresh_routing_warning()
+    assert view.routing_warning_label.text() == ""
+
+
+def test_rule_and_routing_survive_save_load(qt_app, store):
+    """v0.69.0: правила переживают запись и чтение файла данных."""
+
+    from oplata.models import RoutingRule
+    from oplata.storage import DataStore
+
+    store.data.routing_rules = [
+        RoutingRule(
+            unp="500563252", name="ГУ МФ",
+            words=["ПОДОХОДНЫЙ", "НАЛОГ"], target="other_payment",
+            payment_name="ГУ МФ",
+        )
+    ]
+    store.save()
+    back = DataStore(store.path)
+    assert len(back.data.routing_rules) == 1
+    rule = back.data.routing_rules[0]
+    assert rule.unp == "500563252"
+    assert rule.words == ["ПОДОХОДНЫЙ", "НАЛОГ"]
+    assert rule.payment_name == "ГУ МФ"
+    assert "ПОДОХОДНЫЙ" in rule.label()
+
+
+def test_routing_rules_empty_in_old_data_file(qt_app, store):
+    """v0.69.0: старый файл без правил читается без ошибок."""
+
+    import json
+
+    from oplata.storage import DataStore
+
+    store.data.routing_rules = []
+    store.save()
+    raw = json.loads(store.path.read_text(encoding="utf-8"))
+    raw.pop("routing_rules", None)
+    store.path.write_text(json.dumps(raw), encoding="utf-8")
+    back = DataStore(store.path)
+    assert back.data.routing_rules == []
+
+
+def test_routing_panel_warns_about_weak_words(qt_app, store):
+    """v0.69.0: слово, которое правило не уточняет, — предупреждение.
+
+    «ЗА» короче трёх знаков, «БАНК» стоит почти в каждой строке. Такое
+    правило сработает где попало — об этом надо сказать. Запретом не
+    делаем: бывает фраза, где короткое слово как раз решает.
+    """
+
+    from oplata.models import OUTGOING, add_other_payment
+    from oplata.statement_match import rule_weak_words
+    from oplata.views.data_view import DataView
+
+    assert rule_weak_words(["ЗА"]) == ["ЗА"]
+    assert rule_weak_words(["БАНК"]) == ["БАНК"]
+    assert rule_weak_words(["ПОДОХОДНЫЙ", "НАЛОГ"]) == []
+
+    add_other_payment(store.data, "Услуги банка", "2026-11-06", OUTGOING,
+                      unp="100325912", note="")
+    view = DataView(store)
+    view.show()
+    row = view._add_rule_row()
+    row["unp"].setText("100325912")
+    row["words"].setText("Комиссия за БАНК")
+    row["target"].setCurrentIndex(0)
+    assert view.save_routing_rules() is True  # сохранили, но предупредили
+    saved = [
+        word for word in store.data.routing_rules[0].words
+        if word.lower() in ("за", "банк")
+    ]
+    assert "за" in saved and "БАНК" in saved
+    warning = view.routing_warning_label.text()
+    assert "за" in warning
+    assert "БАНК" in warning
+
+
+def test_rule_of_other_direction_never_matches(qt_app, store):
+    """v0.69.0: правило «Оплата» не трогает приход, и наоборот.
+
+    У ОАО «АСБ БЕЛАРУСБАНК» в одном файле и приход по картам, и
+    комиссия за него. Правило про комиссию помечено «Оплата» — значит
+    приходную строку оно обязано пропустить, даже если слово
+    «КОМИССИЯ» в её назначении стоит.
+    """
+
+    from oplata.models import (
+        INCOMING,
+        OUTGOING,
+        RoutingRule,
+        add_other_payment,
+    )
+    from oplata.statement import StatementRow
+    from oplata.statement_match import (
+        TARGET_CARD,
+        TARGET_CHOOSE,
+        TARGET_OTHER_INCOME,
+        TARGET_OTHER_PAYMENT,
+        classify,
+    )
+
+    # Две карточки с одним УНП: без правила строку не различить,
+    # поэтому успех означает именно сработавшее правило.
+    for name in ("Услуги банка", "Прочее"):
+        add_other_payment(
+            store.data, name, "2026-11-06", OUTGOING,
+            unp="100325912", note="",
+        )
+    store.data.routing_rules = [
+        RoutingRule(unp="100325912", name="БАНК", words=["КОМИССИЯ"],
+                    target="other_payment", payment_name="Услуги банка",
+                    direction=OUTGOING),
+        RoutingRule(unp="100325912", name="БАНК", words=["ПРОЦЕНТЫ"],
+                    target="other_income", direction=INCOMING),
+    ]
+    # Приход по картам: в назначении есть и «Комиссия банка». Правило
+    # оплаты его не трогает — строка остаётся поступлением по картам.
+    incoming_row = StatementRow(
+        date="06.11.2026", unp="100325912", name="ОАО АСБ БЕЛАРУСБАНК",
+        purpose=(
+            "Комиссия банка - 15.92 ПЕРЕЧИСЛЕНИЕ ДЕНЕЖНЫХ СРЕДСТВ "
+            "ПО ОПЕРАЦИЯМ С ПЛАТЕЖНЫМИ КАРТОЧКАМИ"
+        ),
+        incoming=Decimal("1136.74"),
+    )
+    assert classify(incoming_row, store.data).target == TARGET_CARD
+
+    # Расход — правило поступления его не трогает.
+    outgoing_row = StatementRow(
+        date="06.11.2026", unp="100325912", name="ОАО АСБ БЕЛАРУСБАНК",
+        purpose="ПРОЦЕНТЫ ЗА ОБСЛУЖИВАНИЕ", outgoing=Decimal("40"),
+    )
+    assert classify(outgoing_row, store.data).target == TARGET_CHOOSE
+
+    # А приход со своим словом правило поступления берёт.
+    percent_row = StatementRow(
+        date="06.11.2026", unp="100325912", name="ОАО АСБ БЕЛАРУСБАНК",
+        purpose="ПРОЦЕНТЫ НА ОСТАТОК ПО СЧЕТУ", incoming=Decimal("12.50"),
+    )
+    match = classify(percent_row, store.data)
+    assert match.target == TARGET_OTHER_INCOME
+    assert "ПРОЦЕНТЫ" in match.note
+
+
+def test_commission_uses_outgoing_rule_only(qt_app, store):
+    """v0.69.0: комиссию разбирают только правила «Оплата».
+
+    Комиссия банка — всегда расход, даже когда висит на приходной
+    строке. Правило «Поступление» её не касается.
+    """
+
+    from oplata.models import INCOMING, OUTGOING, RoutingRule, add_other_payment
+    from oplata.statement import StatementRow
+    from oplata.statement_match import (
+        TARGET_CHOOSE,
+        classify_commission,
+    )
+
+    add_other_payment(
+        store.data, "Услуги банка", "2026-11-06", OUTGOING,
+        unp="100325912", note="комиссия",
+    )
+    add_other_payment(
+        store.data, "Прочее", "2026-11-06", OUTGOING,
+        unp="100325912", note="вознаграждение",
+    )
+    # Правило про комиссию, но помеченное «Поступление».
+    store.data.routing_rules = [
+        RoutingRule(unp="100325912", name="БАНК", words=["КОМИССИЯ"],
+                    target="other_payment", payment_name="Услуги банка",
+                    direction=INCOMING)
+    ]
+    row = StatementRow(
+        date="06.11.2026", unp="100325912", name="ОАО АСБ БЕЛАРУСБАНК",
+        purpose="ПЛАТЕЖИ ПО КАРТОЧКАМ. Комиссия банка",
+        incoming=Decimal("1136.74"), commission=Decimal("15.92"),
+    )
+    # Комиссия — расход, правило прихода к ней не относится: двух
+    # карточек с одним УНП правило не различает, остаётся выбор.
+    assert classify_commission(row, store.data).target == TARGET_CHOOSE
+
+    store.data.routing_rules = [
+        RoutingRule(unp="100325912", name="БАНК", words=["КОМИССИЯ"],
+                    target="other_payment", payment_name="Услуги банка",
+                    direction=OUTGOING)
+    ]
+    match = classify_commission(row, store.data)
+    assert match.target != TARGET_CHOOSE
+    assert match.payment_name == "Услуги банка"
+
+
+def test_routing_panel_direction_column(qt_app, store):
+    """v0.69.0: колонка «Направление» стоит после фразы, по умолчанию
+    «Оплата», и сохраняется вместе с правилом.
+    """
+
+    from oplata.models import (
+        INCOMING,
+        OUTGOING,
+        Counterparty,
+        add_other_payment,
+    )
+    from oplata.views.data_view import DataView
+
+    add_other_payment(store.data, "Услуги банка", "2026-11-06", OUTGOING,
+                      unp="100325912", note="")
+    view = DataView(store)
+    view.show()
+    row = view._add_rule_row()
+    labels = [
+        row["direction"].itemText(i)
+        for i in range(row["direction"].count())
+    ]
+    # Пока УНП пуст, список «Куда» собран по направлению «Оплата».
+    assert row["target"].count() >= 1
+    assert labels == ["Оплата", "Поступление"]
+    assert row["direction"].currentData() == OUTGOING  # по умолчанию
+
+    # Список «Куда» зависит от направления: у приходной строки вида
+    # оплаты не бывает, зато есть покупатели и прочие поступления.
+    store.data.customers.append(
+        Counterparty(name="ООО \"Ромашка\"", unp="100325912", note="розница")
+    )
+    row["unp"].setText("100325912")
+    row["words"].setText("Комиссия банка")
+    row["direction"].setCurrentIndex(row["direction"].findData(OUTGOING))
+    assert row["target"].count() == 1  # только вид оплаты «Услуги банка»
+    assert "Услуги банка" in row["target"].itemText(0)
+    row["direction"].setCurrentIndex(row["direction"].findData(INCOMING))
+    labels = [
+        row["target"].itemText(i) for i in range(row["target"].count())
+    ]
+    assert "Ромашка" in labels[0]
+    assert labels[-1] == "Прочие поступления"
+    assert not any("Услуги банка" in label for label in labels)
+
+    row["target"].setCurrentIndex(0)
+    assert view.save_routing_rules() is True
+    assert store.data.routing_rules[0].direction == INCOMING
+
+    view._load_routing_rules()
+    assert len(view._rule_rows) == 1
+    assert view._rule_rows[0]["direction"].currentData() == INCOMING
+
+
+def test_direction_survives_save_load(qt_app, store):
+    """v0.69.0: направление переживает запись и чтение файла данных."""
+
+    from oplata.models import INCOMING, RoutingRule
+    from oplata.storage import DataStore
+
+    store.data.routing_rules = [
+        RoutingRule(
+            unp="100325912", name="БАНК", words=["ПРОЦЕНТЫ"],
+            target="other_payment", payment_name="Проценты банка",
+            direction=INCOMING,
+        )
+    ]
+    store.save()
+    back = DataStore(store.path)
+    assert back.data.routing_rules[0].direction == INCOMING
+    assert back.data.routing_rules[0].direction_label() == "Поступление"
+
+
+def test_old_rule_without_direction_is_payment(qt_app, store):
+    """v0.69.0: файл без поля «direction» читается как правило оплаты.
+
+    Колонка «Направление» появилась следом за первым выпуском панели:
+    правила, сохранённые до неё, обязаны работать как прежде.
+    """
+
+    import json
+
+    from oplata.models import OUTGOING
+    from oplata.storage import DataStore
+
+    store.data.routing_rules = []
+    store.save()
+    raw = json.loads(store.path.read_text(encoding="utf-8"))
+    raw["routing_rules"] = [
+        {
+            "unp": "100325912",
+            "name": "БАНК",
+            "words": ["КОМИССИЯ"],
+            "target": "other_payment",
+            "counterparty_id": "",
+            "payment_name": "Услуги банка",
+        }
+    ]
+    store.path.write_text(json.dumps(raw), encoding="utf-8")
+    back = DataStore(store.path)
+    assert back.data.routing_rules[0].direction == OUTGOING

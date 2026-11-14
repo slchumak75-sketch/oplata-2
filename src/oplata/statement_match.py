@@ -43,6 +43,7 @@ from .models import (
     cash_receipt_amount,
     operation_amount,
     daily_operation_total,
+    rule_words_found,
     set_daily_cash_receipt,
     set_daily_operation,
     set_daily_other_payment,
@@ -291,19 +292,72 @@ def choose_option_data(
     return f"choose:{target}:{counterparty_id}:{payment_name}"
 
 
-def _choose_match(row: StatementRow, target: str, items: list) -> Match:
-    """Строка, которой подходит несколько карточек (v0.61.0)."""
+def unp_has_rules(unp: str, data: AppData) -> bool:
+    """Есть ли для этого УНП правила разноса (v0.69.0).
+
+    По ответу различаем две разные ситуации: правила для контрагента
+    ещё не писали (тогда подсказываем, где их завести) и правила есть,
+    но ни одно не подошло (тогда молчать нельзя — это значит, что либо
+    фраза в правиле не та, либо в выписке новое назначение).
+    """
+
+    wanted = (unp or "").strip()
+    if not wanted:
+        return False
+    return any(
+        (rule.unp or "").strip() == wanted
+        for rule in getattr(data, "routing_rules", [])
+    )
+
+
+def _choose_note(
+    row: StatementRow, count: int, data: AppData | None, what: str
+) -> str:
+    """Примечание строки, которой подходит несколько карточек.
+
+    ``what`` — «сколько чего» в нужном падеже: «2 карточек» или
+    «2 видов оплаты».
+    """
 
     unp = row.unp or "—"
+    # v0.69.0: подсказываем, где раз и навсегда прописать путь, — чтобы
+    # не выбирать руками одну и ту же строку в каждой выписке.
+    if data is not None and unp_has_rules(row.unp, data):
+        return (
+            f"УНП {unp}: не подошло ни одно правило — "
+            f"выберите в колонке «Куда» ({what})"
+        )
+    return (
+        f"Уточните: УНП {unp} подходит {what} — выберите в колонке "
+        "«Куда» (или задайте правило в «Конфигурации»)"
+    )
+
+
+def _choose_match(
+    row: StatementRow, target: str, items: list, data: AppData | None = None
+) -> Match:
+    """Строка, которой подходит несколько карточек (v0.61.0)."""
+
     return Match(
         TARGET_CHOOSE,
-        f"Уточните: УНП {unp} подходит {len(items)} "
-        f"{_cards_word(len(items))} — выберите в колонке «Куда»",
+        _choose_note(
+            row, len(items), data, f"{len(items)} {_cards_word(len(items))}"
+        ),
         options=[
             (target, getattr(item, "id", ""), "", candidate_label(item))
             for item in items
         ],
     )
+
+
+def _payments_word(count: int) -> str:
+    """«вид оплаты» / «вида оплаты» / «видов оплаты» по числу."""
+
+    if count % 10 == 1 and count % 100 != 11:
+        return "вид оплаты"
+    if count % 10 in (2, 3, 4) and count % 100 not in (12, 13, 14):
+        return "вида оплаты"
+    return "видов оплаты"
 
 
 def _cards_word(count: int) -> str:
@@ -316,6 +370,169 @@ def _cards_word(count: int) -> str:
     return "карточек"
 
 
+# Слова, которые стоят почти в каждой строке любой выписки (v0.69.0).
+# Правило с таким словом ничего не уточняет: оно сработает и там, где
+# не должно. Проверяем по списку, а не по частоте в файле: выписку в
+# «Конфигурации» не загружают, а меру «почти в каждой строке» всё
+# равно задаёт язык платёжных документов, а не конкретный файл.
+FREQUENT_STATEMENT_WORDS = frozenset(
+    {
+        "БАНК",
+        "БЕЛ",
+        "БЕЛАРУСБАНК",
+        "В",
+        "ДЕНЕЖНЫХ",
+        "ДЛЯ",
+        "ЗА",
+        "И",
+        "ИЗ",
+        "КОП",
+        "ЛИЦЕВОГО",
+        "НА",
+        "НДС",
+        "НЕ",
+        "ОТ",
+        "ПЛАТЕЖ",
+        "ПЛАТЕЖА",
+        "ПЛАТЕЖИ",
+        "ПО",
+        "РУБ",
+        "С",
+        "СРЕДСТВ",
+        "СРЕДСТВА",
+        "СУММА",
+        "СУММЫ",
+        "СЧЕТ",
+        "СЧЕТА",
+        "У",
+    }
+)
+
+# Минимальная длина ключевого слова правила (v0.69.0). Короче — значит
+# слово либо предлог, либо обрывок, и правило с ним сработает где
+# попало («ЗА», «ПО», «ОТ»).
+MIN_RULE_WORD_LENGTH = 3
+
+
+def rule_weak_words(words: list[str]) -> list[str]:
+    """Слова правила, которые его не уточняют (v0.69.0).
+
+    Короткие (меньше трёх знаков) и те, что стоят почти в каждой
+    строке выписки. Такое слово правило не уточняет, а ослабляет:
+    сработает там, где не должно. Это предупреждение, а не запрет —
+    бывает фраза, где короткое слово как раз решает.
+    """
+
+    weak: list[str] = []
+    for word in words:
+        clean = (word or "").strip().strip(".,;:()\"'").upper()
+        if not clean:
+            continue
+        if len(clean) < MIN_RULE_WORD_LENGTH:
+            weak.append(word)
+        elif clean in FREQUENT_STATEMENT_WORDS:
+            weak.append(word)
+    return weak
+
+
+def rule_text(row: StatementRow) -> str:
+    """Где ищем ключевые слова правила (v0.69.0).
+
+    И в наименовании, и в назначении платежа: у одной строки выписки
+    ключевое слово стоит в наименовании («ГЛАВНОЕ УПРАВЛЕНИЕ МФ РБ»),
+    у другой — только в назначении («ПОДОХОДНЫЙ НАЛОГ»).
+    """
+
+    return f"{row.name or ''} {row.purpose or ''}"
+
+
+def find_rule(row: StatementRow, data: AppData, direction: str = ""):
+    """Правило разноса для строки выписки (v0.69.0).
+
+    Правила отбираются по УНП **и направлению**: «Оплата» не смотрит на
+    приходные строки, «Поступление» — на расходные. У ОАО «АСБ
+    БЕЛАРУСБАНК» в одном файле бывает и то, и другое — поступление по
+    картам и комиссия за него, — и без направления правило про комиссию
+    утянуло бы в расход весь приход.
+
+    ``direction`` — чем считать строку; по умолчанию берётся её
+    собственное направление. Комиссию банка (всегда расход) разбирают,
+    явно передавая ``OUTGOING``.
+
+    Если подошло несколько правил, побеждает более точное — то, у
+    которого больше слов: «ПОДОХОДНЫЙ НАЛОГ» надёжнее, чем «НАЛОГ».
+    """
+
+    unp = (row.unp or "").strip()
+    if not unp:
+        return None
+    wanted = direction or (INCOMING if row.is_incoming else OUTGOING)
+    text = rule_text(row)
+    best = None
+    best_score = 0
+    for rule in getattr(data, "routing_rules", []):
+        if (rule.unp or "").strip() != unp:
+            continue
+        if getattr(rule, "direction", OUTGOING) != wanted:
+            continue
+        if not rule_words_found(rule.words, text):
+            continue
+        score = len([word for word in rule.words if word.strip()])
+        if score > best_score:
+            best, best_score = rule, score
+    return best
+
+
+def match_by_rule(rule, data: AppData) -> Match | None:
+    """Назначение по правилу (v0.69.0).
+
+    ``None`` — карточки, которую правило называет, в базе больше нет
+    (её удалили или переименовали). Тогда строка разносится по обычным
+    правилам: молча терять сумму нельзя, но и писать «по правилу»,
+    которого не существует, тоже.
+    """
+
+    if rule.target == TARGET_OTHER_PAYMENT:
+        name = rule.payment_name
+        if not name:
+            return None
+        payment = next(
+            (item for item in data.other_payments if item.name == name), None
+        )
+        if payment is None:
+            return None
+        return Match(
+            TARGET_OTHER_PAYMENT,
+            f"Правило «{rule.label()}»: вид оплаты {name}",
+            payment_name=name,
+        )
+    if rule.target == TARGET_OTHER_INCOME:
+        return Match(
+            TARGET_OTHER_INCOME,
+            f"Правило «{rule.label()}»: {OTHER_INCOME_ROW_TITLE.lower()}",
+        )
+    if rule.target in (TARGET_SUPPLIERS, TARGET_CUSTOMERS):
+        items = (
+            data.suppliers
+            if rule.target == TARGET_SUPPLIERS
+            else data.customers
+        )
+        person = next(
+            (item for item in items if item.id == rule.counterparty_id), None
+        )
+        if person is None:
+            return None
+        who = (
+            "Поставщик" if rule.target == TARGET_SUPPLIERS else "Покупатель"
+        )
+        return Match(
+            rule.target,
+            f"Правило «{rule.label()}»: {who.lower()} {person.name}",
+            counterparty_id=person.id,
+        )
+    return None
+
+
 def classify(row: StatementRow, data: AppData, bank_unp: str = "") -> Match:
     """Определить, куда попадёт строка выписки.
 
@@ -326,16 +543,31 @@ def classify(row: StatementRow, data: AppData, bank_unp: str = "") -> Match:
     магазина — их разносим по назначению платежа.
     """
 
+    # v0.69.0: правило разноса (панель «Свойства контрагента») старше
+    # обычного поиска: человек сам объявил, куда несёт эту сумму. Так
+    # распознаются и строки с задвоенным УНП, и сборы банка.
+    #
+    # Для входящих правила проверяются **после** карт и наличных: в
+    # назначении строки по картам тоже стоит «Комиссия банка», и
+    # правило для комиссии утащило бы за собой всю выручку.
+    if not row.is_incoming:
+        if rule := find_rule(row, data):
+            if match := match_by_rule(rule, data):
+                return match
+
     if row.is_incoming:
         if row.is_cards:
             return Match(TARGET_CARD, "Поступление по картам")
         if row.is_cash:
             return Match(TARGET_CASH, "Поступление наличными")
+        if rule := find_rule(row, data):
+            if match := match_by_rule(rule, data):
+                return match
         customers = find_all_by_unp(data.customers, row.unp)
         if len(customers) > 1:
             # v0.61.0: УНП подходит несколько покупателей — угадывать
             # не надо, получателя выбирает пользователь.
-            return _choose_match(row, TARGET_CUSTOMERS, customers)
+            return _choose_match(row, TARGET_CUSTOMERS, customers, data)
         if customers:
             return Match(
                 TARGET_CUSTOMERS,
@@ -350,7 +582,7 @@ def classify(row: StatementRow, data: AppData, bank_unp: str = "") -> Match:
         )
     suppliers = find_all_by_unp(data.suppliers, row.unp)
     if len(suppliers) > 1:
-        return _choose_match(row, TARGET_SUPPLIERS, suppliers)
+        return _choose_match(row, TARGET_SUPPLIERS, suppliers, data)
     if suppliers:
         return Match(
             TARGET_SUPPLIERS,
@@ -363,9 +595,12 @@ def classify(row: StatementRow, data: AppData, bank_unp: str = "") -> Match:
         # показываем их списком, пусть выберет пользователь.
         return Match(
             TARGET_CHOOSE,
-            f"Уточните: УНП {row.unp} подходит "
-            f"{len(payments)} {_cards_word(len(payments))} видов оплаты "
-            "— выберите в колонке «Куда»",
+            _choose_note(
+                row,
+                len(payments),
+                data,
+                f"{len(payments)} {_payments_word(len(payments))}",
+            ),
             options=[
                 (
                     TARGET_OTHER_PAYMENT,
