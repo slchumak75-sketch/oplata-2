@@ -7075,6 +7075,7 @@ def test_week_tables_are_sorted_alphabetically(qt_app, store):
 
     from oplata.app import MainWindow
     from oplata.models import Counterparty
+    from oplata.views.week_view import NAME_ROLE
 
     store.data.suppliers = [
         Counterparty(name=name) for name in ("Ясень", "ёлка", "Акация", "Берёза")
@@ -7088,8 +7089,10 @@ def test_week_tables_are_sorted_alphabetically(qt_app, store):
 
     for view in (window.suppliers_view, window.customers_view):
         table = view.table
+        # v0.74.0: в ячейке лежит обрезанный под колонку текст, поэтому
+        # порядок проверяем по полному названию (роль NAME_ROLE).
         names = [
-            table.item(row, 0).text()
+            table.item(row, 0).data(NAME_ROLE)
             for row in range(4, 4 + len(view.counterparties()))
         ]
         assert names == [c.name for c in view.counterparties()]
@@ -7761,7 +7764,7 @@ def test_counterparty_note_shows_in_week_table_tooltip(qt_app, store):
     """v0.60.0: примечание контрагента видно в подсказке строки."""
 
     from oplata.models import Counterparty
-    from oplata.views.week_view import WeekView
+    from oplata.views.week_view import NAME_ROLE, WeekView
 
     store.data.suppliers.append(
         Counterparty(
@@ -7772,15 +7775,17 @@ def test_counterparty_note_shows_in_week_table_tooltip(qt_app, store):
     view = WeekView(store, "supplier", lambda *_a: None)
     view.show()
     qt_app.processEvents()
+    # v0.74.0: ищем строку по полному названию (роль NAME_ROLE) —
+    # текст ячейки обрезан под ширину колонки.
     rows = [
         row
         for row in range(view.table.rowCount())
         if view.table.item(row, 0) is not None
-        and view.table.item(row, 0).text() == "Оптовик"
+        and view.table.item(row, 0).data(NAME_ROLE) == "Оптовик"
     ]
     assert rows, "строка поставщика не найдена"
     item = view.table.item(rows[0], 0)
-    assert item is not None and item.text() == "Оптовик"
+    assert item is not None and item.data(NAME_ROLE) == "Оптовик"
     assert "Примечание: оплату присылает со второго счёта" in item.toolTip()
     view.close()
 
