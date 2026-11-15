@@ -3837,8 +3837,12 @@ def test_clear_database_confirms_and_exports(qt_app, store, monkeypatch, tmp_pat
 
     view = DataView(store, on_calendar_saved=lambda: None)
     # Настоящий путь — внутри папки «Загрузки» системной учётной записи.
+    # v0.79.0: переменная окружения OPLATA_DOWNLOADS_DIR переопределяет
+    # «Загрузки» (тестам она нужна, чтобы копии не шли на машину),
+    # поэтому настоящий путь смотрим без неё.
     assert DataView.BACKUP_DIR_NAME == "База поставщики оплата"
-    real_dir = view._backup_dir()
+    monkeypatch.delenv("OPLATA_DOWNLOADS_DIR", raising=False)
+    real_dir = view.backup_dir()
     downloads = QStandardPaths.writableLocation(
         QStandardPaths.StandardLocation.DownloadLocation
     )
@@ -3847,7 +3851,7 @@ def test_clear_database_confirms_and_exports(qt_app, store, monkeypatch, tmp_pat
     # Дальше копии ищем в подменённой папке: путь к «Загрузкам» на
     # машине сборки другой, а проверять надо сам факт копий.
     backup_dir = tmp_path / "Загрузки" / "База поставщики оплата"
-    monkeypatch.setattr(DataView, "_backup_dir", lambda self: backup_dir)
+    monkeypatch.setattr(DataView, "backup_dir", lambda self: backup_dir)
 
     supplier = next(s for s in store.data.suppliers if s.name == "ггг")
     store.data.operations.append(
@@ -3926,6 +3930,7 @@ def test_base_exchange_buttons_are_admin_only(qt_app, store):
     assert admin_titles() == [
         "Выгрузить базу",
         "Загрузить базу",
+        "Восстановить из копии…",
         "Очистить базу",
         "Очистить таблицы…",
         "Конфигурация",
@@ -4933,14 +4938,15 @@ def test_base_menu_button_is_labelled_base(qt_app, store):
     assert button.text() == "База"
     assert "▼" not in button.text()
     assert "баз" in button.toolTip().lower(), "подсказка объясняет назначение"
-    # Меню на месте: пять пунктов, последний — «Конфигурация».
+    # Меню на месте: шесть пунктов, последний — «Конфигурация»
+    # (v0.79.0 добавил «Восстановить из копии…»).
     titles = [
         action.text()
         for action in button.menu().actions()
         if not action.isSeparator()
     ]
     assert titles[-1] == "Конфигурация"
-    assert len(titles) == 5
+    assert len(titles) == 6
     window.close()
 
 
