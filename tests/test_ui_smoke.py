@@ -4779,6 +4779,144 @@ def test_autosave_runs_once_per_exit(qt_app, store, monkeypatch):
     assert len(calls) == 1, "выгрузка всё равно состоялась при autosave_on_exit=False"
 
 
+def test_payments_summary_number_columns_are_wider(qt_app, store):
+    """v0.77.0: месяцы, кварталы и «Год» — на 30 % шире своей доли.
+
+    Просьба пользователя: в прежнюю ширину суммы читались впритык.
+    Колонки перестали делить остаток поровну (Stretch) и получили
+    фиксированную ширину, поэтому таблица выходит за край окна и
+    прокручивается по горизонтали.
+    """
+    from datetime import date
+
+    from PySide6.QtWidgets import QHeaderView
+
+    from oplata.views.month_summary_view import (
+        MIN_NUMBER_COLUMN,
+        NUMBER_WIDTH_SCALE,
+    )
+    from oplata.views.payments_summary_view import PaymentsSummaryDialog
+
+    dialog = PaymentsSummaryDialog(store, date(2026, 11, 1))
+    # Размер задаём явно: в CI и на рабочем месте окно разное, и доля
+    # колонки от него зависит (правило из v0.75.0).
+    dialog.resize(1920, 1000)
+    dialog.show()
+    qt_app.processEvents()
+
+    table = dialog.table
+    header = table.horizontalHeader()
+    text_columns = dialog.text_columns
+    numeric = list(range(text_columns, table.columnCount()))
+    taken = sum(table.columnWidth(column) for column in range(text_columns))
+    share = (table.viewport().width() - taken) // len(numeric)
+    # Отсчёт идёт от ширины, которую колонка занимает сейчас: на узком
+    # экране она упирается в минимум, и прирост считается от него.
+    expected = max(
+        int(round(max(share, MIN_NUMBER_COLUMN) * NUMBER_WIDTH_SCALE)),
+        MIN_NUMBER_COLUMN,
+    )
+    for column in numeric:
+        # Допуск в 1 px: ширина считается от доли, а доля — от ширины
+        # окна, которая в момент расчёта и в момент проверки может
+        # отличаться на пиксель (в headless-прогоне окно другое).
+        assert abs(table.columnWidth(column) - expected) <= 1
+    # Таблица шире окна — значит, есть что прокручивать.
+    assert header.length() > table.viewport().width()
+    assert table.horizontalScrollBar().maximum() > 0
+
+    # В «Сводке поступлений» ширины прежние: прокрутки там нет.
+    from oplata.views.incoming_summary_view import IncomingSummaryDialog
+
+    incoming = IncomingSummaryDialog(store, date(2026, 11, 1))
+    incoming.resize(1920, 1000)
+    incoming.show()
+    qt_app.processEvents()
+    assert incoming.WIDE_NUMBER_COLUMNS is False
+    assert incoming.frozen_columns is None
+    for column in range(1, incoming.table.columnCount()):
+        assert (
+            incoming.table.horizontalHeader().sectionResizeMode(column)
+            == QHeaderView.ResizeMode.Stretch
+        ), "колонки по-прежнему делят ширину поровну"
+    incoming.close()
+    dialog.close()
+
+
+def test_payments_summary_freezes_first_three_columns(qt_app, store):
+    """v0.77.0: «Вид оплаты», «НДС» и «Примечание» остаются на месте.
+
+    Раз таблица стала шире окна и прокручивается, без закрепления
+    строка уезжала бы без подписи: непонятно, чьи это суммы.
+    """
+    from datetime import date
+
+    from oplata.views.payments_summary_view import PaymentsSummaryDialog
+
+    dialog = PaymentsSummaryDialog(store, date(2026, 11, 1))
+    dialog.resize(1920, 1000)
+    dialog.show()
+    qt_app.processEvents()
+
+    table = dialog.table
+    frozen = dialog.frozen_columns
+    assert frozen is not None, "закреплённых колонок нет"
+    assert frozen.count == 3
+    view = frozen.view
+    assert view.isVisible()
+    # Модель общая — правки основной таблицы видны сразу.
+    assert view.model() is table.model()
+    for column in range(3):
+        assert view.columnWidth(column) == table.columnWidth(column)
+    assert view.isColumnHidden(3), "остальные колонки спрятаны"
+    # Вид оплаты читается в закреплённой таблице.
+    assert view.model().index(0, 0).data() == "Поставщики"
+
+    # Накладка лежит на левом краю таблицы и закрывает три колонки.
+    assert view.pos().x() <= table.frameWidth()
+    assert view.width() == sum(
+        table.columnWidth(column) for column in range(3)
+    )
+
+    # Прокрутка уводит числовые колонки, а закреплённые — нет.
+    table.horizontalScrollBar().setValue(
+        table.horizontalScrollBar().maximum()
+    )
+    qt_app.processEvents()
+    assert table.horizontalHeader().offset() != 0, "таблица прокрутилась"
+    assert view.pos().x() <= table.frameWidth(), "накладка осталась на месте"
+    assert view.horizontalHeader().offset() == 0, "и не прокрутилась сама"
+    assert view.model().index(0, 0).data() == "Поставщики"
+    dialog.close()
+
+
+def test_base_menu_button_shows_only_the_arrow(qt_app, store):
+    """v0.77.0: на кнопке меню — одна птичка «вниз», без слова «База».
+
+    Подпись дублировала переключатель базы («МИР»/«КОРЕЛИЧИ») в той же
+    шапке и отъедала место у вкладок. Что за кнопка — говорит подсказка.
+    """
+    from oplata.app import MainWindow
+
+    window = MainWindow(store)
+    window.show()
+    qt_app.processEvents()
+
+    button = window.base_menu_button
+    assert button.text() == "▼"
+    assert "База" not in button.text()
+    assert "База" in button.toolTip(), "подсказка Explain назначение"
+    # Меню на месте: пять пунктов, последний — «Конфигурация».
+    titles = [
+        action.text()
+        for action in button.menu().actions()
+        if not action.isSeparator()
+    ]
+    assert titles[-1] == "Конфигурация"
+    assert len(titles) == 5
+    window.close()
+
+
 def test_payments_summary_button_opens_monthly_table(qt_app, store, monkeypatch):
     """v0.33.0: кнопки — внизу панели, столбиком; таблица по месяцам."""
 
@@ -4905,8 +5043,7 @@ def test_payments_summary_button_opens_monthly_table(qt_app, store, monkeypatch)
 
     # v0.32.0: окно на весь экран; колонка вида — узкая по содержимому,
     # v0.34.0: колонка «НДС» — тоже по содержимому, v0.76.0: за ней
-    # «Примечание» — тоже по содержимому, а все числовые колонки делят
-    # остаток ширины поровну.
+    # «Примечание» — тоже по содержимому.
     assert dialog.windowState() & Qt.WindowState.WindowMaximized
     header = table.horizontalHeader()
     for column in range(3):  # вид оплаты, НДС, примечание
@@ -4914,8 +5051,15 @@ def test_payments_summary_button_opens_monthly_table(qt_app, store, monkeypatch)
             header.sectionResizeMode(column)
             == QHeaderView.ResizeMode.ResizeToContents
         )
+    # v0.77.0: числовые колонки больше не делят остаток поровну — они
+    # на 30 % шире своей доли (NUMBER_WIDTH_SCALE), поэтому у них
+    # фиксированная ширина, а таблица прокручивается по горизонтали.
     for column in range(3, table.columnCount()):
-        assert header.sectionResizeMode(column) == QHeaderView.ResizeMode.Stretch
+        assert (
+            header.sectionResizeMode(column)
+            == QHeaderView.ResizeMode.Interactive
+        )
+    assert table.horizontalScrollBar().maximum() > 0, "появилась прокрутка"
 
     dialog.close()
     window.close()
@@ -7206,6 +7350,57 @@ def test_other_payment_card_saves_unp(qt_app, store):
         dialog.unp_edit.insert(char)
     assert dialog.unp_edit.text() == "123456789"
     dialog.close()
+
+
+def test_week_view_opens_dialogs_on_the_date_from_the_header(
+    qt_app, store
+):
+    """v0.77.0: «Поставка» встаёт на дату из шапки недели.
+
+    v0.76.0 брал сегодняшний день, если тот попадал в показанную
+    неделю: выбери в шапке 12.11 — окно открывалось на 15.11, потому
+    что сегодня 15.11. Теперь берётся выбранный день, и он же
+    остаётся в поле «Дата» (раньше ``refresh`` откатывал поле на
+    понедельник).
+    """
+    from datetime import date
+
+    from oplata.views.week_view import WeekView
+    from oplata.widgets import date_edit_value
+
+    view = WeekView(store, kind="supplier", on_open_card=lambda _id: None)
+    view.show()
+    qt_app.processEvents()
+
+    # Перешли на среду 12.11.2026: неделя 09.11 (пн) — 15.11 (вс).
+    view.goto_date(date(2026, 11, 12))
+    qt_app.processEvents()
+
+    # Поле «Дата» показывает выбранный день, а не начало недели.
+    assert date_edit_value(view.date_edit) == date(2026, 11, 12)
+    assert view._shown_day() == date(2026, 11, 12)
+
+    # И окно открывается на него же — дата уходит в обработчик.
+    opened: list = []
+    view.on_open_delivery = lambda cid, day: opened.append((cid, day))
+    row = view.table.rowCount() - 1
+    view._on_context_menu(view.table.visualItemRect(
+        view.table.item(row, 0)
+    ).center())
+    assert opened, "правый клик по строке не открыл «Поставку»"
+    assert opened[-1][1] == date(2026, 11, 12)
+
+    # Стрелка «вперёд» уносит день ровно на неделю: 12.11 -> 19.11.
+    view._shift_week(7)
+    assert view._shown_day() == date(2026, 11, 19)
+    assert date_edit_value(view.date_edit) == date(2026, 11, 19)
+
+    # День за пределами недели прижимается к её краю, а не теряется.
+    view.goto_date(date(2026, 11, 12))
+    view.week_start = date(2026, 11, 23)
+    view.refresh()
+    assert view._shown_day() == date(2026, 11, 23)
+    view.close()
 
 
 def test_week_tables_are_sorted_alphabetically(qt_app, store):

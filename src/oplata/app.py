@@ -336,9 +336,14 @@ class MainWindow(QMainWindow):
         # v0.75.0: «База» — меню со всеми действиями над базой. Раньше
         # это были три отдельные кнопки («Выгрузить базы», «Загрузить
         # базы», «Очистить базу»); в меню они занимают одну строку.
-        self.base_menu_button = QPushButton("База")
+        # v0.77.0: на кнопке только птичка «вниз» — слово «База»
+        # убрано по просьбе пользователя: подпись дублировала название
+        # базы в шапке (переключатель «МИР/КОРЕЛИЧИ») и занимала место.
+        self.base_menu_button = QPushButton("▼")
         self.base_menu_button.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.base_menu_button.setToolTip("Действия с базой данных")
+        self.base_menu_button.setToolTip(
+            "База: выгрузить, загрузить, очистить; конфигурация"
+        )
         base_menu = QMenu(self.base_menu_button)
         # v0.76.0: «Конфигурация» лежит в этом же меню (в v0.75.0 для
         # неё была отдельная кнопка «+» — две кнопки с меню в углу
@@ -397,9 +402,15 @@ class MainWindow(QMainWindow):
             f"QPushButton:hover{{background:{styles.HEADER_TOOL_HOVER}}}"
         )
         # v0.75.0: в правом углу шапки тот же стиль получают
-        # «Загрузить выписку», «База» и «+».
+        # «Загрузить выписку» и меню базы (v0.77.0: кнопка меню — одна
+        # птичка «вниз»).
         for btn in (self.statement_button, self.base_menu_button):
             btn.setStyleSheet(base_tools_style)
+        # v0.77.0: кнопка-птичка — узкая, с симметричными отступами:
+        # под одним глифом боковые поля ``6px 6px`` выглядят тесно.
+        self.base_menu_button.setStyleSheet(
+            base_tools_style + "QPushButton{padding:6px 10px}"
+        )
         self.base_button.setStyleSheet(
             f"QPushButton{{background:{styles.HEADER_CHECKED_BG};"
             f"color:{header_bg};"

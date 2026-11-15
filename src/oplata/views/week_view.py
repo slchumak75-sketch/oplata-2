@@ -332,6 +332,9 @@ class WeekView(QWidget):
         self.week_start = week_monday(date.today())
         self._partners: list[Counterparty] = []
         self._days: list[date] = []
+        # v0.77.0: день, выбранный в поле «Дата» шапки, — им
+        # открываются окна «Поставка» и «Реализация».
+        self._current_day: date | None = None
         self._rebuilding = False  # True, пока таблицу меняет код, а не пользователь
         # v0.18.0: без права ввода данных таблица только для просмотра.
         self.read_only = False
@@ -552,6 +555,10 @@ class WeekView(QWidget):
 
     # ------------------------------------------------------------- навигация
     def _shift_week(self, days: int) -> None:
+        # v0.77.0: выбранный день едет вместе с неделей — иначе стрелки
+        # «◀ ▶» сбрасывали бы его на понедельник.
+        if self._current_day is not None:
+            self._current_day += timedelta(days=days)
         self.week_start += timedelta(days=days)
         self.refresh()
 
@@ -570,7 +577,14 @@ class WeekView(QWidget):
         self.goto_date(date_edit_value(self.date_edit))
 
     def goto_date(self, day: date) -> None:
-        """Перейти на неделю, содержащую ``day`` (также после «Поставки»)."""
+        """Перейти на неделю, содержащую ``day`` (также после «Поставки»).
+
+        v0.77.0: день запоминается — по нему открываются окна
+        «Поставка» и «Реализация» (v0.76.0 брал сегодняшнюю дату,
+        когда она попадала в показанную неделю, и выбранный в шапке
+        день игнорировался).
+        """
+        self._current_day = day
         self.week_start = week_monday(day)
         self.refresh()
 
@@ -671,10 +685,10 @@ class WeekView(QWidget):
         if self.read_only:
             self._open_journal_for_item(name_item)
             return
-        # v0.76.0: окно открывается на дате **показанной** плашки, а не
-        # на сегодняшней: иначе, разбирая прошлую неделю, приходилось
-        # каждый раз переставлять дату руками. Сегодняшний день берём,
-        # если он есть в показанной неделе, иначе — её первый день.
+        # v0.77.0: окно открывается на дате, выбранной в шапке: иначе,
+        # разбирая прошлую неделю, приходилось каждый раз переставлять
+        # дату руками (v0.76.0 брал сегодняшний день, если тот попадал
+        # в показанную неделю, — выбранный день игнорировался).
         day = self._shown_day()
         if self.kind == "supplier" and self.on_open_delivery is not None:
             self.on_open_delivery(str(counterparty_id), day)
@@ -682,12 +696,23 @@ class WeekView(QWidget):
             self.on_open_realization(str(counterparty_id), day)
 
     def _shown_day(self):
-        """Дата плашки: сегодня, если она на показанной неделе (v0.76.0)."""
+        """Дата плашки: день, выбранный в шапке (v0.77.0).
 
-        today = date.today()
-        if self._days and self._days[0] <= today <= self._days[-1]:
-            return today
-        return self._days[0] if self._days else today
+        v0.76.0 возвращал сегодняшний день, когда тот попадал в
+        показанную неделю: выбери 12.11 — окно открывалось на 15.11.
+        Теперь берётся день из поля «Дата»; если он оказался за
+        пределами недели (неделю прокрутили стрелками), день
+        прижимается к её краю.
+        """
+
+        if not self._days:
+            return self._current_day or date.today()
+        day = self._current_day or self._days[0]
+        if day < self._days[0]:
+            return self._days[0]
+        if day > self._days[-1]:
+            return self._days[-1]
+        return day
 
     def _on_item_changed(self, item: QTableWidgetItem) -> None:
         """Пользователь ввёл сумму в редактируемую ячейку: проверить и сохранить."""
@@ -1243,7 +1268,10 @@ class WeekView(QWidget):
         self._days = days
         self._week_end = days[-1]
         today = date.today()
-        set_date_edit(self.date_edit, self.week_start)
+        # v0.77.0: в поле остаётся день, на который перешли (12.11, а не
+        # понедельник 09.11); понедельник показываем, только если своего
+        # дня нет — например, при первом построении таблицы.
+        set_date_edit(self.date_edit, self._current_day or self.week_start)
         self.week_label.setText(
             f"Неделя: {fmt_date(days[0])} — {fmt_date(days[-1])}"
         )
