@@ -15,9 +15,11 @@ from __future__ import annotations
 import json
 import os
 import re
+import shutil
 import sys
 from collections.abc import Callable
-from datetime import date
+from dataclasses import dataclass
+from datetime import date, datetime
 from pathlib import Path
 
 from .models import AppData, seed_data
@@ -25,6 +27,14 @@ from .models import AppData, seed_data
 APP_DIR_NAME = "OplataStroymarket"
 DATA_FILE_NAME = "data.json"
 STATE_FILE_NAME = "state.json"
+# v0.79.0: автокопии перед необратимыми действиями (очистка базы,
+# очистка таблиц, загрузка базы из файла). Копия — точная копия
+# data.json, поэтому в ней сохраняется всё: примечания, правила
+# разноса, карточка банка — то, что выгрузка в Excel не несёт.
+BACKUP_DIR_NAME = "Копии"
+# Сколько последних копий держать для каждой базы: место не резиновое,
+# но и удалять всё нельзя — пропажу замечают не сразу.
+BACKUP_KEEP = 30
 
 # v0.30.0: папка «Оплата база» лежит рядом с программой (ADR-082). В ней
 # — выгрузки обеих баз в Excel: своя копия на каждом компьютере, чтобы
@@ -35,6 +45,9 @@ LOCAL_BASE_DIR_NAME = "Оплата база"
 LOCAL_BASE_NAME_TEMPLATE = "Оплата {day}.xlsx"
 # Переопределение для тестов: без него выгрузки падали бы в репозиторий.
 PROGRAM_DIR_ENV = "OPLATA_PROGRAM_DIR"
+# v0.79.0: то же для локальных копий (Загрузки) — иначе тесты писали бы
+# копии в настоящие Загрузки машины.
+DOWNLOADS_DIR_ENV = "OPLATA_DOWNLOADS_DIR"
 # «Оплата 02.11.2026.xlsx» — по дате в имени ищем самую свежую выгрузку.
 LOCAL_BASE_NAME_RE = re.compile(r"^Оплата (\d{2})\.(\d{2})\.(\d{4})\.xlsx$")
 
@@ -65,6 +78,195 @@ def data_dir() -> Path:
 def data_path_for(base_key: str) -> Path:
     """Путь к файлу данных выбранной базы."""
     return data_dir() / BASE_FILES.get(base_key, BASE_FILES[DEFAULT_BASE])
+
+
+def backup_dir() -> Path:
+    """Каталог автокопий рядом с базой (v0.79.0)."""
+
+    return data_dir() / BACKUP_DIR_NAME
+
+
+# v0.79.0: второй каталог копий — на самом компьютере (обычно Загрузки;
+# путь ищется средствами Qt, поэтому задаёт его окно программы). Копия
+# рядом с базой уезжает в облако вместе с ней: испортится общая папка —
+# пропадут обе, а локальная переживёт и облако (решение v0.23.1).
+_extra_backup_dir: Path | None = None
+
+
+def set_extra_backup_dir(path: Path | None) -> None:
+    """Задать второй каталог копий (кроме «Копии» рядом с базой)."""
+
+    global _extra_backup_dir
+    _extra_backup_dir = Path(path) if path is not None else None
+
+
+def backup_dirs() -> list[Path]:
+    """Каталоги автокопий: рядом с базой и, если задан, локальный."""
+
+    dirs = [backup_dir()]
+    if _extra_backup_dir is not None and _extra_backup_dir not in dirs:
+        dirs.append(_extra_backup_dir)
+    return dirs
+
+
+def make_backup(base_key: str, reason: str = "") -> list[Path]:
+    """Снять копию файла базы перед необратимым действием (v0.79.0).
+
+    Копия пишется в каждый из каталогов копий: рядом с базой (в общей
+    папке она уезжает в облако вместе с самой базой) и на компьютер
+    (останется, даже если общая папка испортится). Возвращает пути
+    созданных копий; пустой список — снимать нечего (файла базы нет).
+    """
+
+    source = data_path_for(base_key)
+    if not source.exists():
+        return []
+    stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
+    # Причина — в имени файла: по копии сразу видно, перед чем она.
+    suffix = f"-{reason}" if reason else ""
+    name = f"{source.stem}{suffix}-{stamp}.json"
+    made: list[Path] = []
+    for directory in backup_dirs():
+        try:
+            directory.mkdir(parents=True, exist_ok=True)
+        except OSError:
+            continue
+        target = directory / name
+        try:
+            shutil.copy2(source, target)
+        except OSError:
+            continue
+        made.append(target)
+        _trim_backups(directory, source.stem)
+    return made
+
+
+def _trim_backups(directory: Path, stem: str) -> None:
+    """Оставить последние BACKUP_KEEP копий этой базы (v0.79.0)."""
+
+    try:
+        copies = sorted(
+            path
+            for path in directory.glob(f"{stem}-*.json")
+            if path.is_file()
+        )
+    except OSError:
+        return
+    for path in copies[:-BACKUP_KEEP]:
+        try:
+            path.unlink()
+        except OSError:
+            pass
+
+
+class BackupError(Exception):
+    """Копию нельзя вернуть в базу (v0.79.0)."""
+
+
+@dataclass(frozen=True)
+class BackupInfo:
+    """Копия файла базы: когда снята, перед чем и где лежит (v0.79.0)."""
+
+    path: Path
+    stamp: datetime | None = None
+    reason: str = ""
+
+    def title(self) -> str:
+        when = self.stamp.strftime("%d.%m.%Y %H:%M") if self.stamp else "без даты"
+        parts = [when]
+        if self.reason:
+            parts.append(self.reason)
+        return f"{' · '.join(parts)} ({self.path.parent.name})"
+
+
+def _backup_parts(stem: str, name: str) -> tuple[datetime | None, str]:
+    """Разобрать имя копии: ``(время, причина)`` (v0.79.0).
+
+    Понимает оба вида имён: новый (``data-перед очисткой-20261115-162706``,
+    v0.79.0) и прежний, снятый кнопкой «Создать резервную копию»
+    (``data-backup-2026-11-15_16-27-06``, v0.23.1): сохранённые раньше
+    копии тоже должны возвращаться, а не лежать мёртвым грузом.
+    """
+
+    tail = name[len(stem):].lstrip("-")
+    # Новый вид: метка времени — последние 15 знаков имени.
+    if len(tail) >= 15:
+        try:
+            stamp = datetime.strptime(tail[-15:], "%Y%m%d-%H%M%S")
+        except ValueError:
+            pass
+        else:
+            return stamp, tail[:-16].strip("-")
+    # Прежний вид: «backup-2026-11-15_16-27-06».
+    old = tail[len("backup-"):] if tail.startswith("backup-") else ""
+    if old:
+        try:
+            return datetime.strptime(old, "%Y-%m-%d_%H-%M-%S"), "резервная копия"
+        except ValueError:
+            pass
+    return None, tail
+
+
+def list_backups(base_key: str = DEFAULT_BASE) -> list[BackupInfo]:
+    """Копии этой базы — свежие первыми (v0.79.0)."""
+
+    stem = Path(BASE_FILES.get(base_key, BASE_FILES[DEFAULT_BASE])).stem
+    items: list[BackupInfo] = []
+    for directory in backup_dirs():
+        try:
+            paths = [path for path in directory.glob(f"{stem}-*.json")
+                     if path.is_file()]
+        except OSError:
+            continue
+        for path in paths:
+            stamp, reason = _backup_parts(stem, path.stem)
+            if stamp is None:  # имени не поняли — берём время файла
+                try:
+                    stamp = datetime.fromtimestamp(path.stat().st_mtime)
+                except OSError:
+                    stamp = None
+            items.append(BackupInfo(path, stamp, reason))
+    items.sort(
+        key=lambda item: (item.stamp or datetime.min, item.path.name),
+        reverse=True,
+    )
+    return items
+
+
+def restore_backup(base_key: str, source: Path | str) -> list[Path]:
+    """Вернуть базу из копии (v0.79.0).
+
+    Копию сначала читаем и разбираем: битая базу не затрёт. Нынешнюю
+    базу перед заменой тоже снимаем в копию — само восстановление
+    можно откатить. Возвращает пути этой страховочной копии.
+    """
+
+    source = Path(source)
+    try:
+        raw = json.loads(source.read_text(encoding="utf-8"))
+    except (OSError, ValueError) as exc:
+        raise BackupError(f"Копию не прочитать: {source.name} ({exc})") from exc
+    try:
+        data = AppData.from_dict(raw)
+    except (TypeError, ValueError, KeyError) as exc:
+        raise BackupError(f"В копии нет базы: {source.name} ({exc})") from exc
+    if not isinstance(data, AppData):
+        raise BackupError(f"В копии нет базы: {source.name}")
+    safety = make_backup(base_key, "перед восстановлением")
+    target = data_path_for(base_key)
+    # Атомарно, как DataStore.save: облачный клиент не должен успеть
+    # синхронизировать недописанный файл.
+    tmp_path = target.with_name(target.name + ".tmp")
+    try:
+        shutil.copy2(source, tmp_path)
+        os.replace(tmp_path, target)
+    except OSError as exc:
+        try:
+            tmp_path.unlink()
+        except OSError:
+            pass
+        raise BackupError(f"Не удалось вернуть копию: {exc}") from exc
+    return safety
 
 
 def default_data_path() -> Path:
