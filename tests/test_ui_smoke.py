@@ -6104,6 +6104,10 @@ def test_clear_tables_removes_money_only_in_period(qt_app, store, monkeypatch, t
     От «Очистить базу» отличается тем, что работает не со всей базой, а
     с датами: что попало в период — удаляется, что вне его и что вовсе
     без даты (справочники, календарь, долги переноса) — остаётся.
+
+    v0.79.0: запись вида оплаты не удаляется — обнуляется сумма. Запись
+    — это и карточка вида (ставка НДС, УНП, примечание, отмеченные
+    даты): сотри запись, и настройки, набранные руками, пропали.
     """
     from PySide6.QtWidgets import QMessageBox
 
@@ -6175,7 +6179,10 @@ def test_clear_tables_removes_money_only_in_period(qt_app, store, monkeypatch, t
     qt_app.processEvents()
     assert [item.date for item in data.operations] == ["2026-02-10", "2026-04-01"]
     assert [item.date for item in data.cash_receipts] == ["2026-05-11"]
-    assert data.other_payments == []
+    # Вид оплаты остался в базе: у него обнулилась только сумма.
+    assert [(item.name, item.amount) for item in data.other_payments] == [
+        ("Аренда", "0")
+    ]
     # Справочники, календарь и перенос на 1 января не dated — их не тронули.
     assert data.suppliers
     assert data.day_overrides == {"2026-03-05": "work"}
