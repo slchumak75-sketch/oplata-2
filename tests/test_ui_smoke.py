@@ -3930,7 +3930,6 @@ def test_base_exchange_buttons_are_admin_only(qt_app, store):
     assert admin_titles() == [
         "Выгрузить базу",
         "Загрузить базу",
-        "Восстановить из копии…",
         "Очистить базу",
         "Очистить таблицы…",
         "Конфигурация",
@@ -4921,13 +4920,15 @@ def test_payments_summary_freezes_first_three_columns(qt_app, store):
     dialog.close()
 
 
-def test_base_menu_button_shows_one_glyph(qt_app, store):
-    """v0.80.0: на кнопке меню — один символ, птичка «вниз».
+def test_base_menu_button_has_no_glyph(qt_app, store):
+    """v0.81.0: кнопка меню пустая — без подписи и без треугольника.
 
-    Слова «База» на кнопке нет (v0.78.0 вернул его, в v0.80.0 убрали
-    по просьбе пользователя): подпись дублирует переключатель базы
-    «МИР»/«КОРЕЛИЧИ» в той же шапке и занимает место. Что за кнопка,
-    по-прежнему говорит подсказка.
+    Слово «База» убрали ещё в v0.80.0 (оно дублировало переключатель
+    базы «МИР»/«КОРЕЛИЧИ» в той же шапке), треугольник «вниз» —
+    в v0.81.0 по просьбе пользователя: «на правой верхней кнопке
+    удалить перевёрнутый треугольник». Что за кнопка, говорит
+    подсказка; ширина кнопки задана намеренно, чтобы пустая кнопка
+    не съехала.
     """
     from oplata.app import MainWindow
 
@@ -4936,18 +4937,17 @@ def test_base_menu_button_shows_one_glyph(qt_app, store):
     qt_app.processEvents()
 
     button = window.base_menu_button
-    assert button.text() == "▼"
-    assert "баз" not in button.text().lower(), "слова «База» на кнопке нет"
+    assert button.text() == "", "на кнопке нет ни подписи, ни треугольника"
     assert "баз" in button.toolTip().lower(), "подсказка объясняет назначение"
-    # Меню на месте: шесть пунктов, последний — «Конфигурация»
-    # (v0.79.0 добавил «Восстановить из копии…»).
+    assert button.minimumWidth() == 0 or button.width() > 0
+    # Меню на месте: пять пунктов, последний — «Конфигурация».
     titles = [
         action.text()
         for action in button.menu().actions()
         if not action.isSeparator()
     ]
     assert titles[-1] == "Конфигурация"
-    assert len(titles) == 6
+    assert len(titles) == 5
     window.close()
 
 
@@ -6493,14 +6493,16 @@ def test_kkm_table_zebra_paints_whole_day_one_color(qt_app, store):
     window.close()
 
 
-def test_receipts_page_scrolls_in_half_screen(qt_app, store):
-    """v0.48.0: страница «Поступление и оплата» прокручивается по вертикали.
+def test_receipts_page_has_no_vertical_scroll(qt_app, store):
+    """v0.81.0: вертикальной прокрутки страницы нет вовсе.
 
-    Замечание пользователя: в половине экрана «вертикальной прокрутки
-    нет и всё сбивается в кучу». Раньше страница не прокручивалась
-    вовсе: рамка «Поступления» сжималась (235 точек при содержимом
-    249) и его таблица с фиксированной высотой вылезала наружу,
-    наезжая на блок «Оплата», а «Оплата» схлопывалась до двух строк.
+    Полоса стояла у правого края, за плашкой «Сводка», и путала:
+    казалось, что прокручивается сама сводка (просьба пользователя —
+    убрать). Прежде полоса появлялась по необходимости, а в v0.48.0
+    страница не прокручивалась вовсе: рамка «Поступления» сжималась
+    (235 точек при содержимом 249) и его таблица с фиксированной
+    высотой вылезала наружу, наезжая на блок «Оплата», а «Оплата»
+    схлопывалась до двух строк. Блоки от этого защищены и сейчас.
     """
 
     from oplata.app import IDX_RECEIPTS, MainWindow
@@ -6513,17 +6515,21 @@ def test_receipts_page_scrolls_in_half_screen(qt_app, store):
     qt_app.processEvents()
     view = window.receipts_view
     scroll = view.scroll_area
-    # Полоса — по необходимости: в полном экране её не видно.
-    assert scroll.verticalScrollBarPolicy() is Qt.ScrollBarPolicy.ScrollBarAsNeeded
-    assert scroll.verticalScrollBar().maximum() == 0
+    # Вертикальной полосы нет ни в полном экране, ни в половине: не
+    # только по политике, но и на глазах — полоса не показывается.
+    # (Размер экрана в прогоне не совпадает с настоящим монитором,
+    # поэтому на саму геометрию здесь не опираемся.)
+    assert scroll.verticalScrollBarPolicy() is Qt.ScrollBarPolicy.ScrollBarAlwaysOff
+    assert scroll.verticalScrollBar().isVisible() is False
     # Горизонтальной прокрутки нет (общее правило таблиц).
     assert scroll.horizontalScrollBarPolicy() is Qt.ScrollBarPolicy.ScrollBarAlwaysOff
     assert scroll.horizontalScrollBar().maximum() == 0
 
-    # Половина экрана: место кончилось — появляется вертикальная прокрутка.
+    # Половина экрана: место кончилось, но полосы по-прежнему нет.
     window.resize(1920, 520)
     qt_app.processEvents()
-    assert scroll.verticalScrollBar().maximum() > 0
+    assert scroll.verticalScrollBarPolicy() is Qt.ScrollBarPolicy.ScrollBarAlwaysOff
+    assert scroll.verticalScrollBar().isVisible() is False
     incoming, outgoing = view.blocks
     # Блоки стоят целиком: рамка не сжимается ниже своего содержимого,
     # поэтому таблица из неё не вылезает и на «Оплату» не наезжает.
@@ -6560,8 +6566,9 @@ def test_money_block_content_stays_inside_its_frame(qt_app, store):
     incoming, outgoing = view.blocks
     # «Поставщики» + пять своих видов оплаты.
     assert outgoing.table.rowCount() == 6
-    # Прокрутка страницы подбирает то, что не влезло по высоте.
-    assert view.scroll_area.verticalScrollBar().maximum() > 0
+    # v0.81.0: прокрутки страницы нет — её заменяет то, что блоки
+    # сами не сжимаются ниже своего содержимого.
+    assert view.scroll_area.verticalScrollBar().isVisible() is False
     for block in (incoming, outgoing):
         table = block.table
         margins = block.contentsMargins()
@@ -7327,52 +7334,73 @@ def test_statement_dialog_marks_bank_rows(qt_app, store):
     dialog.close()
 
 
-def test_bank_card_is_saved_in_configuration(qt_app, store, monkeypatch):
-    """v0.54.0: карточка банка сохраняется из «Конфигурации» и читается из файла."""
+def _visible_text(widget) -> str:
+    """Весь видимый текст виджета и его детей (v0.81.0)."""
 
-    from PySide6.QtWidgets import QFileDialog, QMessageBox
+    from PySide6.QtWidgets import QLabel
+
+    parts = [widget.text()] if hasattr(widget, "text") else []
+    for child in widget.findChildren(QLabel):
+        parts.append(child.text())
+        parts.append(child.toolTip())
+    return "\n".join(parts)
+
+
+def test_bank_card_is_gone_from_configuration(qt_app, store, tmp_path, monkeypatch):
+    """v0.81.0: раздела «Свой банк» в «Свойствах контрагента» нет.
+
+    Просьба пользователя: «банк мы прописываем в видах оплат, поэтому
+    эту дублирующую информацию удаляем». С экрана убраны заголовок,
+    подсказка и оба поля (наименование и УНП) с кнопкой «Сохранить».
+
+    Само поле ``bank`` в данных и в выгрузке остаётся: УНП банка
+    программа сравнивает с УНП в выписке (v0.54.0), и превращать
+    прежние базы в базы без банка никто не просил.
+    """
+
+    from PySide6.QtWidgets import QFileDialog
 
     from oplata.app import MainWindow
+    from oplata.dialogs.statement_dialog import StatementDialog
     from oplata.models import Bank
     from oplata.storage import DataStore
 
     window = MainWindow(store)
     view = window.data_view
 
-    # По умолчанию карточка банка пустая по УНП, наименование подставлено.
-    assert isinstance(store.data.bank, Bank)
+    # Ни одного виджета карточки банка на экране нет.
+    for name in (
+        "bank_name_edit",
+        "bank_unp_edit",
+        "bank_status_label",
+        "bank_save_btn",
+    ):
+        assert not hasattr(view, name)
+    assert "Свой банк" not in _visible_text(view)
 
-    view.bank_unp_edit.setText("100325912")
-    view.bank_name_edit.setText('ОАО "АСБ БЕЛАРУСБАНК"')
-    assert view.save_bank() is True
-    assert store.data.bank.unp == "100325912"
-
-    # Прочитанное из файла совпадает с сохранённым.
+    # Данные банка живут в базе и едут в файл выгрузки (лист
+    # «Свой банк») — оттуда же и читаются обратно.
+    store.data.bank = Bank(name='ОАО "АСБ БЕЛАРУСБАНК"', unp="100325912")
+    store.save()
     reread = DataStore(store.path)
     assert reread.data.bank.unp == "100325912"
     assert reread.data.bank.name == 'ОАО "АСБ БЕЛАРУСБАНК"'
+    pytest.importorskip("openpyxl")
+    from oplata.excelio import export_bases, import_bases
+    from oplata.storage import BASE_MIR
 
-    # Неполный УНП не сохраняется: программа не сможет узнать банк.
-    warnings: list[str] = []
-    monkeypatch.setattr(
-        QMessageBox,
-        "warning",
-        staticmethod(lambda *args: warnings.append(str(args[-1]))),
-    )
-    view.bank_unp_edit.setText("12345")
-    assert view.save_bank() is False
-    assert warnings and "9 цифр" in warnings[0]
-    assert store.data.bank.unp == "100325912"  # прежнее значение не затерли
+    path = export_bases({BASE_MIR: store.data}, tmp_path / "oplata.xlsx")
+    (imported,) = import_bases(path).values()
+    assert imported.bank.unp == "100325912"
+    assert imported.bank.name == 'ОАО "АСБ БЕЛАРУСБАНК"'
 
-    # Кнопка выписки есть на плашке и открывает таблицу.
+    # УНП банка доходит до разбора выписки — он берётся из данных.
     monkeypatch.setattr(
         QFileDialog,
         "getOpenFileName",
         staticmethod(lambda *args, **kwargs: (SAMPLE_STATEMENT, "")),
     )
     opened: list[object] = []
-    from oplata.dialogs.statement_dialog import StatementDialog
-
     monkeypatch.setattr(
         StatementDialog,
         "exec",
@@ -11207,7 +11235,6 @@ def test_base_menu_and_plus_button_hold_base_actions(qt_app, store):
     assert base_titles == [
         "Выгрузить базу",
         "Загрузить базу",
-        "Восстановить из копии…",
         "Очистить базу",
         "Очистить таблицы…",
         "Конфигурация",
@@ -11485,14 +11512,18 @@ def test_broken_copy_does_not_touch_the_base(store):
     assert [p.name for p in store.data.other_payments] == ["Аренда"]
 
 
-def test_base_menu_restores_base_from_its_copy(qt_app, store, monkeypatch):
-    """v0.79.0: меню «База» → «Восстановить из копии…» возвращает базу.
+def test_base_menu_has_no_restore_item_but_copies_are_kept(
+    qt_app, store, monkeypatch
+):
+    """v0.81.0: пункта «Восстановить из копии…» в меню нет.
 
-    Раньше копию можно было вернуть только руками: найти файл,
-    переложить его поверх data.json и нажать «Перечитать файл».
+    Просьба пользователя — убрать пункт с правой кнопки. Сами
+    автокопии остались: программа по-прежнему снимает их перед
+    очисткой базы, очисткой таблиц и загрузкой базы из файла, и
+    вернуть такую копию можно (этим же механизмом), — убрано только
+    меню, чтобы не подталкивать пользователя заливать старую копию
+    поверх живой базы самому.
     """
-
-    from PySide6.QtWidgets import QInputDialog, QMessageBox
 
     from oplata import storage
     from oplata.app import MainWindow
@@ -11501,7 +11532,6 @@ def test_base_menu_restores_base_from_its_copy(qt_app, store, monkeypatch):
         OtherPayment(date="2026-11-05", name="Аренда", amount="240", note="офис")
     )
     store.save()
-    copy = storage.make_backup("mir", "перед очисткой")[0]
 
     window = MainWindow(store)
     window._config_unlocked = True
@@ -11513,60 +11543,17 @@ def test_base_menu_restores_base_from_its_copy(qt_app, store, monkeypatch):
         for action in window.base_menu_button.menu().actions()
         if not action.isSeparator()
     ]
-    assert "Восстановить из копии…" in titles
-
-    monkeypatch.setattr(window, "_ask_password", lambda *a, **k: True)
-    monkeypatch.setattr(window, "_confirm_yes_no", lambda *a, **k: True)
-    picked = {}
-
-    def fake_get_item(parent, title, label, items, current=0, editable=True):
-        picked["items"] = list(items)
-        return items[0], True
-
-    monkeypatch.setattr(QInputDialog, "getItem", staticmethod(fake_get_item))
-    messages = []
-    monkeypatch.setattr(
-        QMessageBox,
-        "information",
-        staticmethod(lambda *args, **kwargs: messages.append(str(args[-1]))),
-    )
-
-    # Стираем суммы — и возвращаем их этой же копией.
-    store.data.other_payments.clear()
-    store.save()
-    window.restore_base_from_backup()
-    qt_app.processEvents()
-
-    assert picked["items"], "копию надо было предложить выбором"
-    assert any("перед очисткой" in item for item in picked["items"])
-    assert [(p.name, p.amount, p.note) for p in window.store.data.other_payments] == [
-        ("Аренда", "240", "офис")
+    assert "Восстановить из копии…" not in titles
+    assert titles == [
+        "Выгрузить базу",
+        "Загрузить базу",
+        "Очистить базу",
+        "Очистить таблицы…",
+        "Конфигурация",
     ]
-    assert messages and "вернулась из" in messages[-1]
-    window.close()
-
-
-def test_no_copies_says_where_they_come_from(qt_app, store, monkeypatch):
-    """v0.79.0: копий нет — говорим, откуда они берутся."""
-
-    from PySide6.QtWidgets import QMessageBox
-
-    from oplata.app import MainWindow
-
-    window = MainWindow(store)
-    window._config_unlocked = True
-    window.show()
-    qt_app.processEvents()
-    messages = []
-    monkeypatch.setattr(
-        QMessageBox,
-        "information",
-        staticmethod(lambda *args, **kwargs: messages.append(str(args[-1]))),
-    )
-    window.restore_base_from_backup()
-    qt_app.processEvents()
-    assert messages and "копий нет" in messages[-1]
-    assert "Создать резервную копию" in messages[-1]
+    # Механизм копий жив: копия снимается и находится.
+    copy = storage.make_backup("mir", "перед очисткой")[0]
+    assert copy in {item.path for item in storage.list_backups("mir")}
     window.close()
 
 

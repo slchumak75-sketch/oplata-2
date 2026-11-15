@@ -82,7 +82,6 @@ from ..models import (
     INCOMING,
     OUTGOING,
     AppData,
-    Bank,
     RoutingRule,
     YearStart,
 )
@@ -553,68 +552,6 @@ class DataView(QWidget):
         self.refresh()
 
     # ---------------------------------------------------------- пользователи
-    def _build_bank_panel(self, layout) -> None:
-        """Карточка обслуживающего банка (v0.54.0).
-
-        Банк, который ведёт счёт, — **не поставщик и не покупатель**: в
-        выписке попадаются его собственные операции (комиссия за
-        эквайринг, зачисление выручки по карточкам, выдача наличных,
-        проценты), и разносить их по контрагентам нельзя (замечание
-        пользователя). Здесь задаётся УНП банка: по нему программа
-        узнаёт его строки в выписке.
-        """
-
-        title = QLabel("🏦  Свой банк (обслуживающий)")
-        title.setObjectName("PanelTitle")
-        layout.addWidget(title)
-
-        # v0.76.0: одна короткая строка вместо абзаца — в «Свойствах
-        # контрагента» длинные пояснения только отъедают место у
-        # таблицы правил (правило v0.70.0).
-        hint = QLabel(
-            "Его строки в выписке по контрагентам не разносятся."
-        )
-        hint.setObjectName("Muted")
-        hint.setWordWrap(True)
-        hint.setToolTip(
-            "Банк — не поставщик и не покупатель. Его операции в "
-            "выписке (комиссия, выручка по карточкам, выдача наличных) "
-            "не разносятся. УНП из этой карточки программа сравнивает с "
-            "УНП в выписке."
-        )
-        layout.addWidget(hint)
-
-        form = QHBoxLayout()
-        form.setSpacing(24)
-        name_col = QVBoxLayout()
-        name_col.addWidget(QLabel("Наименование банка"))
-        self.bank_name_edit = QLineEdit()
-        name_col.addWidget(self.bank_name_edit)
-        form.addLayout(name_col, stretch=1)
-        unp_col = QVBoxLayout()
-        unp_col.addWidget(QLabel("УНП"))
-        self.bank_unp_edit = QLineEdit()
-        self.bank_unp_edit.setPlaceholderText("9 цифр")
-        self.bank_unp_edit.setMaxLength(UNP_LENGTH)
-        self.bank_unp_edit.setFixedWidth(170)  # 9 цифр влезают целиком
-        self.bank_unp_edit.setValidator(
-            QRegularExpressionValidator(QRegularExpression(r"\d*"))
-        )
-        unp_col.addWidget(self.bank_unp_edit)
-        form.addLayout(unp_col, stretch=0)
-        layout.addLayout(form)
-
-        actions = QHBoxLayout()
-        self.bank_status_label = QLabel("")
-        self.bank_status_label.setObjectName("Muted")
-        actions.addWidget(self.bank_status_label, stretch=1)
-        self.bank_save_btn = blue_button("Сохранить")
-        self.bank_save_btn.clicked.connect(self.save_bank)
-        actions.addWidget(self.bank_save_btn)
-        layout.addLayout(actions)
-
-        self._load_bank()
-
     # ------------------------------------------- правила разноса (v0.69.0)
     def _build_routing_panel(self, layout) -> None:
         """Путь разноса для организаций с задвоенным УНП.
@@ -665,16 +602,6 @@ class DataView(QWidget):
         self.routing_save_btn.clicked.connect(self.save_routing_rules)
         actions.addWidget(self.routing_save_btn)
         layout.addLayout(actions)
-
-        # v0.76.0: карточка банка переехала сюда из своей плашки:
-        # УНП банка нужен ровно для разноса выписки, а отдельная
-        # плашка «Банк (обслуживающий)» только занимала место.
-        line = QFrame()
-        line.setFrameShape(QFrame.Shape.HLine)
-        line.setObjectName("Muted")
-        line.setStyleSheet(f"color:{styles.BORDER}")
-        layout.addWidget(line)
-        self._build_bank_panel(layout)
 
         self._load_routing_rules()
 
@@ -925,40 +852,6 @@ class DataView(QWidget):
         self.store.data.routing_rules = rules
         self.store.save()
         self.routing_status_label.setText(f"Сохранено правил: {len(rules)}.")
-        return True
-
-    def _load_bank(self) -> None:
-        """Показать карточку банка из данных (v0.54.0)."""
-
-        bank = self.store.data.bank
-        self.bank_name_edit.setText(bank.name)
-        self.bank_unp_edit.setText(bank.unp)
-        self.bank_status_label.setText("")
-
-    def save_bank(self) -> bool:
-        """Сохранить карточку банка (v0.54.0).
-
-        УНП необязателен (пусто — пока не заполняли), но если введён,
-        то ровно 9 цифр: иначе программа не сможет узнать банк в
-        выписке.
-        """
-
-        unp = self.bank_unp_edit.text().strip()
-        if unp and (len(unp) != UNP_LENGTH or not unp.isdigit()):
-            QMessageBox.warning(
-                self,
-                "Проверьте УНП",
-                f"УНП банка — {UNP_LENGTH} цифр, а введено {len(unp)}.\n\n"
-                "Оставьте поле пустым, если УНП пока неизвестен.",
-            )
-            self.bank_unp_edit.setFocus()
-            self.bank_unp_edit.selectAll()
-            return False
-        self.store.data.bank = Bank(
-            name=self.bank_name_edit.text().strip(), unp=unp
-        )
-        self.store.save()
-        self.bank_status_label.setText("Сохранено")
         return True
 
     def _build_users_panel(self, layout) -> None:
@@ -1237,11 +1130,6 @@ class DataView(QWidget):
         # v0.23.1: «Администрирование» видно всем, кто зашёл на вкладку
         # «Конфигурация» (она за паролем).
         self.admin_panel.setVisible(True)
-        # v0.54.0: карточку банка правит только тот, у кого есть право
-        # ввода данных — она влияет на разбор выписки.
-        self.bank_save_btn.setVisible(not read_only)
-        self.bank_name_edit.setReadOnly(read_only)
-        self.bank_unp_edit.setReadOnly(read_only)
         # Пользователей правит только тот, у кого есть право ввода данных.
         for btn in (
             self.users_add_btn,
@@ -1359,7 +1247,6 @@ class DataView(QWidget):
         # от активной базы (после переключения МИР <-> КОРЕЛИЧИ).
         self.path_label.setText(str(self.store.path))
         self._fill_users_table()
-        self._load_bank()  # v0.54.0: карточка банка — из активной базы
         self._pending_overrides = dict(self.store.data.day_overrides)
         self._update_admin_stats()
         self._update_save_state()

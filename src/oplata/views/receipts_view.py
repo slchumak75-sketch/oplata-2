@@ -2060,9 +2060,11 @@ class ReceiptsView(QWidget):
         scroll.setFrameShape(QFrame.Shape.NoFrame)
         # Горизонтальной прокрутки нет (общее правило таблиц).
         scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
-        # Полоса появляется только когда место кончилось: в полном экране
-        # всё встаёт целиком, и прокрутки нет — как было и раньше.
-        scroll.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
+        # v0.81.0: вертикальной полосы нет вовсе (просьба пользователя):
+        # она стояла у правого края, за плашкой «Сводка», и путала —
+        # казалось, что прокручивается сама сводка. Место под неё тоже
+        # не занимаем: таблицы считают ширину по окну (v0.81.0).
+        scroll.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         scroll.setStyleSheet(styles.WIDE_SCROLLBAR_ON_AREA)
         content = QWidget()
         scroll.setWidget(content)
