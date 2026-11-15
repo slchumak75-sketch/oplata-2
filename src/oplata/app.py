@@ -25,7 +25,6 @@ from PySide6.QtWidgets import (
     QFileDialog,
     QFrame,
     QHBoxLayout,
-    QInputDialog,
     QLabel,
     QMainWindow,
     QMenu,
@@ -64,17 +63,14 @@ from .storage import (
     BASE_KORELICHI,
     BASE_MIR,
     BASE_TITLES,
-    BackupError,
     LOCAL_BASE_DIR_NAME,
     OTHER_BASE,
     DataStore,
     data_path_for,
     latest_local_base_file,
-    list_backups,
     local_base_dir,
     local_base_file,
     make_backup,
-    restore_backup,
     set_extra_backup_dir,
 )
 from .views.data_view import DataView
@@ -360,14 +356,16 @@ class MainWindow(QMainWindow):
         # v0.75.0: меню со всеми действиями над базой. Раньше это были
         # три отдельные кнопки («Выгрузить базы», «Загрузить базы»,
         # «Очистить базу»); в меню они занимают одну строку.
-        # v0.80.0: на кнопке снова один символ — птичка «вниз», как в
-        # v0.77.0 (просьба пользователя). В v0.78.0 на кнопку вернули
-        # подпись «База», но она дублирует переключатель базы
-        # («МИР»/«КОРЕЛИЧИ»), стоящий в той же шапке, и занимает место.
-        # Назначение кнопки по-прежнему видно в подсказке.
-        self.base_menu_button = QPushButton("▼")
+        # v0.81.0: на кнопке нет ничего — ни подписи «База», ни птички
+        # «вниз» (просьба пользователя). Подпись дублировала
+        # переключатель базы («МИР»/«КОРЕЛИЧИ»), стоящий в той же шапке,
+        # и занимала место. Что за кнопка, говорит подсказка. Ширину
+        # задаём прямо: без подписи кнопка сжалась бы до узкой полоски,
+        # в которую не попасть мышью.
+        self.base_menu_button = QPushButton("")
         self.base_menu_button.setCursor(Qt.CursorShape.PointingHandCursor)
         self.base_menu_button.setToolTip("Действия с базой данных")
+        self.base_menu_button.setFixedWidth(38)
         base_menu = QMenu(self.base_menu_button)
         # v0.76.0: «Конфигурация» лежит в этом же меню (в v0.75.0 для
         # неё была отдельная кнопка «+» — две кнопки с меню в углу
@@ -378,12 +376,6 @@ class MainWindow(QMainWindow):
         self._admin_base_actions = [
             base_menu.addAction("Выгрузить базу", self._on_export_clicked),
             base_menu.addAction("Загрузить базу", self._on_import_clicked),
-            # v0.79.0: копии, которые программа снимает сама, она же и
-            # возвращает — раньше их можно было только переложить руками
-            # поверх data.json (кнопка «Перечитать файл»).
-            base_menu.addAction(
-                "Восстановить из копии…", self._on_restore_clicked
-            ),
         ]
         base_menu.addSeparator()
         self._admin_base_actions += [
@@ -471,86 +463,6 @@ class MainWindow(QMainWindow):
         if not self._ask_password("Загрузка баз", "Пароль администратора:"):
             return
         self.import_bases_from_excel()
-
-    def _on_restore_clicked(self) -> None:
-        """«Восстановить из копии…» по паролю (v0.79.0)."""
-
-        if not self._ask_password(
-            "Восстановление из копии", "Пароль администратора:"
-        ):
-            return
-        self.restore_base_from_backup()
-
-    def restore_base_from_backup(self) -> None:
-        """Вернуть базу из копии, снятой программой (v0.79.0).
-
-        Копии лежат в двух местах — рядом с базой (уезжает в облако) и
-        на компьютере в Загрузках (останется, если облако испортится),
-        — годятся обе, в том числе снятые раньше кнопкой «Создать
-        резервную копию». Нынешняя база перед заменой тоже уходит в
-        копию: восстановление можно откатить.
-        """
-
-        copies = list_backups(self.store.base_key)
-        if not copies:
-            QMessageBox.information(
-                self,
-                "Восстановление из копии",
-                f"У базы «{BASE_TITLES[self.store.base_key]}» копий нет.\n\n"
-                "Копии снимаются самой программой перед очисткой базы, "
-                "очисткой таблиц и загрузкой базы из файла, а также "
-                "кнопкой «Создать резервную копию» на вкладке "
-                "«Конфигурация».",
-            )
-            return
-
-        labels = [item.title() for item in copies]
-        choice, ok = QInputDialog.getItem(
-            self,
-            "Восстановление из копии",
-            f"Какую копию вернуть в базу "
-            f"«{BASE_TITLES[self.store.base_key]}»?",
-            labels,
-            0,
-            False,
-        )
-        if not ok or choice not in labels:
-            return
-        picked = copies[labels.index(choice)]
-        if not self._confirm_yes_no(
-            "Восстановление из копии",
-            f"Вернуть базу «{BASE_TITLES[self.store.base_key]}» "
-            f"из копии {picked.title()}?",
-            "Нынешние данные этой базы будут заменены копией. Перед "
-            "заменой программа сама снимет копию того, что было, — "
-            "вернуть назад можно и эту замену.",
-        ):
-            return
-
-        # Журналы операций показывают данные конкретной базы — закрываем,
-        # чтобы в них не остались строки прежнего состава.
-        for dialog in list(self._journal_dialogs):
-            dialog.close()
-        self._journal_dialogs.clear()
-
-        try:
-            safety = restore_backup(self.store.base_key, picked.path)
-        except BackupError as exc:
-            QMessageBox.warning(self, "Восстановление из копии", str(exc))
-            return
-        self._reload_current_base()
-        QMessageBox.information(
-            self,
-            "Восстановление из копии",
-            f"База «{BASE_TITLES[self.store.base_key]}» вернулась из "
-            f"копии {picked.title()}."
-            + (
-                "\n\nКопия того, что было до восстановления:\n"
-                + "\n".join(str(path) for path in safety)
-                if safety
-                else ""
-            ),
-        )
 
     def _reload_current_base(self) -> None:
         """Перечитать файл активной базы и перерисовать экраны (v0.79.0)."""
