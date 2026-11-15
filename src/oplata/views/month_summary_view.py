@@ -55,6 +55,10 @@ MAX_YEAR = 2100
 # v0.34.0: последняя колонка — итог за год; раньше она называлась
 # «Всего за год», пользователь просил сократить до «Год».
 YEAR_COLUMN_TITLE = "Год"
+# v0.76.0: колонка «Примечание» — подпись вида оплаты из его карточки
+# (как в блоке «Оплата»). Показываем её рядом с названием, чтобы вид
+# было проще узнать, когда названия похожи.
+NOTE_COLUMN_TITLE = "Примечание"
 # Кнопка-переключатель «Без НДС»: зелёная — суммы с НДС (как ввели),
 # красная — суммы за минусом НДС.
 _VAT_BUTTON_BASE = (
@@ -75,6 +79,9 @@ class MonthSummaryDialog(QDialog):
     # v0.34.0: колонка «НДС» и кнопка «Без НДС» — только в «Сводке
     # оплат»: у поступлений ставки НДС нет.
     SHOW_VAT = False
+    # v0.76.0: колонка «Примечание» — только в «Сводке оплат»: у
+    # поступлений своих видов нет, а значит, и примечаний.
+    SHOW_NOTE = False
 
     def __init__(
         self,
@@ -175,6 +182,7 @@ class MonthSummaryDialog(QDialog):
         return (
             [self.KIND_COLUMN_TITLE]
             + (["НДС"] if self.SHOW_VAT else [])
+            + ([NOTE_COLUMN_TITLE] if self.SHOW_NOTE else [])
             + list(calc.MONTH_TITLES)
             + list(calc.QUARTER_TITLES)
             + [YEAR_COLUMN_TITLE]
@@ -191,10 +199,14 @@ class MonthSummaryDialog(QDialog):
         header.setMinimumSectionSize(MIN_NUMBER_COLUMN)
         header.setSectionResizeMode(QHeaderView.ResizeMode.ResizeToContents)
         header.setSectionResizeMode(0, QHeaderView.ResizeMode.ResizeToContents)
-        first_number = 2 if self.SHOW_VAT else 1
-        if self.SHOW_VAT:
-            header.setSectionResizeMode(1, QHeaderView.ResizeMode.ResizeToContents)
-        for column in range(first_number, len(self.headers)):
+        # Текстовые колонки — название, ставка НДС и примечание — по
+        # содержимому; числовые делят остаток поровну.
+        text_columns = 1 + int(self.SHOW_VAT) + int(self.SHOW_NOTE)
+        for column in range(1, text_columns):
+            header.setSectionResizeMode(
+                column, QHeaderView.ResizeMode.ResizeToContents
+            )
+        for column in range(text_columns, len(self.headers)):
             header.setSectionResizeMode(column, QHeaderView.ResizeMode.Stretch)
 
     # ------------------------------------------------------------------ НДС
@@ -253,13 +265,16 @@ class MonthSummaryDialog(QDialog):
         rows = list(lines) + [calc.payments_row(calc.TOTAL_ROW_TITLE, totals)]
         table = self.table
         table.setRowCount(len(rows))
-        # Первые колонки — название и (в «Сводке оплат») ставка НДС.
-        text_columns = 2 if self.SHOW_VAT else 1
+        # Первые колонки — название, (в «Сводке оплат») ставка НДС и
+        # примечание вида (v0.76.0).
+        text_columns = 1 + int(self.SHOW_VAT) + int(self.SHOW_NOTE)
         for row, line in enumerate(rows):
             bold = row == len(rows) - 1  # строка «Всего»
             values: list[object] = [line.name]
             if self.SHOW_VAT:
                 values.append(fmt_vat_rate(line.vat_rate))
+            if self.SHOW_NOTE:
+                values.append(getattr(line, "note", "") or "")
             values += list(line.months) + list(line.quarters) + [line.total]
             for column, amount in enumerate(values):
                 text = amount if column < text_columns else _money(amount)

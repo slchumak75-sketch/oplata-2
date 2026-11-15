@@ -100,6 +100,8 @@ COLUMN_WIDTHS = (
     (COL_OUT, 130),
     (COL_IN, 130),
     (COL_TARGET, 300),
+    # v0.76.0: «Уже в базе» скрыта; ширина оставлена про запас — если
+    # колонку когда-нибудь вернут, она встанет той же ширины.
     (COL_BASE, 160),
 )
 
@@ -239,10 +241,13 @@ class StatementDialog(QDialog):
         header.setSectionResizeMode(COL_NAME, QHeaderView.ResizeMode.Stretch)
         header.setSectionResizeMode(COL_NOTE, QHeaderView.ResizeMode.Stretch)
         if self.store is None:
-            # Без базы таблица остаётся просто просмотром файла: колонки
-            # разноса в ней не нужны.
+            # Без базы таблица остаётся просто просмотром файла: колонка
+            # разноса в ней не нужна.
             self.table.setColumnHidden(COL_TARGET, True)
-            self.table.setColumnHidden(COL_BASE, True)
+        # v0.76.0: колонка «Уже в базе» убрана вовсе (просьба
+        # пользователя). Номер колонки в нумерации оставлен: по нему
+        # по-прежнему считаются «Примечание» и подсказки строки.
+        self.table.setColumnHidden(COL_BASE, True)
         root.addWidget(self.table, stretch=1)
 
         self._fill_table()
@@ -394,10 +399,10 @@ class StatementDialog(QDialog):
             self._set_cell(
                 row, COL_IN, self._amount(item.incoming_shown), money=True
             )
-            # v0.63.0: «Куда» и «Уже в базе» — прямо в этой таблице,
-            # второе окно для разноса больше не открывается.
+            # v0.63.0: «Куда» — прямо в этой таблице, второе окно для
+            # разноса больше не открывается. v0.76.0: колонка «Уже в
+            # базе» убрана, её ячейка не заполняется.
             if match is not None:
-                self._base_cell(row, item, match)
                 self._target_cell(row, row_index, match)
             commission = (
                 self.commissions[row_index]
@@ -535,41 +540,6 @@ class StatementDialog(QDialog):
         ]
         self._refresh_planned()
 
-    def _base_cell(self, index: int, row, match: Match) -> None:
-        """«Уже в базе»: что записано за день и что станет (v0.57.0).
-
-        Запись дня в базе одна, поэтому прежняя сумма **заменяется** —
-        об этом пишем и в ячейке, и в подсказке.
-        """
-
-        date_iso = iso_date(row)
-        current = base_amount(self.store.data, match, date_iso)
-        result = self.planned.get(plan_key(row, match), Decimal("0"))
-        if match.target in (TARGET_NEW_PAYMENT, TARGET_CHOOSE):
-            # v0.61.0: пока получатель (или вид оплаты) не выбран,
-            # писать некуда.
-            text = "—"
-        elif current == result:
-            text = fmt_money_plain(current)
-        else:
-            text = f"{fmt_money_plain(current)} → {fmt_money_plain(result)}"
-        cell = self._set_cell(index, COL_BASE, text)
-        cell.setTextAlignment(
-            Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter
-        )
-        if (
-            match.target not in (TARGET_NEW_PAYMENT, TARGET_CHOOSE)
-            and current
-            and current != result
-        ):
-            # Расхождение: день в базе уже заполнен другой суммой.
-            cell.setForeground(QColor(styles.RED))
-        cell.setToolTip(
-            f"За {date_iso} в базе: {fmt_money_plain(current)}.\n"
-            f"После разноса станет: {fmt_money_plain(result)}\n"
-            "Запись дня одна, прежняя сумма заменяется."
-        )
-
     def _refresh_planned(self) -> None:
         """Пересчитать суммы, которые запишет разнос."""
 
@@ -585,8 +555,7 @@ class StatementDialog(QDialog):
         for index, row_index in enumerate(self.visible):
             row = self.statement.rows[row_index]
             match = self.matches[row_index]
-            self.table.takeItem(index, COL_BASE)
-            self._base_cell(index, row, match)
+            # v0.76.0: колонки «Уже в базе» нет — не считаем её.
             commission = self.commissions[row_index]
             text = match.note
             if commission.note:
@@ -1131,137 +1100,13 @@ class StatementDialog(QDialog):
         return None
 
     def _report_distribution(self, result) -> None:
-        """Сообщить итог разноса — всегда, даже когда писать нечего."""
+        """Итог разноса (v0.76.0): молчим — окна больше нет.
 
-        if result is None:
-            return
-        parts: list[str] = []
-        # v0.66.0: расхождение с файлом — первым делом. Отчёт —
-        # последнее, что видит человек перед тем, как суммы попадут в
-        # базу: пропустить мимо глаз подпись под заголовком легко.
-        if not self.reconciliation.ok:
-            parts.append(
-                "Внимание: итог строк не совпал с итогами файла — "
-                "разнесены могут быть неверные суммы:"
-            )
-            parts.extend(f"• {text}" for text in self.reconciliation.problems)
-            parts.append("")
-        if result.applied:
-            parts.append(f"Записано: {len(result.applied)}.")
-            parts.extend(result.applied[:12])
-        if result.replaced:
-            parts.append("")
-            parts.append(f"Снято прежних записей: {len(result.replaced)}.")
-            parts.extend(result.replaced[:12])
-        if result.removed:
-            parts.append("")
-            parts.append(
-                f"Убрано лишних «реализаций»: {len(result.removed)}."
-            )
-            parts.extend(result.removed[:12])
-        if result.overwritten:
-            # v0.67.0: переразнос пишет поверх ручной правки — но
-            # человек должен видеть, какие его цифры затёрты.
-            parts.append("")
-            parts.append(
-                "Дни, которые правили вручную, перезаписаны: "
-                f"{len(result.overwritten)}."
-            )
-            parts.extend(result.overwritten[:12])
-        if result.restated:
-            # v0.65.0: файл прочитан по-новому — прежние суммы этих
-            # строк сняты, записаны нынешние.
-            parts.append("")
-            parts.append(
-                "Строки разносились с другими суммами (файл прочитан "
-                f"заново): {len(result.restated)}. Прежние записи сняты."
-            )
-            parts.extend(
-                f"• {row.name or row.unp} — {fmt_amount(row.amount)}"
-                for row in result.restated[:8]
-            )
-        if result.needs_choice:
-            # v0.65.0: «надо выбрать получателя» — не то же, что «нет
-            # карточки»: здесь карточек несколько, и выбирает человек.
-            parts.append("")
-            parts.append(
-                "Надо выбрать получателя в колонке «Куда»: "
-                f"{len(result.needs_choice)}."
-            )
-            parts.extend(
-                f"• {row.name or row.unp} (УНП {row.unp}) — "
-                f"{fmt_amount(row.amount)}"
-                for row in result.needs_choice[:8]
-            )
-        if result.rolled_unwritten:
-            parts.append("")
-            parts.append(
-                "Внимание: у этих строк снята прежняя запись, а новая "
-                "пока не записана — выберите получателя и разнесите "
-                "снова:"
-            )
-            parts.extend(
-                f"• {row.name or row.unp} — {fmt_amount(row.amount)}"
-                for row in result.rolled_unwritten[:8]
-            )
-        if result.unresolved:
-            # v0.63.0: что не разнеслось — видно всегда, а не только
-            # когда не записано ничего.
-            parts.append("")
-            parts.append(
-                "Не разнесено (нет контрагента или вида оплаты с таким "
-                f"УНП): {len(result.unresolved)}."
-            )
-            parts.extend(
-                f"• {row.name or row.unp} (УНП {row.unp})"
-                for row in result.unresolved[:8]
-            )
-        if result.warnings:
-            parts.append("")
-            parts.extend(result.warnings)
-        if not parts:
-            if result.already:
-                parts.append(
-                    "Новых данных нет: все строки этой выписки уже "
-                    f"разносились ({len(result.already)})."
-                )
-            elif result.unresolved:
-                parts.append(
-                    "Ничего не записано: строкам не хватает контрагентов "
-                    f"или видов оплаты ({len(result.unresolved)})."
-                )
-            else:
-                parts.append("Разносить нечего.")
-        if not self._needs_report(result):
-            # v0.68.0: всё разнеслось — окно не нужно. Раньше отчёт
-            # вставал после каждого разноса, и его приходилось
-            # закрывать, чтобы вернуться к работе.
-            return
-        QMessageBox.information(
-            self, "Разнесение выписки", "\n".join(parts)
-        )
-
-    def _needs_report(self, result) -> bool:
-        """Надо ли показывать отчёт после разноса (v0.68.0).
-
-        Показываем, только когда есть на что посмотреть: что-то не
-        разнеслось, ждёт выбора получателя, прежняя запись снята без
-        новой, итог разошёлся с файлом или ручную правку пришлось
-        перезаписать. Если всё сошлось — молчим: человек и так видит
-        результат в таблице.
+        Раньше после разноса вставало окно «Разнесение выписки»:
+        сначала всегда (v0.31.0), потом только когда есть на что
+        смотреть (v0.68.0). Оно мешало: результат и так виден в
+        таблице, а неразнесённые строки остаются в ней с пустой
+        колонкой «Куда».
         """
 
-        if result is None:
-            return False
-        return bool(
-            result.unresolved
-            or result.needs_choice
-            or result.rolled_unwritten
-            or result.warnings
-            or result.overwritten
-            or result.removed
-            or not self.reconciliation.ok
-            # v0.68.0: ничего не записано — молчать нельзя, иначе
-            # непонятно, сработал разнос или нет.
-            or not result.applied
-        )
+        return

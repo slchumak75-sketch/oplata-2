@@ -38,6 +38,8 @@ class PaymentsSummaryDialog(MonthSummaryDialog):
     KIND_COLUMN_TITLE = "Вид оплаты"
     # v0.34.0: колонка «НДС» и кнопка «Без НДС» — только у оплат.
     SHOW_VAT = True
+    # v0.76.0: колонка «Примечание» — подпись вида из его карточки.
+    SHOW_NOTE = True
 
     def summary(self) -> calc.PaymentsSummary:
         return calc.payments_summary(self.store.data, self.current_year())

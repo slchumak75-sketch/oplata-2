@@ -39,6 +39,7 @@ from .dates import fmt_money_plain, week_monday
 from .models import (
     KKM_KIND_RETURN,
     AppData,
+    alphabetical_key,
     CASH_SOURCE,
     Counterparty,
     INCOMING,
@@ -1090,6 +1091,10 @@ class PaymentsSummaryRow:
     # v0.34.0: ставка НДС вида — в процентах, пусто = без НДС.
     # У строки «Поставщики» и у строки «Всего» ставки нет.
     vat_rate: str = ""
+    # v0.76.0: примечание вида оплаты — из его карточки. Смысл тот же,
+    # что в блоке «Оплата»: подпись, по которой вид узнают, когда
+    # названия похожи. У «Поставщики» и «Всего» примечания нет.
+    note: str = ""
 
 
 @dataclass(frozen=True)
@@ -1105,6 +1110,7 @@ def payments_row(
     name: str,
     months: Sequence[Decimal],
     vat_rate: str = "",
+    note: str = "",
 ) -> PaymentsSummaryRow:
     """Собрать строку: по месяцам, по кварталам и всего за год."""
 
@@ -1118,6 +1124,7 @@ def payments_row(
         quarters=quarters,
         total=sum(months, ZERO),
         vat_rate=vat_rate,
+        note=note,
     )
 
 
@@ -1187,12 +1194,19 @@ def _summary_from_buckets(
     amounts: dict[str, list[Decimal]],
     names: list[str],
     vat_rates: dict[str, str] | None = None,
+    notes: dict[str, str] | None = None,
 ) -> PaymentsSummary:
     """Собрать сводку: строки — в порядке ``names``, последняя — «Всего»."""
 
     rates = vat_rates or {}
+    remarks = notes or {}
     rows = tuple(
-        payments_row(name, amounts.get(name, [ZERO] * 12), rates.get(name, ""))
+        payments_row(
+            name,
+            amounts.get(name, [ZERO] * 12),
+            rates.get(name, ""),
+            remarks.get(name, ""),
+        )
         for name in names
     )
     totals = [ZERO] * 12
@@ -1219,6 +1233,24 @@ def outgoing_vat_rates(data: AppData) -> dict[str, str]:
         if name not in rates:
             rates[name] = str(getattr(payment, "vat_rate", "") or "").strip()
     return rates
+
+
+def outgoing_notes(data: AppData) -> dict[str, str]:
+    """Примечание по видам оплат: название -> примечание (v0.76.0).
+
+    Примечание лежит в первой записи вида — это и есть его карточка,
+    так же как ставка НДС (v0.34.0) и отмеченные даты (v0.24.0). У
+    строки «Поставщики» примечания нет: это не вид оплаты.
+    """
+
+    remarks: dict[str, str] = {}
+    for payment in data.other_payments:
+        if getattr(payment, "direction", OUTGOING) == INCOMING:
+            continue
+        name = payment.name or "Прочий вид"
+        if name not in remarks:
+            remarks[name] = str(getattr(payment, "note", "") or "").strip()
+    return remarks
 
 
 def payments_summary(data: AppData, year: int) -> PaymentsSummary:
@@ -1267,17 +1299,24 @@ def payments_summary(data: AppData, year: int) -> PaymentsSummary:
             other_payment_amount(payment),
         )
 
-    # Порядок строк: «Поставщики», затем виды в порядке настройки
-    # блока «Оплата». Вид виден и без оплат года — таблица не «прыгает».
+    # Порядок строк: «Поставщики», затем виды **по алфавиту** (v0.76.0,
+    # просьба пользователя) — раньше они шли в порядке настройки блока
+    # «Оплата», и нужную строку приходилось искать взглядом. Вид виден
+    # и без оплат года — таблица не «прыгает».
     order = [SUPPLIERS_PAYMENTS_TITLE]
-    for name in other_payment_names(data):
-        if name not in order:
-            order.append(name)
-    for name in names:  # виды, которых нет в настройке (данные важнее)
-        if name not in order:
-            order.append(name)
+    rest = [name for name in other_payment_names(data) if name not in order]
+    # Виды, которых нет в настройке (данные важнее), — тоже в алфавит.
+    rest += [name for name in names if name not in order and name not in rest]
+    order += sorted(rest, key=alphabetical_key)
     # v0.34.0: ставка НДС вида — из его карточки.
-    return _summary_from_buckets(year, amounts, order, outgoing_vat_rates(data))
+    # v0.76.0: примечание вида — тоже из карточки.
+    return _summary_from_buckets(
+        year,
+        amounts,
+        order,
+        outgoing_vat_rates(data),
+        outgoing_notes(data),
+    )
 
 
 def incoming_summary(data: AppData, year: int) -> PaymentsSummary:

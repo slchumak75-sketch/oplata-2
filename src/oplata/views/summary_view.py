@@ -21,6 +21,7 @@ from datetime import date
 from decimal import Decimal
 
 from PySide6.QtCore import QDate, Qt
+from PySide6.QtGui import QFontMetrics
 from PySide6.QtWidgets import (
     QCheckBox,
     QFrame,
@@ -40,6 +41,7 @@ from ..widgets import (
     CollapsiblePanel,
     arrow_button,
     date_edit_value,
+    fit_date_edit_width,
     make_date_edit,
 )
 
@@ -50,6 +52,14 @@ SUMMARY_ARROW_WIDTH = 44
 # Сколько недель вперёд показывать в блоке «Оплата понедельно»
 # (v0.15.0: четыре недели — следующая, ещё две и четвёртая).
 PLAN_WEEKS = 4
+
+# v0.76.0: колонка значений «Сводки» — не у́же этой ширины. Плашка
+# занимает пятую часть окна, и суммы в ней обрезались: колонку
+# подписей растягивала раскладка, а значениям доставался остаток.
+# Ширину считаем по самой длинной сумме, а не числом: кегль
+# «Сводки» свой (styles.fs_summary).
+VALUE_SAMPLE = "888 888 888,88"
+VALUE_COLUMN_MARGIN = 12
 
 
 class SummaryView(QWidget):
@@ -106,6 +116,10 @@ class SummaryView(QWidget):
         date_row.addWidget(self.prev_btn)
         self.date_edit = make_date_edit(date.today())
         self.date_edit.setStyleSheet(f"font-size:{styles.fs(12)}px")
+        # v0.76.0: ширина — по метрикам даты, а не фиксированные
+        # 158 точек: при кегле «Сводки» их не хватало, и последняя
+        # цифра года обрезалась («14.11.202»).
+        fit_date_edit_width(self.date_edit)
         self.date_edit.dateChanged.connect(self._on_date_changed)
         date_row.addWidget(self.date_edit)
         self.next_btn = arrow_button("→", "День вперёд")
@@ -301,7 +315,20 @@ class SummaryView(QWidget):
             grid.addWidget(label, row, 0)
             grid.addWidget(value, row, 1)
         grid.setColumnStretch(0, 1)
+        # v0.76.0: колонка значений не сжимается ниже суммы с
+        # разрядами — иначе «1 234 567,89» обрезалось до «1 234 56».
+        grid.setColumnMinimumWidth(1, self._value_column_width(value))
+        # v0.76.0: и сама колонка значений тянется: плашка стала
+        # шире, и свободное место делим между подписью и значением
+        # (1 : 1), а не отдаём его целиком подписи.
+        grid.setColumnStretch(1, 1)
         layout.addLayout(grid)
+
+    def _value_column_width(self, sample_label) -> int:
+        """Ширина колонки значений: по самой длинной сумме (v0.76.0)."""
+
+        metrics = QFontMetrics(sample_label.font())
+        return metrics.horizontalAdvance(VALUE_SAMPLE) + VALUE_COLUMN_MARGIN
 
     def value_text(self, key: str) -> str:
         """Показанное значение строки (удобно для тестов)."""

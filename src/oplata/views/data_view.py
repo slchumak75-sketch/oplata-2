@@ -150,6 +150,7 @@ class DataView(QWidget):
         on_users_saved: Callable[[User], None] | None = None,
         on_save_fields: Callable[[], str] | None = None,
         on_reset_fields: Callable[[], str] | None = None,
+        on_edit_fields: Callable[[bool], str] | None = None,
     ) -> None:
         super().__init__(parent)
         self.store = store
@@ -160,6 +161,7 @@ class DataView(QWidget):
         # сами таблицы.
         self.on_save_fields = on_save_fields
         self.on_reset_fields = on_reset_fields
+        self.on_edit_fields = on_edit_fields
         self.year = date.today().year
         self._day_buttons: dict[date, QPushButton] = {}
         # Черновик отметок: клики по календарю меняют его, а не файл
@@ -256,13 +258,6 @@ class DataView(QWidget):
         panel_layout.addWidget(self.scroll, stretch=1)
         root.addWidget(self.calendar_panel, stretch=1)
 
-        # --- раскрывающаяся плашка «Банк» (v0.54.0) ---
-        self.bank_panel = CollapsiblePanel(
-            "Банк (обслуживающий)", expanded=False
-        )
-        self._build_bank_panel(self.bank_panel.content_layout)
-        root.addWidget(self.bank_panel)
-
         # --- раскрывающаяся плашка «Свойства контрагента» (v0.69.0) ---
         self.routing_panel = CollapsiblePanel(
             "Свойства контрагента", expanded=False
@@ -275,9 +270,22 @@ class DataView(QWidget):
         self._build_users_panel(self.users_panel.content_layout)
         root.addWidget(self.users_panel)
 
-        # --- раскрывающаяся плашка «Администрирование» ---
-        self.admin_panel = CollapsiblePanel("Администрирование", expanded=False)
+        # --- раскрывающаяся плашка «Этот компьютер» ---
+        # v0.76.0: так она называется с тех пор, как в неё переехали
+        # настройки полей таблиц: и ширины колонок, и файл данных —
+        # настройки одного компьютера. Прежних двух плашек
+        # («Администрирование» и «Поля таблиц») больше нет, как и
+        # плашки «Банк (обслуживающий)»: её поля — про разнос
+        # выписки, поэтому они ушли в «Свойства контрагента».
+        self.admin_panel = CollapsiblePanel("Этот компьютер", expanded=False)
         admin_layout = self.admin_panel.content_layout
+        # Поля таблиц — первым делом: это самая частая настройка.
+        self._build_fields_form(admin_layout)
+        line = QFrame()
+        line.setFrameShape(QFrame.Shape.HLine)
+        line.setObjectName("Muted")
+        line.setStyleSheet(f"color:{styles.BORDER}")
+        admin_layout.addWidget(line)
 
         self.path_label = QLabel(str(self.store.path))
         self.path_label.setObjectName("Muted")
@@ -330,42 +338,6 @@ class DataView(QWidget):
         admin_layout.addWidget(admin_hint)
         root.addWidget(self.admin_panel)
 
-        # --- раскрывающаяся плашка «Поля таблиц» (v0.75.0) ---
-        # Ширины колонок настраиваются мышью прямо в таблицах (границу
-        # столбца можно тянуть за край ячейки), а сохраняются здесь.
-        self.fields_panel = CollapsiblePanel("Поля таблиц", expanded=False)
-        fields_layout = self.fields_panel.content_layout
-        fields_hint = QLabel(
-            "Потяните границу столбца мышью прямо в таблице — в «Поставщиках», "
-            "«Покупателях», «Поступлении» и «Оплате». Затем нажмите "
-            "«Сохранить поля»: ширины запомнятся на этом компьютере."
-        )
-        fields_hint.setObjectName("Muted")
-        fields_hint.setWordWrap(True)
-        fields_layout.addWidget(fields_hint)
-
-        fields_buttons = QHBoxLayout()
-        fields_buttons.setSpacing(8)
-        self.save_fields_button = blue_button("Сохранить поля")
-        self.save_fields_button.setToolTip(
-            "Запомнить текущие ширины колонок на этом компьютере"
-        )
-        self.save_fields_button.clicked.connect(self._save_fields)
-        fields_buttons.addWidget(self.save_fields_button)
-        self.reset_fields_button = QPushButton("Сбросить поля")
-        self.reset_fields_button.setToolTip(
-            "Убрать сохранённые ширины и вернуть расчётные"
-        )
-        self.reset_fields_button.clicked.connect(self._reset_fields)
-        fields_buttons.addWidget(self.reset_fields_button)
-        fields_buttons.addStretch(1)
-        fields_layout.addLayout(fields_buttons)
-
-        self.fields_status_label = QLabel("")
-        self.fields_status_label.setObjectName("Muted")
-        self.fields_status_label.setWordWrap(True)
-        fields_layout.addWidget(self.fields_status_label)
-        root.addWidget(self.fields_panel)
         # v0.24.0: пустой отступ внизу больше не забирает свободное
         # место — иначе раскрытая плашка не дорастала до низа экрана
         # и её таблицы оставались низкими (просьба пользователя:
@@ -570,18 +542,24 @@ class DataView(QWidget):
         узнаёт его строки в выписке.
         """
 
-        title = QLabel("🏦  Банк, который ведёт счёт")
+        title = QLabel("🏦  Свой банк (обслуживающий)")
         title.setObjectName("PanelTitle")
         layout.addWidget(title)
 
+        # v0.76.0: одна короткая строка вместо абзаца — в «Свойствах
+        # контрагента» длинные пояснения только отъедают место у
+        # таблицы правил (правило v0.70.0).
         hint = QLabel(
-            "Банк — не поставщик и не покупатель. Его операции в выписке "
-            "(комиссия, выручка по карточкам, выдача наличных) по "
-            "контрагентам не разносятся. УНП из этой карточки программа "
-            "сравнивает с УНП в выписке."
+            "Его строки в выписке по контрагентам не разносятся."
         )
         hint.setObjectName("Muted")
         hint.setWordWrap(True)
+        hint.setToolTip(
+            "Банк — не поставщик и не покупатель. Его операции в "
+            "выписке (комиссия, выручка по карточкам, выдача наличных) "
+            "не разносятся. УНП из этой карточки программа сравнивает с "
+            "УНП в выписке."
+        )
         layout.addWidget(hint)
 
         form = QHBoxLayout()
@@ -665,6 +643,16 @@ class DataView(QWidget):
         self.routing_save_btn.clicked.connect(self.save_routing_rules)
         actions.addWidget(self.routing_save_btn)
         layout.addLayout(actions)
+
+        # v0.76.0: карточка банка переехала сюда из своей плашки:
+        # УНП банка нужен ровно для разноса выписки, а отдельная
+        # плашка «Банк (обслуживающий)» только занимала место.
+        line = QFrame()
+        line.setFrameShape(QFrame.Shape.HLine)
+        line.setObjectName("Muted")
+        line.setStyleSheet(f"color:{styles.BORDER}")
+        layout.addWidget(line)
+        self._build_bank_panel(layout)
 
         self._load_routing_rules()
 
@@ -1246,7 +1234,70 @@ class DataView(QWidget):
             else QAbstractItemView.EditTrigger.AllEditTriggers
         )
 
+    def _build_fields_form(self, layout) -> None:
+        """Настройки ширин колонок (v0.76.0: внутри «Этот компьютер»)."""
+
+        fields_hint = QLabel(
+            "Нажмите «Редактировать поля», потом потяните границу столбца "
+            "мышью прямо в таблице — в «Поставщиках», «Покупателях», "
+            "«Поступлении» и «Оплате». Затем «Сохранить поля»: ширины "
+            "запомнятся на этом компьютере."
+        )
+        fields_hint.setObjectName("Muted")
+        fields_hint.setWordWrap(True)
+        layout.addWidget(fields_hint)
+
+        fields_buttons = QHBoxLayout()
+        fields_buttons.setSpacing(8)
+        # v0.76.0: правка ширин включается отдельной кнопкой — пока
+        # она не нажата, мышь границы не двигает (иначе случайный
+        # захват у края ячейки менял таблицу).
+        self.edit_fields_button = QPushButton("Редактировать поля")
+        self.edit_fields_button.setCheckable(True)
+        self.edit_fields_button.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.edit_fields_button.setToolTip(
+            "Разрешить тянуть границы столбцов мышью в таблицах"
+        )
+        self.edit_fields_button.toggled.connect(self._toggle_editing_fields)
+        fields_buttons.addWidget(self.edit_fields_button)
+        self.save_fields_button = blue_button("Сохранить поля")
+        self.save_fields_button.setToolTip(
+            "Запомнить текущие ширины колонок на этом компьютере"
+        )
+        self.save_fields_button.clicked.connect(self._save_fields)
+        fields_buttons.addWidget(self.save_fields_button)
+        self.reset_fields_button = QPushButton("Сбросить поля")
+        self.reset_fields_button.setToolTip(
+            "Убрать сохранённые ширины и вернуть расчётные"
+        )
+        self.reset_fields_button.clicked.connect(self._reset_fields)
+        fields_buttons.addWidget(self.reset_fields_button)
+        fields_buttons.addStretch(1)
+        layout.addLayout(fields_buttons)
+
+        self.fields_status_label = QLabel("")
+        self.fields_status_label.setObjectName("Muted")
+        self.fields_status_label.setWordWrap(True)
+        layout.addWidget(self.fields_status_label)
+
+
     # ------------------------------------------------------------- поля
+    def _toggle_editing_fields(self, enabled: bool) -> None:
+        """«Редактировать поля»: разрешить или запретить правку (v0.76.0)."""
+
+        if self.on_edit_fields is None:
+            self.fields_status_label.setText("Правка недоступна.")
+            return
+        self.edit_fields_button.setText(
+            "Запретить правку" if enabled else "Редактировать поля"
+        )
+        self.fields_status_label.setText(self.on_edit_fields(enabled))
+
+    def finish_editing_fields(self) -> None:
+        """Снять переключатель после сохранения (v0.76.0)."""
+
+        self.edit_fields_button.setChecked(False)
+
     def _save_fields(self) -> None:
         """«Сохранить поля»: запомнить ширины колонок (v0.75.0)."""
 
@@ -1254,6 +1305,9 @@ class DataView(QWidget):
             self.fields_status_label.setText("Сохранение недоступно.")
             return
         self.fields_status_label.setText(self.on_save_fields())
+        # Сохранили — правку закрываем: дальше мышь снова только
+        # вводит данные, а не двигает столбцы.
+        self.finish_editing_fields()
 
     def _reset_fields(self) -> None:
         """«Сбросить поля»: вернуть расчётные ширины (v0.75.0)."""

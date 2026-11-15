@@ -8,6 +8,7 @@ from PySide6.QtCore import QDate, QEvent, QObject, Qt, QTimer
 from PySide6.QtGui import (
     QColor,
     QFocusEvent,
+    QFontMetrics,
     QPalette,
     QPen,
 )
@@ -230,9 +231,31 @@ def make_date_edit(day) -> QDateEdit:
     edit.setCalendarWidget(TodayFrameCalendar(edit))
     # Дата целиком + зона стрелки календаря справа (без наложения на
     # год). v0.28.2: стрелка вдвое шире — минимум увеличен со 138.
-    edit.setMinimumWidth(158)
+    # v0.76.0: минимум считаем по метрикам текста, а не числом.
+    edit.setMinimumWidth(DATE_EDIT_MIN_WIDTH)
     edit.setDate(QDate(day.year, day.month, day.day))
     return edit
+
+
+# Ширина поля даты: поля ячейки (8+8), рамка (2), запас под кнопку
+# календаря (44, см. стиль QDateEdit в styles.py) и ещё 4 про запас.
+DATE_EDIT_MIN_WIDTH = 158
+DATE_EDIT_PADDING = 8 * 2 + 2 + 44 + 4
+
+
+def fit_date_edit_width(edit, sample: str = "00.00.0000") -> None:
+    """Растянуть поле даты под самый широкий текст (v0.76.0).
+
+    Ширина 158 точек подобрана под обычный кегль интерфейса. Там, где
+    шрифт поля крупнее (в «Сводке» он свой), её не хватало, и год
+    обрезался: «14.11.202» вместо «14.11.2026». Теперь минимум
+    считается по метрикам самого текста.
+    """
+
+    metrics = QFontMetrics(edit.font())
+    edit.setMinimumWidth(
+        max(DATE_EDIT_MIN_WIDTH, metrics.horizontalAdvance(sample) + DATE_EDIT_PADDING)
+    )
 
 
 def date_edit_value(edit: QDateEdit):
@@ -457,6 +480,10 @@ class ColumnResizer(QObject):
         self.table = table
         self.host = host
         self.min_width = min_width
+        # v0.76.0: пока правка выключена, границы не тянутся — иначе
+        # случайный захват мышью у края ячейки менял ширину столбца.
+        # Включает её кнопка «Редактировать поля» в «Конфигурации».
+        self.enabled = False
         self.column: int | None = None  # колонка **слева** от границы
         self._start_x = 0
         self._start_width = 0
@@ -492,8 +519,18 @@ class ColumnResizer(QObject):
                 handler(column, width)
 
     # -------------------------------------------------------------- события
+    def set_enabled(self, enabled: bool) -> None:
+        """Разрешить или запретить протяжку (v0.76.0)."""
+
+        self.enabled = enabled
+        if not enabled:
+            self.column = None
+            self.table.viewport().unsetCursor()
+
     def eventFilter(self, obj, event):  # noqa: N802 - Qt API
         kind = event.type()
+        if not self.enabled:
+            return False
         if kind == QEvent.Type.MouseButtonPress:
             if (event.button() == Qt.MouseButton.LeftButton
                     and self.edge_at(int(event.position().x())) is not None):

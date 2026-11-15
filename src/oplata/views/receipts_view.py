@@ -322,6 +322,12 @@ SCROLLBAR_RESERVE_MAX = 60
 # теперь заглавными, но переносятся по-прежнему на две строки.
 ROW_HEIGHT = 32
 
+# v0.76.0: доли ширины между левыми блоками («Поступление» и «Оплата»)
+# и «Сводкой». Сводка занимает 27% — на 30% больше прежних 21%
+# (просьба пользователя: в её колонках не помещались подписи и суммы).
+SUMMARY_STRETCH = 27
+SUMMARY_LEFT_STRETCH = 100 - SUMMARY_STRETCH
+
 ZERO = Decimal("0")
 
 
@@ -1450,6 +1456,13 @@ class MoneyBlock(QFrame):
             self.table.columnWidth(column) for column in range(COLUMN_COUNT)
         ]
 
+    def set_columns_editable(self, enabled: bool) -> None:
+        """Разрешить или запретить тянуть границы мышью (v0.76.0)."""
+
+        resizer = getattr(self.table, "_column_resizer", None)
+        if resizer is not None:
+            resizer.set_enabled(enabled)
+
     def save_widths(self) -> bool:
         """Записать ширины колонок в файл настроек (v0.75.0)."""
 
@@ -2115,7 +2128,9 @@ class ReceiptsView(QWidget):
         # v0.70.0 (было 20% ширины, стало 21%). Место берётся у левых
         # блоков, а в них — у растягиваемой колонки «Наименование»
         # видов оплат.
-        root.addWidget(left, stretch=79 if summary_widget is not None else 1)
+        # v0.76.0: доли 73 : 27 — «Сводка» ещё на 30% шире (просьба
+        # пользователя): в 21% длинные подписи и суммы не помещались.
+        root.addWidget(left, stretch=SUMMARY_LEFT_STRETCH if summary_widget else 1)
 
         # --- справа на всю высоту — «Сводка» ---
         # v0.27.6: даты платёжек независимы (просьба пользователя) —
@@ -2128,7 +2143,8 @@ class ReceiptsView(QWidget):
                 QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Expanding
             )
             # v0.71.0: 21% против 79% у блоков (было 20% — 1 из 5).
-            root.addWidget(summary_widget, stretch=21)
+            # v0.76.0: 27% против 73% — плашка шире на 30%.
+            root.addWidget(summary_widget, stretch=SUMMARY_STRETCH)
 
         self.refresh()
 
