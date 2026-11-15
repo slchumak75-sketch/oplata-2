@@ -13,16 +13,20 @@ from PySide6.QtGui import (
     QPen,
 )
 from PySide6.QtWidgets import (
+    QAbstractItemView,
     QCalendarWidget,
-    QStyledItemDelegate,    QAbstractItemView,
+    QStyledItemDelegate,
     QDateEdit,
     QFrame,
+    QHeaderView,
     QLabel,
     QLineEdit,
     QPushButton,
     QSizePolicy,
     QStyle,
     QStyleOptionViewItem,
+    QTableView,
+    QTableWidget,
     QVBoxLayout,
     QWidget,
 )
@@ -596,3 +600,92 @@ def install_column_resizer(table, host=None, min_width: int = ColumnResizer.MIN_
     resizer = ColumnResizer(table, host, min_width=min_width)
     table._column_resizer = resizer  # noqa: SLF001 - служебное поле Qt
     return resizer
+
+
+class FrozenColumns(QObject):
+    """Закреплённые левые колонки таблицы (v0.77.0).
+
+    Таблица шире окна и прокручивается по горизонтали — без
+    закрепления уезжали бы названия строк, и непонятно было бы, чьи
+    цифры на экране. Работает наложением: вторая таблица-вид с **той
+    же моделью** лежит поверх основной, показывает первые ``count``
+    колонок и не прокручивается по горизонтали. Модель общая, поэтому
+    правки основной таблицы видны в закреплённой сразу; ``QTableView``
+    (а не ``QTableWidget``) — потому что у ``QTableWidget`` ``setModel``
+    закрыт, а модель надо отдать обеим таблицам.
+    """
+
+    def __init__(self, table: QTableWidget, count: int) -> None:
+        super().__init__(table)
+        self.table = table
+        self.count = count
+        self.view = QTableView(table)
+        view = self.view
+        view.setModel(table.model())
+        # Стиль основной таблицы написан для QTableWidget — подменяем
+        # имя класса, чтобы накладка выглядела так же.
+        view.setStyleSheet(
+            table.styleSheet().replace("QTableWidget", "QTableView")
+        )
+        # Сама накладка не должна перехватывать ни фокус, ни ввод:
+        # это просто картинка поверх левой части таблицы.
+        view.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+        view.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
+        view.setSelectionMode(QAbstractItemView.SelectionMode.NoSelection)
+        view.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        view.setHorizontalScrollBarPolicy(
+            Qt.ScrollBarPolicy.ScrollBarAlwaysOff
+        )
+        view.setVerticalScrollMode(QAbstractItemView.ScrollMode.ScrollPerPixel)
+        view.verticalHeader().setVisible(False)
+        view.horizontalHeader().setSectionResizeMode(
+            QHeaderView.ResizeMode.Fixed
+        )
+        for column in range(count, table.columnCount()):
+            view.setColumnHidden(column, True)
+        # Прокрутка по вертикали — общая с основной таблицей: колесо
+        # над закреплёнными колонками листает обе таблицы.
+        table.verticalScrollBar().valueChanged.connect(self._follow_main)
+        view.verticalScrollBar().valueChanged.connect(self._follow_frozen)
+        # Ширина закреплённых колонок меняется вместе с основной.
+        table.horizontalHeader().sectionResized.connect(self._sync_widths)
+        view.show()
+        self.relayout()
+
+    # ------------------------------------------------------------- раскладка
+    def relayout(self) -> None:
+        """Переставить накладку: она закрывает левые колонки таблицы."""
+
+        table = self.table
+        self._sync_widths()
+        self._sync_heights()
+        frame = table.frameWidth()
+        self.view.setGeometry(
+            table.verticalHeader().width() + frame,
+            frame,
+            sum(table.columnWidth(column) for column in range(self.count)),
+            table.horizontalHeader().height() + table.viewport().height(),
+        )
+        self.view.raise_()
+
+    def _sync_widths(self, *_args) -> None:
+        for column in range(self.count):
+            self.view.setColumnWidth(column, self.table.columnWidth(column))
+
+    def _sync_heights(self) -> None:
+        table = self.table
+        self.view.verticalHeader().setDefaultSectionSize(
+            table.verticalHeader().defaultSectionSize()
+        )
+        for row in range(table.rowCount()):
+            self.view.setRowHeight(row, table.rowHeight(row))
+
+    def _follow_main(self, value: int) -> None:
+        bar = self.view.verticalScrollBar()
+        if bar.value() != value:
+            bar.setValue(value)
+
+    def _follow_frozen(self, value: int) -> None:
+        bar = self.table.verticalScrollBar()
+        if bar.value() != value:
+            bar.setValue(value)
