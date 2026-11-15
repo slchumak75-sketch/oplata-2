@@ -219,6 +219,7 @@ class MainWindow(QMainWindow):
             # v0.75.0: ширины колонок, настроенные мышью.
             on_save_fields=self._save_column_widths,
             on_reset_fields=self._reset_column_widths,
+            on_edit_fields=self._edit_column_widths,
         )
 
         # v0.21.0: столбец «на сегодня» считается по настоящей дате,
@@ -339,22 +340,25 @@ class MainWindow(QMainWindow):
         self.base_menu_button.setCursor(Qt.CursorShape.PointingHandCursor)
         self.base_menu_button.setToolTip("Действия с базой данных")
         base_menu = QMenu(self.base_menu_button)
-        base_menu.addAction("Выгрузить базу", self._on_export_clicked)
-        base_menu.addAction("Загрузить базу", self._on_import_clicked)
+        # v0.76.0: «Конфигурация» лежит в этом же меню (в v0.75.0 для
+        # неё была отдельная кнопка «+» — две кнопки с меню в углу
+        # шапки путали). Значит, меню видно **всем**, а не только
+        # администратору, как было в v0.75.0: иначе не-администратор
+        # потерял бы вход в «Конфигурацию», открывающийся по паролю
+        # (правило v0.50.0). Пункты самой базы прячем по правам.
+        self._admin_base_actions = [
+            base_menu.addAction("Выгрузить базу", self._on_export_clicked),
+            base_menu.addAction("Загрузить базу", self._on_import_clicked),
+        ]
         base_menu.addSeparator()
-        base_menu.addAction("Очистить базу", self._on_clear_base_clicked)
-        base_menu.addAction("Очистить таблицы…", self._on_clear_tables_clicked)
+        self._admin_base_actions += [
+            base_menu.addAction("Очистить базу", self._on_clear_base_clicked),
+            base_menu.addAction("Очистить таблицы…", self._on_clear_tables_clicked),
+        ]
+        base_menu.addSeparator()
+        base_menu.addAction("Конфигурация", lambda: self.show_page(IDX_DATA))
         self.base_menu_button.setMenu(base_menu)
         layout.addWidget(self.base_menu_button)
-
-        # v0.75.0: «+» — сюда переехала вкладка «Конфигурация».
-        self.plus_button = QPushButton("+")
-        self.plus_button.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.plus_button.setToolTip("Конфигурация")
-        plus_menu = QMenu(self.plus_button)
-        plus_menu.addAction("Конфигурация", lambda: self.show_page(IDX_DATA))
-        self.plus_button.setMenu(plus_menu)
-        layout.addWidget(self.plus_button)
 
         self._apply_base_style()
         # Кнопки «Карточка поставщика»/«Карточка покупателя» с v0.11.0
@@ -394,11 +398,7 @@ class MainWindow(QMainWindow):
         )
         # v0.75.0: в правом углу шапки тот же стиль получают
         # «Загрузить выписку», «База» и «+».
-        for btn in (
-            self.statement_button,
-            self.base_menu_button,
-            self.plus_button,
-        ):
+        for btn in (self.statement_button, self.base_menu_button):
             btn.setStyleSheet(base_tools_style)
         self.base_button.setStyleSheet(
             f"QPushButton{{background:{styles.HEADER_CHECKED_BG};"
@@ -642,12 +642,28 @@ class MainWindow(QMainWindow):
                     views.append(block)
         return [view for view in views if hasattr(view, "save_widths")]
 
+    def _edit_column_widths(self, enabled: bool) -> str:
+        """«Редактировать поля»: разрешить или запретить протяжку (v0.76.0)."""
+
+        for view in self._resizable_views():
+            view.set_columns_editable(enabled)
+        if not enabled:
+            return "Правка полей закрыта: мышь снова только вводит данные."
+        return (
+            "Правка полей включена: тяните границы столбцов мышью в "
+            "«Поставщиках», «Покупателях», «Поступлении» и «Оплате», "
+            "затем нажмите «Сохранить поля»."
+        )
+
     def _save_column_widths(self) -> str:
         """«Сохранить поля»: записать ширины колонок в файл настроек."""
 
         saved = [view for view in self._resizable_views() if view.save_widths()]
         if not saved:
             return "Сохранять нечего: таблицы ещё не открывались."
+        # Сохранили — правку закрываем (кнопку снимает DataView).
+        for view in self._resizable_views():
+            view.set_columns_editable(False)
         return (
             f"Ширины колонок сохранены ({len(saved)} таблиц). Путь: "
             f"{column_widths.path()}"
@@ -1139,9 +1155,11 @@ class MainWindow(QMainWindow):
             )
         # Переключатель базы — только тем, кому доступны обе базы.
         self.base_button.setVisible(self.access.can_switch_base)
-        # Меню «База» — только администратору: в нём выгрузка и
-        # загрузка баз (v0.20.0) и обе очистки (v0.40.0, v0.75.0).
-        self.base_menu_button.setVisible(self.access.can_admin_data)
+        # v0.76.0: меню «База» видно всем — в нём же «Конфигурация».
+        # Прячем только пункты самой базы: выгрузку и загрузку
+        # (v0.20.0) и обе очистки (v0.40.0, v0.75.0).
+        for action in self._admin_base_actions:
+            action.setVisible(self.access.can_admin_data)
         # Пользователь «посажен» на свою базу: МИР или КОРЕЛИЧИ.
         fixed = self.access.fixed_base
         if fixed and self.store.base_key != fixed:

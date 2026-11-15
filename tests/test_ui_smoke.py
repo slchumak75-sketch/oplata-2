@@ -1310,16 +1310,21 @@ def test_receipts_outgoing_block_saves_supplier_payment(qt_app, store):
 
 
 def test_data_panels_are_collapsible(qt_app, store):
-    """Плашки «Настройка календаря» и «Администрирование» раскрываются."""
+    """Плашки «Настройка календаря» и «Этот компьютер» раскрываются.
+
+    v0.76.0: вторая плашка называлась «Администрирование», но после
+    того как в неё переехали поля таблиц, старое имя перестало
+    подходить — теперь это просто настройки этой машины.
+    """
     from oplata.app import MainWindow
 
     window = MainWindow(store)
     data = window.data_view
 
     assert data.calendar_panel.title == "Настройка календаря"
-    assert data.admin_panel.title == "Администрирование"
+    assert data.admin_panel.title == "Этот компьютер"
     assert "Настройка календаря" in data.calendar_panel.toggle.text()
-    assert "Администрирование" in data.admin_panel.toggle.text()
+    assert "Этот компьютер" in data.admin_panel.toggle.text()
 
     # По умолчанию свёрнуты: календарь нужен редко и занимает много места.
     assert not data.calendar_panel.is_expanded()
@@ -3651,15 +3656,15 @@ def test_user_rights_limit_pages_base_and_input(qt_app, store, monkeypatch, tmp_
     window = MainWindow(store, access_module.Access(admin))
     window.show()
     qt_app.processEvents()
-    # v0.75.0: «Конфигурация» — не вкладка, а пункт меню «+», поэтому
-    # в списке вкладок её больше нет.
+    # v0.76.0: «Конфигурация» — не вкладка, а пункт меню «База»,
+    # поэтому в списке вкладок её больше нет.
     assert [b.text() for b in window.nav_buttons if not b.isHidden()] == [
         "Поступление и оплаты",
         "Отчеты ККМ",  # v0.42.0
         "Поставщики",
         "Покупатели",
     ]
-    assert window.plus_button.isVisible()
+    assert window.base_menu_button.isVisible()
     assert window.suppliers_view.read_only is False
     assert window.kkm_view.read_only is False
     assert not window.data_view.admin_panel.isHidden()
@@ -3702,8 +3707,8 @@ def test_user_rights_limit_pages_base_and_input(qt_app, store, monkeypatch, tmp_
     assert [b.text() for b in window.nav_buttons if not b.isHidden()] == [
         "Покупатели",
     ]
-    # v0.75.0: «Конфигурация» доступна всем, но из меню «+».
-    assert window.plus_button.isVisible()
+    # v0.76.0: «Конфигурация» доступна всем, но из меню «База».
+    assert window.base_menu_button.isVisible()
     window.close()
 
 
@@ -3907,26 +3912,30 @@ def test_base_exchange_buttons_are_admin_only(qt_app, store):
     window = MainWindow(store, access=Access(admin))
     window.show()  # без показа isVisible() у кнопок был бы False
     qt_app.processEvents()
-    assert window.base_menu_button.isVisible()
-    # Пункты меню: выгрузка, загрузка, обе очистки.
-    titles = [
-        action.text()
-        for action in window.base_menu_button.menu().actions()
-        if not action.isSeparator()
-    ]
-    assert titles == [
+    def admin_titles() -> list[str]:
+        return [
+            action.text()
+            for action in window.base_menu_button.menu().actions()
+            if not action.isSeparator() and action.isVisible()
+        ]
+
+    # Администратор видит все пункты базы и «Конфигурацию».
+    assert admin_titles() == [
         "Выгрузить базу",
         "Загрузить базу",
         "Очистить базу",
         "Очистить таблицы…",
+        "Конфигурация",
     ]
 
-    # Сменили текущего пользователя в «Конфигурации» — меню скрылось.
+    # v0.76.0: наблюдателю меню видно (в нём «Конфигурация»), но
+    # пункты базы скрыты.
     window.apply_current_user(viewer)
-    assert not window.base_menu_button.isVisible()
+    assert window.base_menu_button.isVisible()
+    assert admin_titles() == ["Конфигурация"]
 
     window.apply_current_user(admin)
-    assert window.base_menu_button.isVisible()
+    assert admin_titles()[0] == "Выгрузить базу"
     window.close()
 
 
@@ -4846,9 +4855,11 @@ def test_payments_summary_button_opens_monthly_table(qt_app, store, monkeypatch)
         for column in range(table.columnCount())
     ]
     # v0.34.0: вид оплаты + НДС + 12 месяцев + 4 квартала + итог «Год».
+    # v0.76.0: после «НДС» стоит «Примечание» — всё остальное сдвинуто.
     assert headers[0] == "Вид оплаты"
     assert headers[1] == "НДС"
-    assert headers[2:14] == [
+    assert headers[2] == "Примечание"
+    assert headers[3:15] == [
         "янв",
         "фев",
         "мар",
@@ -4862,29 +4873,30 @@ def test_payments_summary_button_opens_monthly_table(qt_app, store, monkeypatch)
         "ноя",
         "дек",
     ]
-    assert headers[14:18] == ["I кв.", "II кв.", "III кв.", "IV кв."]
-    assert headers[18] == "Год"
+    assert headers[15:19] == ["I кв.", "II кв.", "III кв.", "IV кв."]
+    assert headers[19] == "Год"
 
     # Строки: «Поставщики», «Аренда», «Всего».
     assert table.rowCount() == 3
     assert table.item(0, 0).text() == "Поставщики"
     assert table.item(0, 1).text() == ""           # у поставщиков НДС нет
-    assert table.item(0, 2).text() == "1 000,00"   # январь
-    assert table.item(0, 3).text() == "500,50"     # февраль
-    assert table.item(0, 4).text() == ""           # март: пусто вместо нуля
-    assert table.item(0, 14).text() == "1 500,50"  # I квартал
-    assert table.item(0, 18).text() == "1 500,50"  # итог за год
+    assert table.item(0, 2).text() == ""           # примечание
+    assert table.item(0, 3).text() == "1 000,00"   # январь
+    assert table.item(0, 4).text() == "500,50"     # февраль
+    assert table.item(0, 5).text() == ""           # март: пусто вместо нуля
+    assert table.item(0, 15).text() == "1 500,50"  # I квартал
+    assert table.item(0, 19).text() == "1 500,50"  # итог за год
     assert table.item(1, 0).text() == "Аренда"
-    assert table.item(1, 2).text() == "3 000,00"
+    assert table.item(1, 3).text() == "3 000,00"
 
     # Итог — последняя строка, жирная. Оплата покупателя (700,00 в
     # феврале) в оплаты не попала: февраль — только 500,50.
     last = table.rowCount() - 1
     assert table.item(last, 0).text() == "Всего"
-    assert table.item(last, 2).text() == "4 000,00"
-    assert table.item(last, 3).text() == "500,50"
-    assert table.item(last, 2).font().bold()
-    assert table.item(0, 2).font().bold() is False
+    assert table.item(last, 3).text() == "4 000,00"
+    assert table.item(last, 4).text() == "500,50"
+    assert table.item(last, 3).font().bold()
+    assert table.item(0, 3).font().bold() is False
     assert [table.item(row, 0).text() for row in range(table.rowCount())] == [
         "Поставщики",
         "Аренда",
@@ -4892,13 +4904,17 @@ def test_payments_summary_button_opens_monthly_table(qt_app, store, monkeypatch)
     ]
 
     # v0.32.0: окно на весь экран; колонка вида — узкая по содержимому,
-    # v0.34.0: колонка «НДС» — тоже по содержимому, а все числовые
-    # колонки делят остаток ширины поровну.
+    # v0.34.0: колонка «НДС» — тоже по содержимому, v0.76.0: за ней
+    # «Примечание» — тоже по содержимому, а все числовые колонки делят
+    # остаток ширины поровну.
     assert dialog.windowState() & Qt.WindowState.WindowMaximized
     header = table.horizontalHeader()
-    assert header.sectionResizeMode(0) == QHeaderView.ResizeMode.ResizeToContents
-    assert header.sectionResizeMode(1) == QHeaderView.ResizeMode.ResizeToContents
-    for column in range(2, table.columnCount()):
+    for column in range(3):  # вид оплаты, НДС, примечание
+        assert (
+            header.sectionResizeMode(column)
+            == QHeaderView.ResizeMode.ResizeToContents
+        )
+    for column in range(3, table.columnCount()):
         assert header.sectionResizeMode(column) == QHeaderView.ResizeMode.Stretch
 
     dialog.close()
@@ -4922,14 +4938,15 @@ def test_payments_summary_dialog_switches_year(qt_app, store):
     # В подписи виден год и база: таблица считается по активной базе.
     assert dialog.period_label.text().startswith("Оплаты за 2026 год")
     assert "МИР" in dialog.period_label.text()
-    # v0.34.0: вторая колонка — «НДС», поэтому март — четвёртая.
-    assert dialog.table.item(0, 4).text() == "1 200,00"  # март
+    # v0.34.0: вторая колонка — «НДС»; v0.76.0: третья — «Примечание»,
+    # поэтому март — пятая.
+    assert dialog.table.item(0, 5).text() == "1 200,00"  # март
 
     # В году без оплат ячейки пустые, но виды оплат остаются на месте.
     dialog.set_year(2027)
     assert dialog.period_label.text().startswith("Оплаты за 2027 год")
-    assert dialog.table.item(0, 4).text() == ""
-    assert dialog.table.item(0, 18).text() == ""
+    assert dialog.table.item(0, 5).text() == ""
+    assert dialog.table.item(0, 19).text() == ""
 
     dialog.go_this_year()
     assert dialog.current_year() == date.today().year
@@ -5210,9 +5227,12 @@ def test_payments_summary_without_vat_button(qt_app, store):
     dialog = PaymentsSummaryDialog(store, date(2026, 1, 1))
     table = dialog.table
     # v0.34.0: колонка «НДС» — вторая, после «Вид оплаты».
-    assert table.columnCount() == 19
+    # v0.76.0: за ней идёт «Примечание», поэтому месяца сдвинулись.
+    assert table.columnCount() == 20
     assert table.horizontalHeaderItem(1).text() == "НДС"
-    assert table.horizontalHeaderItem(18).text() == "Год"
+    assert table.horizontalHeaderItem(2).text() == "Примечание"
+    assert table.horizontalHeaderItem(3).text() == "янв"
+    assert table.horizontalHeaderItem(19).text() == "Год"
 
     def cell(name: str, column: int) -> str:
         row = [
@@ -5226,8 +5246,8 @@ def test_payments_summary_without_vat_button(qt_app, store):
     assert cell("Аренда", 1) == "20 %"
     assert cell("Услуги", 1) == "0 %"
     assert cell("Поставщики", 1) == ""
-    assert cell("Аренда", 2) == "240,00"
-    assert cell("Всего", 2) == "1 440,00"
+    assert cell("Аренда", 3) == "240,00"
+    assert cell("Всего", 3) == "1 440,00"
 
     button = dialog.without_vat_button
     assert button.text() == "Без НДС"
@@ -5238,20 +5258,20 @@ def test_payments_summary_without_vat_button(qt_app, store):
     button.setChecked(True)
     qt_app.processEvents()
     assert styles.RED in button.styleSheet()
-    assert cell("Аренда", 2) == "200,00"
-    assert cell("Услуги", 3) == "100,00"     # ставка 0 — без изменений
-    assert cell("Прочее", 4) == "50,00"      # без ставки — без изменений
-    assert cell("Поставщики", 2) == "1 200,00"
+    assert cell("Аренда", 3) == "200,00"
+    assert cell("Услуги", 4) == "100,00"     # ставка 0 — без изменений
+    assert cell("Прочее", 5) == "50,00"      # без ставки — без изменений
+    assert cell("Поставщики", 3) == "1 200,00"
     # Итог считается по показанным суммам.
-    assert cell("Всего", 2) == "1 400,00"
-    assert cell("Всего", 18) == "1 550,00"
+    assert cell("Всего", 3) == "1 400,00"
+    assert cell("Всего", 19) == "1 550,00"
 
     # Отжали — всё вернулось.
     button.setChecked(False)
     qt_app.processEvents()
     assert styles.GREEN in button.styleSheet()
-    assert cell("Аренда", 2) == "240,00"
-    assert cell("Всего", 2) == "1 440,00"
+    assert cell("Аренда", 3) == "240,00"
+    assert cell("Всего", 3) == "1 440,00"
 
     dialog.close()
     window.close()
@@ -5646,21 +5666,17 @@ def test_base_tools_use_nav_font_and_clear_button_is_admin_only(qt_app, store):
 
     nav_size = font_size(window.nav_buttons[0])
     assert nav_size.endswith("px")
-    for button in (
-        window.statement_button,
-        window.base_menu_button,
-        window.plus_button,
-    ):
+    for button in (window.statement_button, window.base_menu_button):
         assert font_size(button) == nav_size
 
-    # Обе очистки — пункты меню «База», значит доступны ровно тогда,
-    # когда видна сама кнопка меню. Проверяем и подписи: до v0.75.0
-    # это были отдельные кнопки «Выгрузить базы» и «Загрузить базы».
-    assert _base_menu_action(window, "Очистить базу") is not None
-    assert _base_menu_action(window, "Очистить таблицы") is not None
-    assert window.base_menu_button.isVisible()
+    # Обе очистки — пункты меню «База»; они видны администратору.
+    assert _base_menu_action(window, "Очистить базу").isVisible()
+    assert _base_menu_action(window, "Очистить таблицы").isVisible()
+    # v0.76.0: наблюдателю пункты базы недоступны, хотя меню видно —
+    # в нём остаётся «Конфигурация».
     window.apply_current_user(viewer)
-    assert not window.base_menu_button.isVisible()
+    assert not _base_menu_action(window, "Очистить базу").isVisible()
+    assert _base_menu_action(window, "Конфигурация").isVisible()
     window.close()
 
 
@@ -6598,10 +6614,12 @@ def test_config_tab_button_is_always_on_the_top_bar(qt_app, store, monkeypatch, 
     # v0.75.0: «Конфигурация» переехала в меню «+», но правило то же:
     # вход туда есть у любого пользователя, а открывается раздел по
     # паролю. Кнопки-вкладки у «Конфигурации» больше нет.
-    assert window.plus_button.isVisible()
+    assert window.base_menu_button.isVisible()
     assert not window.nav_buttons[IDX_DATA].isVisible()
     assert window.stack.currentIndex() != IDX_DATA
-    config_action = window.plus_button.menu().actions()[0]
+    # «Конфигурация» — последний пункт меню «База».
+    config_action = window.base_menu_button.menu().actions()[-1]
+    assert config_action.text() == "Конфигурация"
     # Пароль спрашивают по-прежнему: с неверным раздел не открывается.
     _ask_password_as(monkeypatch, ("0000", True))
     config_action.trigger()
@@ -7690,11 +7708,15 @@ def test_statement_dialog_asks_before_redo(qt_app, store, monkeypatch):
     assert again._ask_about_repeat() is None    # нажали «Отмена»
 
 
-def test_statement_dialog_reports_when_nothing_new(qt_app, store, monkeypatch):
-    """v0.59.0: повторный разнос объясняет, почему писать нечего.
+def test_statement_dialog_keeps_rows_when_nothing_new(
+    qt_app, store, monkeypatch
+):
+    """v0.76.0: повторный разнос ничего не пишет — молча, без окна.
 
-    Раньше программа молча закрывала окно, и это выглядело как
-    «выписка не разносится».
+    v0.59.0 объяснял это окном «Новых данных нет»: молчаливое
+    закрытие выглядело как «выписка не разносится». По просьбе
+    пользователя окно убрано — строки этой выписки уже в базе, и это
+    видно в самой таблице по отметке строки (v0.59.0).
     """
 
     from oplata.dialogs.statement_dialog import StatementDialog
@@ -7721,8 +7743,13 @@ def test_statement_dialog_reports_when_nothing_new(qt_app, store, monkeypatch):
     dialog = StatementDialog(
         statement, "выписка.pdf", None, bank_unp="100325912", store=store
     )
+    operations_before = len(store.data.operations)
     dialog._continue()
-    assert shown and "Новых данных нет" in shown[-1]
+    # Повторно ничего не пишется, но и окно не встаёт: строки остаются
+    # в таблице со своей прежней разметкой.
+    assert len(store.data.operations) == operations_before
+    assert shown == []
+    assert dialog.table.rowCount() >= 2, "строки остались в таблице"
 
 
 def test_counterparty_card_saves_note(qt_app, store):
@@ -8238,10 +8265,13 @@ def test_week_lead_columns_are_narrower_and_smaller(qt_app, store):
 
 # --------------------------------------------------------------- v0.57.0
 def test_statement_table_shows_base_amounts_before_writing(qt_app, store):
-    """v0.57.0/0.63.0: колонка «Уже в базе» — в таблице выписки.
+    """v0.76.0: колонки «Уже в базе» в таблице выписки больше нет.
 
-    Раньше колонка жила во втором окне разноса; с v0.63.0 она стоит
-    рядом с колонкой «Куда» в самой выписке.
+    Она стояла рядом с колонкой «Куда» с v0.63.0 (а до этого жила во
+    втором окне разноса, v0.57.0) и показывала, что записано за день и
+    что станет после разноса. По просьбе пользователя колонку убрали:
+    она отнимала место у «Примечания», а расхождение суммы и так видно
+    в карточке строки.
     """
 
     from oplata.models import CARD_SOURCE, CashReceipt, Counterparty
@@ -8249,6 +8279,7 @@ def test_statement_table_shows_base_amounts_before_writing(qt_app, store):
     from oplata.dialogs.statement_dialog import (
         COL_BASE,
         COL_NAME,
+        COL_NOTE,
         StatementDialog,
     )
 
@@ -8274,11 +8305,11 @@ def test_statement_table_shows_base_amounts_before_writing(qt_app, store):
     dialog.show()
     qt_app.processEvents()
 
-    cards = dialog.table.item(0, COL_BASE).text()
-    customers = dialog.table.item(1, COL_BASE).text()
-    assert cards == "300,00 → 1 000,00"  # прежняя сумма заменяется
-    assert customers == "0,00 → 50,00"
+    assert dialog.table.isColumnHidden(COL_BASE)
+    assert dialog.table.item(0, COL_BASE) is None, "ячейка не заполняется"
     assert dialog.table.item(0, COL_NAME).text() == "БАНК"
+    # «Примечание» на месте: соседняя колонка не уехала.
+    assert dialog.table.item(0, COL_NOTE) is not None
     dialog.close()
 
 
@@ -8747,11 +8778,20 @@ def test_statement_table_has_target_column_and_distributes(
 
 
 def test_distribution_reports_rows_left_unresolved(qt_app, store, monkeypatch):
-    """v0.63.0: что не разнеслось, видно в отчёте, а не молча."""
+    """v0.76.0: что не разнеслось, видно в таблице — окна больше нет.
+
+    Раньше итог разноса показывался окном «Разнесение выписки»
+    (v0.63.0 для неразнесённых строк, v0.68.0 — только когда есть на
+    что смотреть). По просьбе пользователя окно убрано: строка ждёт
+    выбора получателя и остаётся в таблице с пустой колонкой «Куда».
+    """
 
     from PySide6.QtWidgets import QMessageBox
     from oplata.models import Counterparty
-    from oplata.dialogs.statement_dialog import StatementDialog
+    from oplata.dialogs.statement_dialog import (
+        COL_TARGET,
+        StatementDialog,
+    )
     from oplata.statement import Statement, StatementRow
 
     store.data.suppliers += [
@@ -8783,12 +8823,14 @@ def test_distribution_reports_rows_left_unresolved(qt_app, store, monkeypatch):
     dialog._continue()
 
     assert store.data.operations == []  # писать нечего
-    assert shown
-    report = shown[-1]
+    assert shown == [], "окна после разноса больше нет"
+    report = ""
     # v0.65.0: «надо выбрать получателя» — отдельный случай, его
     # говорят своим словами, а не общим «не разнесено».
-    assert "Надо выбрать получателя" in report
-    assert "УНП 111222333" in report
+    # Строка осталась в таблице и ждёт выбора получателя: колонка
+    # «Куда» у неё пустая.
+    assert dialog.matches[0].target == "choose"
+    assert dialog.table.rowCount() >= 1, "строки остались в таблице"
 
 
 # --------------------------------------------------------------- v0.64.0
@@ -9336,9 +9378,10 @@ def test_distribution_report_warns_about_file_mismatch(
         StatementDialog, "_ask_about_repeat", lambda self: False
     )
     dialog._continue()
-    assert shown
-    assert "не совпал с итогами файла" in shown[-1]
-    assert "в файле 300,00" in shown[-1]  # обе суммы названы
+    # v0.76.0: окна нет; расхождение видно в самой таблице — под
+    # заголовком окна стоит подсказка сверки с обеими суммами.
+    assert shown == []
+    assert dialog.reconciliation.ok is False
     dialog.close()
 
 
@@ -9524,14 +9567,19 @@ def test_successful_distribution_shows_no_report(qt_app, store, monkeypatch):
 def test_distribution_report_shown_when_rows_unresolved(
     qt_app, store, monkeypatch
 ):
-    """v0.68.0: есть на что посмотреть — отчёт остаётся.
+    """v0.76.0: неразнесённая строка остаётся в таблице, окна нет.
 
-    Молчать можно, только когда всё сошлось. Неразнесённые строки —
-    повод показать отчёт.
+    Незнакомый УНП — самая частая причина, по которой строку некуда
+    писать. Раньше о ней сообщало окно (v0.68.0), теперь она просто
+    остаётся в таблице: «Куда» пусто, значит, строку надо разобрать.
     """
 
     from PySide6.QtWidgets import QMessageBox
-    from oplata.dialogs.statement_dialog import StatementDialog
+    from oplata.dialogs.statement_dialog import (
+        COL_NAME,
+        COL_TARGET,
+        StatementDialog,
+    )
     from oplata.statement import Statement, StatementRow
 
     statement = Statement(
@@ -9562,8 +9610,12 @@ def test_distribution_report_shown_when_rows_unresolved(
     )
     dialog._continue()
 
-    assert shown
-    assert "Незнакомец" in shown[-1]
+    assert shown == [], "окна после разноса больше нет"
+    assert store.data.operations == []  # писать некуда
+    # Строка на месте: её имя видно в таблице, колонка «Куда» пуста.
+    assert dialog.table.item(0, COL_NAME).text() == "Незнакомец"
+    # v0.61.0: строку некуда писать — нужен новый вид оплаты.
+    assert dialog.matches[0].target == "new_payment"
     dialog.close()
 
 
@@ -10497,10 +10549,11 @@ def test_note_column_wider_than_before(qt_app, store):
 
 
 def test_summary_panel_share_is_21_percent(qt_app, store):
-    """v0.71.0: плашка «Сводка» занимает 21% ширины (в v0.70.0 — 20%).
+    """v0.76.0: плашка «Сводка» занимает 27% ширины (в v0.71.0 — 21%).
 
-    Доли 79 : 21. Место берётся у левых блоков, а в них — у
-    растягиваемой колонки «Наименование» видов оплат.
+    Плашка стала на 30% шире по просьбе пользователя: в 21% не
+    помещались подписи и суммы. Место берётся у левых блоков, а в них
+    — у растягиваемой колонки «Наименование» видов оплат.
     """
 
     from oplata.views.receipts_view import ReceiptsView
@@ -10515,8 +10568,9 @@ def test_summary_panel_share_is_21_percent(qt_app, store):
     root = view.left.parentWidget().layout()
     left, right = root.stretch(0), root.stretch(1)
     assert left + right == 100
-    assert right == 21  # плашка «Сводка» — 21% ширины
-    assert left == 79  # блоки «Поступление» и «Оплата»
+    assert right == 27  # плашка «Сводка» — 27% ширины
+    assert left == 73  # блоки «Поступление» и «Оплата»
+    assert right == round(21 * 1.3), "шире прежних 21% ровно на 30%"
 
 
 def test_summary_has_date_arrows(qt_app, store):
@@ -10730,11 +10784,9 @@ def test_config_page_scrolls_when_content_is_tall(qt_app, store):
     view.setFixedHeight(300)
     for panel in (
         view.calendar_panel,
-        view.bank_panel,
         view.routing_panel,
         view.users_panel,
         view.admin_panel,
-        view.fields_panel,
     ):
         panel.set_expanded(True)
     view.show()
@@ -10780,11 +10832,13 @@ def test_frozen_header_grid_matches_table(qt_app, store):
 
 
 def test_base_menu_and_plus_button_hold_base_actions(qt_app, store):
-    """v0.75.0: меню «База» и «+» в правом углу шапки.
+    """v0.76.0: меню «База» — одно на все действия, кнопки «+» нет.
 
     Раньше в шапке стояли три отдельные кнопки («Выгрузить базы»,
     «Загрузить базы», «Очистить базу»), а «Конфигурация» была
-    вкладкой. Теперь всё это — пункты двух меню.
+    вкладкой. В v0.75.0 их собрали в меню «База» и добавили отдельную
+    кнопку «+»; в v0.76.0 «+» убрали — все пять пунктов лежат в одном
+    меню, а отдельной кнопки с таким именем в шапке больше нет.
     """
 
     from oplata.access import IDX_DATA
@@ -10805,15 +10859,20 @@ def test_base_menu_and_plus_button_hold_base_actions(qt_app, store):
         "Загрузить базу",
         "Очистить базу",
         "Очистить таблицы…",
+        "Конфигурация",
     ]
-    plus_titles = [
-        action.text() for action in window.plus_button.menu().actions()
+    # Отдельной кнопки «+» в шапке больше нет.
+    assert not hasattr(window, "plus_button")
+    assert [b.text() for b in window.nav_buttons if not b.isHidden()] == [
+        "Поступление и оплаты",
+        "Отчеты ККМ",
+        "Поставщики",
+        "Покупатели",
     ]
-    assert plus_titles == ["Конфигурация"]
 
-    # «Конфигурация» открывается из меню «+», а не своей вкладкой.
+    # «Конфигурация» открывается из меню «База», а не своей вкладкой.
     assert not window.nav_buttons[IDX_DATA].isVisible()
-    window.plus_button.menu().actions()[0].trigger()
+    window.base_menu_button.menu().actions()[-1].trigger()
     qt_app.processEvents()
     assert window.stack.currentIndex() == IDX_DATA
     window.close()
@@ -10868,10 +10927,12 @@ def test_week_name_column_is_wider_and_lead_fits_content(qt_app, store):
 
 
 def test_column_widths_are_dragged_and_saved(qt_app, store, monkeypatch, tmp_path):
-    """v0.75.0: границу столбца тянут мышью, «Сохранить поля» запоминает.
+    """v0.76.0: правку полей включает «Редактировать поля», сохраняет «Сохранить поля».
 
-    Ширины пишутся в свой файл настроек рядом с данными (это настройка
-    компьютера, а не общая база) и применяются при следующем запуске.
+    Пока правка не включена, мышь у края ячейки ничего не двигает:
+    иначе случайный захват менял ширину столбца. Ширины пишутся в свой
+    файл настроек рядом с данными (это настройка компьютера, а не
+    общая база) и применяются при следующем запуске.
     """
 
     from PySide6.QtCore import QEvent, QPointF, Qt
@@ -10891,10 +10952,25 @@ def test_column_widths_are_dragged_and_saved(qt_app, store, monkeypatch, tmp_pat
 
     resizer = view.table._column_resizer
     assert resizer is not None, "у таблицы должна быть протяжка границ"
+    assert not resizer.enabled, "пока правка не включена, тянуть нельзя"
     start = view.table.columnWidth(0)
+    # Ищем границу до включения правки — фильтр её не отдаёт.
+    edge_x = view.table.columnViewportPosition(0) + view.table.columnWidth(0)
+    probe = QMouseEvent(
+        QEvent.Type.MouseButtonPress,
+        QPointF(edge_x, 5),
+        Qt.MouseButton.LeftButton,
+        Qt.MouseButton.LeftButton,
+        Qt.KeyboardModifier.NoModifier,
+    )
+    assert resizer.eventFilter(view.table.viewport(), probe) is False
+    assert view.table.columnWidth(0) == start, "без правки ширина стоит"
+
+    # Кнопка «Редактировать поля» правку включает.
+    view.set_columns_editable(True)
+    assert resizer.enabled
     # Границу ищем по краю ячейки, а не по заголовку: курсор встал на
     # правый край первой колонки.
-    edge_x = view.table.columnViewportPosition(0) + view.table.columnWidth(0)
     assert resizer.edge_at(edge_x) == 0
     assert resizer.edge_at(edge_x - 20) is None
 
@@ -10926,6 +11002,9 @@ def test_column_widths_are_dragged_and_saved(qt_app, store, monkeypatch, tmp_pat
     assert view._widths_locked, "ширины запомнены до конца сеанса"
 
     assert view.save_widths()
+    # Сохранение закрывает правку: мышь снова только вводит данные.
+    view.set_columns_editable(False)
+    assert not resizer.enabled
     saved = column_widths.load_entry(view._widths_key, view.column_count)
     assert saved is not None
     viewport_saved, widths_saved = saved

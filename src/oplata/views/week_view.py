@@ -671,10 +671,23 @@ class WeekView(QWidget):
         if self.read_only:
             self._open_journal_for_item(name_item)
             return
+        # v0.76.0: окно открывается на дате **показанной** плашки, а не
+        # на сегодняшней: иначе, разбирая прошлую неделю, приходилось
+        # каждый раз переставлять дату руками. Сегодняшний день берём,
+        # если он есть в показанной неделе, иначе — её первый день.
+        day = self._shown_day()
         if self.kind == "supplier" and self.on_open_delivery is not None:
-            self.on_open_delivery(str(counterparty_id), None)
+            self.on_open_delivery(str(counterparty_id), day)
         elif self.kind == "customer" and self.on_open_realization is not None:
-            self.on_open_realization(str(counterparty_id), None)
+            self.on_open_realization(str(counterparty_id), day)
+
+    def _shown_day(self):
+        """Дата плашки: сегодня, если она на показанной неделе (v0.76.0)."""
+
+        today = date.today()
+        if self._days and self._days[0] <= today <= self._days[-1]:
+            return today
+        return self._days[0] if self._days else today
 
     def _on_item_changed(self, item: QTableWidgetItem) -> None:
         """Пользователь ввёл сумму в редактируемую ячейку: проверить и сохранить."""
@@ -1818,6 +1831,18 @@ class WeekView(QWidget):
         if viewport <= 0:
             return None
         return [self.table.columnWidth(col) for col in range(self.column_count)]
+
+    def set_columns_editable(self, enabled: bool) -> None:
+        """Разрешить или запретить тянуть границы мышью (v0.76.0).
+
+        По умолчанию правка **запрещена**: пользователь включает её
+        кнопкой «Редактировать поля» в «Конфигурации», чтобы случайный
+        щелчок у края ячейки не сдвинул столбец.
+        """
+
+        resizer = getattr(self.table, "_column_resizer", None)
+        if resizer is not None:
+            resizer.set_enabled(enabled)
 
     def save_widths(self) -> bool:
         """Записать ширины в файл настроек (кнопка «Сохранить поля»)."""
