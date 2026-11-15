@@ -21,6 +21,7 @@
 
 from __future__ import annotations
 
+import json
 from datetime import date
 from decimal import Decimal, InvalidOperation
 from pathlib import Path
@@ -33,11 +34,16 @@ except ImportError:  # pragma: no cover - зависит от установки
     load_workbook = None  # type: ignore[assignment]
 
 from .models import (
+    INCOMING,
+    KKM_KIND_REPORT,
     AppData,
+    Bank,
     CashReceipt,
     Counterparty,
+    KkmReport,
     Operation,
     OtherPayment,
+    RoutingRule,
     YearStart,
     YearStartCustomerDebt,
     YearStartDebt,
@@ -54,6 +60,16 @@ SHEET_CALENDAR = "Календарь"
 SHEET_YEAR = "Перенос"
 SHEET_YEAR_SUPPLIERS = "Долги поставщикам"
 SHEET_YEAR_CUSTOMERS = "Долги покупателей"
+# v0.79.0: листы, которых не хватало. Без них выгрузка-загрузка
+# теряла настройки, набранные руками: правила разноса (плашка
+# «Свойства контрагента»), карточку своего банка, журнал разнесённых
+# строк выписки (без него повторная загрузка выписки задваивает
+# суммы) и реестр отчётов ККМ.
+SHEET_ROUTING = "Правила разноса"
+SHEET_BANK = "Свой банк"
+SHEET_IMPORTED = "Разнесённые строки"
+SHEET_IMPORTED_WRITES = "Разнесённые записи"
+SHEET_KKM = "Отчеты ККМ"
 
 # Обязательные листы базы: по ним понимаем, что база в файле есть.
 _REQUIRED_SHEETS = (SHEET_SUPPLIERS, SHEET_CUSTOMERS)
@@ -165,6 +181,9 @@ def _base_rows(data: AppData) -> dict[str, tuple[list[str], list[list[object]]]]
         "Реализация",
         "В архиве",
         "УНП",
+        # v0.79.0: примечание контрагента — оно помогает различать
+        # карточки с одинаковым УНП (поле с v0.60.0).
+        "Примечание",
     ]
 
     def counterparty_rows(items: list[Counterparty]) -> list[list[object]]:
@@ -177,6 +196,7 @@ def _base_rows(data: AppData) -> dict[str, tuple[list[str], list[list[object]]]]
                 _yes(item.realization),
                 _yes(item.archived),
                 item.unp,
+                item.note,
             ]
             for item in items
         ]
@@ -227,7 +247,20 @@ def _base_rows(data: AppData) -> dict[str, tuple[list[str], list[list[object]]]]
             ],
         ),
         SHEET_OTHER: (
-            ["Дата", "Название", "Сумма", "Направление", "Идентификатор"],
+            [
+                "Дата",
+                "Название",
+                "Сумма",
+                "Направление",
+                "Идентификатор",
+                # v0.79.0: карточка вида оплаты. Раньше выгружалась
+                # только сумма, и после загрузки вид терял ставку НДС,
+                # УНП, примечание и отмеченные даты.
+                "НДС",
+                "УНП",
+                "Примечание",
+                "Отмеченные даты",
+            ],
             [
                 [
                     item.date,
@@ -235,6 +268,10 @@ def _base_rows(data: AppData) -> dict[str, tuple[list[str], list[list[object]]]]
                     _cell_number(item.amount),
                     item.direction,
                     item.id,
+                    item.vat_rate,
+                    item.unp,
+                    item.note,
+                    ";".join(item.dates),
                 ]
                 for item in data.other_payments
             ],
@@ -265,6 +302,57 @@ def _base_rows(data: AppData) -> dict[str, tuple[list[str], list[list[object]]]]
             [
                 [item.counterparty_id, _cell_number(item.amount)]
                 for item in data.year_start.customer_debts
+            ],
+        ),
+        SHEET_ROUTING: (
+            [
+                "УНП",
+                "Название",
+                "Слова",
+                "Куда",
+                "Идентификатор контрагента",
+                "Вид оплаты",
+            ],
+            [
+                [
+                    rule.unp,
+                    rule.name,
+                    ";".join(rule.words),
+                    rule.target,
+                    rule.counterparty_id,
+                    rule.payment_name,
+                ]
+                for rule in data.routing_rules
+            ],
+        ),
+        SHEET_BANK: (
+            ["Название", "УНП"],
+            [[data.bank.name, data.bank.unp]]
+            if (data.bank.name or data.bank.unp)
+            else [],
+        ),
+        SHEET_IMPORTED: (
+            ["Ключ строки"],
+            [[key] for key in data.imported_statement_rows],
+        ),
+        SHEET_IMPORTED_WRITES: (
+            ["Ключ строки", "Что записали (JSON)"],
+            [
+                [str(item.get("key", "")), json.dumps(item, ensure_ascii=False)]
+                for item in data.imported_statement_writes
+            ],
+        ),
+        SHEET_KKM: (
+            ["Дата", "Вид", "Номер строки", "Сумма", "Идентификатор"],
+            [
+                [
+                    item.date,
+                    item.kind,
+                    item.slot,
+                    _cell_number(item.amount),
+                    item.id,
+                ]
+                for item in data.kkm_reports
             ],
         ),
     }
@@ -327,6 +415,8 @@ def _read_counterparties(rows: list[list[object]]) -> list[Counterparty]:
                 realization=_parse_yes(get(4)),
                 archived=_parse_yes(get(5)),
                 unp=_text(get(6)),  # v0.53.0: в старых выгрузках пусто
+                # v0.79.0: примечание — в старых выгрузках колонки нет.
+                note=_text(get(7)),
             )
         )
     return result
@@ -433,6 +523,13 @@ def _collect_bases(book, result: dict[str, AppData]) -> None:
                 SHEET_YEAR,
                 SHEET_YEAR_SUPPLIERS,
                 SHEET_YEAR_CUSTOMERS,
+                # v0.79.0: настройки и журналы. В старых файлах этих
+                # листов нет — _read_rows вернёт пустоту.
+                SHEET_ROUTING,
+                SHEET_BANK,
+                SHEET_IMPORTED,
+                SHEET_IMPORTED_WRITES,
+                SHEET_KKM,
             )
         }
         operations = []
@@ -483,6 +580,15 @@ def _collect_bases(book, result: dict[str, AppData]) -> None:
                     amount=_dec(get(2)),
                     direction=_text(get(3)) or "out",
                     id=_text(get(4)),
+                    # v0.79.0: карточка вида — НДС, УНП, примечание,
+                    # отмеченные даты. В старых выгрузках этих колонок
+                    # нет, тогда значения пустые (как раньше).
+                    vat_rate=_text(get(5)),
+                    unp=_text(get(6)),
+                    note=_text(get(7)),
+                    dates=[
+                        day for day in _text(get(8)).split(";") if len(day) >= 10
+                    ],
                 )
             )
 
@@ -502,7 +608,94 @@ def _collect_bases(book, result: dict[str, AppData]) -> None:
             other_payments=other_payments,
             day_overrides=day_overrides,
             year_start=_read_year_start(sheets),
+            # v0.79.0: правила разноса, карточка банка, журнал
+            # разнесённых строк и реестр ККМ едут вместе с базой.
+            routing_rules=_read_routing(sheets),
+            bank=_read_bank(sheets),
+            imported_statement_rows=_read_imported(sheets),
+            imported_statement_writes=_read_imported_writes(sheets),
+            kkm_reports=_read_kkm(sheets),
         )
+
+
+def _read_routing(sheets) -> list[RoutingRule]:
+    """Правила разноса из листа (v0.79.0); старые файлы — без правил."""
+
+    result = []
+    for values in sheets.get(SHEET_ROUTING) or []:
+        get = _row(values, 0)
+        if not _text(get(0)) and not _text(get(3)):
+            continue
+        result.append(
+            RoutingRule(
+                unp=_text(get(0)),
+                name=_text(get(1)),
+                words=[word for word in _text(get(2)).split(";") if word],
+                target=_text(get(3)),
+                counterparty_id=_text(get(4)),
+                payment_name=_text(get(5)),
+            )
+        )
+    return result
+
+
+def _read_bank(sheets) -> Bank:
+    """Карточка своего банка из листа (v0.79.0)."""
+
+    rows = sheets.get(SHEET_BANK) or []
+    if not rows:
+        return Bank()
+    get = _row(rows[0], 0)
+    return Bank(name=_text(get(0)), unp=_text(get(1)))
+
+
+def _read_imported(sheets) -> list[str]:
+    """Ключи строк выписки, уже разнесённых (v0.79.0)."""
+
+    return [
+        _text(_row(values, 0)(0))
+        for values in sheets.get(SHEET_IMPORTED) or []
+        if _text(_row(values, 0)(0))
+    ]
+
+
+def _read_imported_writes(sheets) -> list[dict]:
+    """Подробности разноса: ключ + что записали (v0.79.0)."""
+
+    result = []
+    for values in sheets.get(SHEET_IMPORTED_WRITES) or []:
+        get = _row(values, 0)
+        raw = _text(get(1))
+        if not raw:
+            continue
+        try:
+            item = json.loads(raw)
+        except ValueError:
+            continue
+        if isinstance(item, dict):
+            item.setdefault("key", _text(get(0)))
+            result.append(item)
+    return result
+
+
+def _read_kkm(sheets) -> list[KkmReport]:
+    """Реестр отчётов ККМ из листа (v0.79.0)."""
+
+    result = []
+    for values in sheets.get(SHEET_KKM) or []:
+        get = _row(values, 0)
+        if not _text(get(0)):
+            continue
+        result.append(
+            KkmReport(
+                date=_text(get(0)),
+                kind=_text(get(1)) or KKM_KIND_REPORT,
+                slot=_int(get(2)),
+                amount=_dec(get(3)) or "0",
+                id=_text(get(4)),
+            )
+        )
+    return result
 
 
 def describe_bases(bases: dict[str, AppData]) -> str:

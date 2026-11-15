@@ -5,6 +5,7 @@
 операций в окне журнала контрагента, карточки.
 """
 
+import json
 import os
 import re
 import sys
@@ -23,6 +24,8 @@ from PySide6.QtWidgets import (  # noqa: E402
     QFileDialog,
     QMessageBox,
 )
+
+from oplata.models import AppData, Counterparty, OtherPayment  # noqa: E402
 
 
 @pytest.fixture(scope="session")
@@ -11190,6 +11193,7 @@ def test_base_menu_and_plus_button_hold_base_actions(qt_app, store):
     assert base_titles == [
         "Выгрузить базу",
         "Загрузить базу",
+        "Восстановить из копии…",
         "Очистить базу",
         "Очистить таблицы…",
         "Конфигурация",
@@ -11354,3 +11358,359 @@ def test_column_widths_are_dragged_and_saved(qt_app, store, monkeypatch, tmp_pat
     assert column_widths.load(view._widths_key, view.column_count) is None
     view.close()
     again.close()
+
+
+# --------------------------------------------------------------- v0.79.0: копии
+def test_backup_is_written_next_to_base_and_on_computer(store, monkeypatch, tmp_path):
+    """v0.79.0: копия пишется в два места — рядом с базой и на компьютер.
+
+    Рядом с базой копия уезжает в облако вместе с ней: испортится общая
+    папка — пропадёт и копия. Поэтому второй каталог лежит на самом
+    компьютере (в Загрузках) и облако переживает.
+    """
+
+    from oplata import storage
+
+    store.data.other_payments.append(
+        OtherPayment(date="2026-11-05", name="Аренда", amount="240", note="офис")
+    )
+    store.save()
+    monkeypatch.setattr(
+        storage, "set_extra_backup_dir", storage.set_extra_backup_dir
+    )
+    storage.set_extra_backup_dir(tmp_path / "downloads" / "База поставщики оплата")
+
+    made = storage.make_backup("mir", "перед очисткой")
+    assert len(made) == 2, "копия нужна и рядом с базой, и на компьютере"
+    assert made[0].parent == storage.backup_dir()
+    assert made[1].parent == tmp_path / "downloads" / "База поставщики оплата"
+    for path in made:
+        assert json.loads(path.read_text(encoding="utf-8")) == json.loads(
+            store.path.read_text(encoding="utf-8")
+        )
+
+    copies = storage.list_backups("mir")
+    assert len(copies) == 2
+    assert all(item.reason == "перед очисткой" for item in copies)
+    # Свежие копии — первыми; подпись понятна человеку.
+    assert all("перед очисткой" in item.title() for item in copies)
+    storage.set_extra_backup_dir(None)
+
+
+def test_old_backup_name_is_taken_back_too(store, monkeypatch):
+    """v0.79.0: копии, снятые кнопкой «Создать резервную копию», годятся.
+
+    Прежний вид имени — ``data-backup-2026-11-15_16-27-06.json``
+    (v0.23.1). Копии с таким именем лежали мёртвым грузом: программа
+    их не показывала и вернуть не могла.
+    """
+
+    from oplata import storage
+
+    store.data.other_payments.append(
+        OtherPayment(date="2026-11-05", name="Аренда", amount="240", note="офис")
+    )
+    store.save()
+    old = storage.backup_dir() / "data-backup-2026-11-15_16-27-06.json"
+    storage.backup_dir().mkdir(parents=True, exist_ok=True)
+    old.write_bytes(store.path.read_bytes())
+
+    copies = storage.list_backups("mir")
+    assert [item.path.name for item in copies] == [old.name]
+    assert copies[0].stamp is not None
+    assert "15.11.2026 16:27" in copies[0].title()
+    assert "резервная копия" in copies[0].title()
+
+    store.data.other_payments.clear()
+    store.save()
+    storage.restore_backup("mir", old)
+    store.reload()
+    assert [(p.name, p.amount, p.note) for p in store.data.other_payments] == [
+        ("Аренда", "240", "офис")
+    ]
+
+
+def test_restore_takes_backup_of_what_it_replaces(store):
+    """v0.79.0: перед восстановлением снимается копия нынешней базы."""
+
+    from oplata import storage
+
+    store.data.other_payments.append(
+        OtherPayment(date="2026-11-05", name="Аренда", amount="240", note="офис")
+    )
+    store.save()
+    copy = storage.make_backup("mir", "перед очисткой")[0]
+
+    store.data.other_payments.clear()
+    store.save()
+    safety = storage.restore_backup("mir", copy)
+    assert safety, "нынешнюю базу тоже надо было сохранить"
+    assert all("перед восстановлением" in path.name for path in safety)
+    store.reload()
+    assert [(p.name, p.note) for p in store.data.other_payments] == [
+        ("Аренда", "офис")
+    ]
+
+
+def test_broken_copy_does_not_touch_the_base(store):
+    """v0.79.0: битую копию программа не заливает в базу."""
+
+    from oplata import storage
+
+    store.data.other_payments.append(
+        OtherPayment(date="2026-11-05", name="Аренда", amount="240")
+    )
+    store.save()
+    broken = storage.backup_dir() / "data-битая-20261115-170000.json"
+    storage.backup_dir().mkdir(parents=True, exist_ok=True)
+    broken.write_text("{ это не json", encoding="utf-8")
+
+    with pytest.raises(storage.BackupError):
+        storage.restore_backup("mir", broken)
+    store.reload()
+    assert [p.name for p in store.data.other_payments] == ["Аренда"]
+
+
+def test_base_menu_restores_base_from_its_copy(qt_app, store, monkeypatch):
+    """v0.79.0: меню «База» → «Восстановить из копии…» возвращает базу.
+
+    Раньше копию можно было вернуть только руками: найти файл,
+    переложить его поверх data.json и нажать «Перечитать файл».
+    """
+
+    from PySide6.QtWidgets import QInputDialog, QMessageBox
+
+    from oplata import storage
+    from oplata.app import MainWindow
+
+    store.data.other_payments.append(
+        OtherPayment(date="2026-11-05", name="Аренда", amount="240", note="офис")
+    )
+    store.save()
+    copy = storage.make_backup("mir", "перед очисткой")[0]
+
+    window = MainWindow(store)
+    window._config_unlocked = True
+    window.show()
+    qt_app.processEvents()
+
+    titles = [
+        action.text()
+        for action in window.base_menu_button.menu().actions()
+        if not action.isSeparator()
+    ]
+    assert "Восстановить из копии…" in titles
+
+    monkeypatch.setattr(window, "_ask_password", lambda *a, **k: True)
+    monkeypatch.setattr(window, "_confirm_yes_no", lambda *a, **k: True)
+    picked = {}
+
+    def fake_get_item(parent, title, label, items, current=0, editable=True):
+        picked["items"] = list(items)
+        return items[0], True
+
+    monkeypatch.setattr(QInputDialog, "getItem", staticmethod(fake_get_item))
+    messages = []
+    monkeypatch.setattr(
+        QMessageBox,
+        "information",
+        staticmethod(lambda *args, **kwargs: messages.append(str(args[-1]))),
+    )
+
+    # Стираем суммы — и возвращаем их этой же копией.
+    store.data.other_payments.clear()
+    store.save()
+    window.restore_base_from_backup()
+    qt_app.processEvents()
+
+    assert picked["items"], "копию надо было предложить выбором"
+    assert any("перед очисткой" in item for item in picked["items"])
+    assert [(p.name, p.amount, p.note) for p in window.store.data.other_payments] == [
+        ("Аренда", "240", "офис")
+    ]
+    assert messages and "вернулась из" in messages[-1]
+    window.close()
+
+
+def test_no_copies_says_where_they_come_from(qt_app, store, monkeypatch):
+    """v0.79.0: копий нет — говорим, откуда они берутся."""
+
+    from PySide6.QtWidgets import QMessageBox
+
+    from oplata.app import MainWindow
+
+    window = MainWindow(store)
+    window._config_unlocked = True
+    window.show()
+    qt_app.processEvents()
+    messages = []
+    monkeypatch.setattr(
+        QMessageBox,
+        "information",
+        staticmethod(lambda *args, **kwargs: messages.append(str(args[-1]))),
+    )
+    window.restore_base_from_backup()
+    qt_app.processEvents()
+    assert messages and "копий нет" in messages[-1]
+    assert "Создать резервную копию" in messages[-1]
+    window.close()
+
+
+# ---------------------------------------------------- v0.79.0: полный круг Excel
+def test_excel_round_trip_keeps_notes_and_kind_properties(tmp_path):
+    """v0.79.0: выгрузка в Excel больше ничего не теряет.
+
+    Прежний формат не нёс примечание контрагента, ставку НДС, УНП и
+    отмеченные даты вида оплаты, правила разноса, карточку банка,
+    журнал разнесённых строк выписки и реестр ККМ. Круг
+    «Выгрузить базу → Загрузить базу» должен сохранять всё это.
+    """
+
+    from oplata.excelio import export_bases, import_bases
+    from oplata.models import KKM_KIND_REPORT, Bank, KkmReport, RoutingRule
+
+    data = AppData()
+    data.suppliers.append(
+        Counterparty(name="Поставщик", unp="100325912", note="свойство А")
+    )
+    data.other_payments.append(
+        OtherPayment(
+            date="2026-11-05",
+            name="Аренда",
+            amount="240.00",
+            vat_rate="20",
+            unp="111222333",
+            note="офис",
+            dates=["2026-11-05"],
+        )
+    )
+    data.routing_rules.append(
+        RoutingRule(
+            unp="500563252",
+            name="ГУ МФ",
+            words=["подоходный", "налог"],
+            target="payment",
+            payment_name="Налоги",
+        )
+    )
+    data.bank = Bank(name='ОАО "БАНК"', unp="100325912")
+    data.imported_statement_rows = ["ключ-1"]
+    data.imported_statement_writes = [{"key": "ключ-1", "kind": "payment"}]
+    data.kkm_reports.append(
+        KkmReport(date="2026-11-05", kind=KKM_KIND_REPORT, slot=0, amount="50.00")
+    )
+
+    path = tmp_path / "Оплата 15.11.2026.xlsx"
+    export_bases({"mir": data}, path)
+    back = import_bases(path)["mir"]
+
+    assert [(c.name, c.unp, c.note) for c in back.suppliers] == [
+        ("Поставщик", "100325912", "свойство А")
+    ]
+    payment = back.other_payments[0]
+    assert (payment.name, payment.amount, payment.vat_rate, payment.unp) == (
+        "Аренда",
+        "240.00",
+        "20",
+        "111222333",
+    )
+    assert (payment.note, payment.dates) == ("офис", ["2026-11-05"])
+    assert [
+        (r.unp, r.name, list(r.words), r.target, r.payment_name)
+        for r in back.routing_rules
+    ] == [("500563252", "ГУ МФ", ["подоходный", "налог"], "payment", "Налоги")]
+    assert (back.bank.name, back.bank.unp) == ('ОАО "БАНК"', "100325912")
+    assert back.imported_statement_rows == ["ключ-1"]
+    assert back.imported_statement_writes == [{"key": "ключ-1", "kind": "payment"}]
+    assert len(back.kkm_reports) == 1
+    assert back.kkm_reports[0].amount == "50.00"
+
+
+def test_old_excel_file_still_loads(tmp_path):
+    """v0.79.0: старые файлы выгрузки грузятся как прежде.
+
+    Новые колонки добавлены в конец заголовков, а новые листы читаются
+    только если они в книге есть, — поэтому файл, выгруженный прежней
+    версией, остаётся пригодным.
+    """
+
+    from openpyxl import Workbook
+
+    from oplata.excelio import import_bases
+
+    book = Workbook()
+    suppliers = book.active
+    suppliers.title = "МИР. Поставщики"
+    suppliers.append(
+        ["Название", "Идентификатор", "Отсрочка (дней)", "Предоплата",
+         "Реализация", "В архиве", "УНП"]
+    )
+    suppliers.append(["ООО «ОМА»", "5433f792c4e4", "0", "нет", "нет", "нет",
+                      "100005713"])
+    customers = book.create_sheet("МИР. Покупатели")
+    customers.append(
+        ["Название", "Идентификатор", "Отсрочка (дней)", "Предоплата",
+         "Реализация", "В архиве", "УНП"]
+    )
+    payments = book.create_sheet("МИР. Прочие оплаты")
+    payments.append(["Дата", "Название", "Сумма", "Направление", "Идентификатор"])
+    payments.append(["2026-11-12", "ООО «ТТЦ МИКС»", "0", "out", "e0f23ad601dc"])
+    path = tmp_path / "Оплата 01.11.2026.xlsx"
+    book.save(path)
+
+    back = import_bases(path)["mir"]
+    assert [(c.name, c.unp) for c in back.suppliers] == [("ООО «ОМА»", "100005713")]
+    # Суммы из Excel приходят с двумя знаками — как их пишет выгрузка.
+    assert [(p.name, p.amount) for p in back.other_payments] == [
+        ("ООО «ТТЦ МИКС»", "0.00")
+    ]
+    assert back.routing_rules == []
+
+
+def test_clear_tables_empties_only_amounts(qt_app, store, monkeypatch):
+    """v0.79.0: «Очистить таблицы…» обнуляет суммы, а не стирает виды.
+
+    Запись вида оплаты — это и его карточка (ставка НДС, УНП,
+    примечание, отмеченные даты). Прежняя очистка удаляла запись, и
+    если период накрывал все записи вида, настройки пропадали.
+    """
+
+    from PySide6.QtWidgets import QMessageBox
+
+    from oplata.app import MainWindow
+
+    store.data.other_payments.append(
+        OtherPayment(
+            date="2026-11-05",
+            name="Аренда",
+            amount="240.00",
+            vat_rate="20",
+            unp="111222333",
+            note="офис",
+            dates=["2026-11-05"],
+        )
+    )
+    store.save()
+
+    window = MainWindow(store)
+    window._config_unlocked = True
+    window.show()
+    qt_app.processEvents()
+    monkeypatch.setattr(window, "_ask_password", lambda *a, **k: True)
+    monkeypatch.setattr(window, "_confirm_yes_no", lambda *a, **k: True)
+    monkeypatch.setattr(
+        QMessageBox, "information", staticmethod(lambda *a, **k: None)
+    )
+    window._clear_period(date(2026, 1, 1), date(2026, 12, 31))
+    qt_app.processEvents()
+
+    assert len(store.data.other_payments) == 1, "вид оплаты остался в базе"
+    kind = store.data.other_payments[0]
+    assert kind.amount == "0", "очищены только деньги"
+    assert (kind.vat_rate, kind.unp, kind.note, kind.dates) == (
+        "20",
+        "111222333",
+        "офис",
+        ["2026-11-05"],
+    )
+    window.close()

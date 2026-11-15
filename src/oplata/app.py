@@ -25,6 +25,7 @@ from PySide6.QtWidgets import (
     QFileDialog,
     QFrame,
     QHBoxLayout,
+    QInputDialog,
     QLabel,
     QMainWindow,
     QMenu,
@@ -63,13 +64,18 @@ from .storage import (
     BASE_KORELICHI,
     BASE_MIR,
     BASE_TITLES,
+    BackupError,
     LOCAL_BASE_DIR_NAME,
     OTHER_BASE,
     DataStore,
     data_path_for,
     latest_local_base_file,
+    list_backups,
     local_base_dir,
     local_base_file,
+    make_backup,
+    restore_backup,
+    set_extra_backup_dir,
 )
 from .views.data_view import DataView
 from .views.kkm_view import KkmView
@@ -130,6 +136,19 @@ def half_screen_geometry(free: QRect | None = None) -> QRect:
     # окно не выходит за верхний край: top не уходит выше free.top().
     top = max(free.top(), free.bottom() + 1 - height)
     return QRect(free.left(), top, width, height)
+
+
+def backup_text(backups: list[Path]) -> str:
+    """Строчка про снятые копии для итогового сообщения (v0.79.0).
+
+    Копий бывает две (рядом с базой и на компьютере), поэтому путь не
+    один; пустой список — строчки нет вовсе.
+    """
+
+    if not backups:
+        return ""
+    lead = "Копия прежней базы" if len(backups) == 1 else "Копии прежней базы"
+    return f"\n\n{lead}:\n" + "\n".join(str(path) for path in backups)
 
 
 class MainWindow(QMainWindow):
@@ -221,6 +240,11 @@ class MainWindow(QMainWindow):
             on_reset_fields=self._reset_column_widths,
             on_edit_fields=self._edit_column_widths,
         )
+        # v0.79.0: второй каталог копий — на самом компьютере (Загрузки).
+        # Копия рядом с базой уезжает в облако вместе с ней: испортится
+        # общая папка — пропадут обе, а локальная останется. Путь ищется
+        # средствами Qt, поэтому его даёт экран «Конфигурация».
+        set_extra_backup_dir(self.data_view.backup_dir())
 
         # v0.21.0: столбец «на сегодня» считается по настоящей дате,
         # поэтому при наступлении следующего дня экраны пересчитываем
@@ -352,6 +376,12 @@ class MainWindow(QMainWindow):
         self._admin_base_actions = [
             base_menu.addAction("Выгрузить базу", self._on_export_clicked),
             base_menu.addAction("Загрузить базу", self._on_import_clicked),
+            # v0.79.0: копии, которые программа снимает сама, она же и
+            # возвращает — раньше их можно было только переложить руками
+            # поверх data.json (кнопка «Перечитать файл»).
+            base_menu.addAction(
+                "Восстановить из копии…", self._on_restore_clicked
+            ),
         ]
         base_menu.addSeparator()
         self._admin_base_actions += [
@@ -439,6 +469,116 @@ class MainWindow(QMainWindow):
         if not self._ask_password("Загрузка баз", "Пароль администратора:"):
             return
         self.import_bases_from_excel()
+
+    def _on_restore_clicked(self) -> None:
+        """«Восстановить из копии…» по паролю (v0.79.0)."""
+
+        if not self._ask_password(
+            "Восстановление из копии", "Пароль администратора:"
+        ):
+            return
+        self.restore_base_from_backup()
+
+    def restore_base_from_backup(self) -> None:
+        """Вернуть базу из копии, снятой программой (v0.79.0).
+
+        Копии лежат в двух местах — рядом с базой (уезжает в облако) и
+        на компьютере в Загрузках (останется, если облако испортится),
+        — годятся обе, в том числе снятые раньше кнопкой «Создать
+        резервную копию». Нынешняя база перед заменой тоже уходит в
+        копию: восстановление можно откатить.
+        """
+
+        copies = list_backups(self.store.base_key)
+        if not copies:
+            QMessageBox.information(
+                self,
+                "Восстановление из копии",
+                f"У базы «{BASE_TITLES[self.store.base_key]}» копий нет.\n\n"
+                "Копии снимаются самой программой перед очисткой базы, "
+                "очисткой таблиц и загрузкой базы из файла, а также "
+                "кнопкой «Создать резервную копию» на вкладке "
+                "«Конфигурация».",
+            )
+            return
+
+        labels = [item.title() for item in copies]
+        choice, ok = QInputDialog.getItem(
+            self,
+            "Восстановление из копии",
+            f"Какую копию вернуть в базу "
+            f"«{BASE_TITLES[self.store.base_key]}»?",
+            labels,
+            0,
+            False,
+        )
+        if not ok or choice not in labels:
+            return
+        picked = copies[labels.index(choice)]
+        if not self._confirm_yes_no(
+            "Восстановление из копии",
+            f"Вернуть базу «{BASE_TITLES[self.store.base_key]}» "
+            f"из копии {picked.title()}?",
+            "Нынешние данные этой базы будут заменены копией. Перед "
+            "заменой программа сама снимет копию того, что было, — "
+            "вернуть назад можно и эту замену.",
+        ):
+            return
+
+        # Журналы операций показывают данные конкретной базы — закрываем,
+        # чтобы в них не остались строки прежнего состава.
+        for dialog in list(self._journal_dialogs):
+            dialog.close()
+        self._journal_dialogs.clear()
+
+        try:
+            safety = restore_backup(self.store.base_key, picked.path)
+        except BackupError as exc:
+            QMessageBox.warning(self, "Восстановление из копии", str(exc))
+            return
+        self._reload_current_base()
+        QMessageBox.information(
+            self,
+            "Восстановление из копии",
+            f"База «{BASE_TITLES[self.store.base_key]}» вернулась из "
+            f"копии {picked.title()}."
+            + (
+                "\n\nКопия того, что было до восстановления:\n"
+                + "\n".join(str(path) for path in safety)
+                if safety
+                else ""
+            ),
+        )
+
+    def _reload_current_base(self) -> None:
+        """Перечитать файл активной базы и перерисовать экраны (v0.79.0)."""
+
+        self.store.data = self.store._load()  # noqa: SLF001 - тот же путь
+        self.refresh_all_views()
+
+    def _apply_base_data(self, loaded: AppData) -> None:
+        """Перенести загруженные данные в активную базу «на месте» (v0.79.0).
+
+        Объект ``store.data`` остаётся тем же, чтобы экраны со старой
+        ссылкой не показывали пустоту.
+        """
+
+        current = self.store.data
+        for name in (
+            "suppliers",
+            "customers",
+            "operations",
+            "cash_receipts",
+            "other_payments",
+            "day_overrides",
+            "kkm_reports",
+            "year_start",
+            "bank",
+            "imported_statement_rows",
+            "imported_statement_writes",
+            "routing_rules",
+        ):
+            setattr(current, name, getattr(loaded, name))
 
     def _on_load_statement_clicked(self) -> None:
         """«Загрузить выписку»: PDF-файл -> таблица и разнесение (v0.56.0).
@@ -559,9 +699,14 @@ class MainWindow(QMainWindow):
             "Будет удалено: операций — "
             f"{counts['operations']}, поступлений кассы — "
             f"{counts['cash']}, сумм прочих видов оплат — "
-            f"{counts['other']}. Отменить удаление будет нельзя.",
+            f"{counts['other']}.\n\n"
+            "Виды оплат остаются: у них обнуляются только суммы "
+            "— примечание, ставка НДС и УНП вида не пропадут. "
+            "Отменить удаление будет нельзя, но перед очисткой "
+            "программа сама снимет копию файла базы.",
         ):
             return
+        backups = make_backup(self.store.base_key, "перед очисткой")
         self._clear_period(day_from, day_to)
         QMessageBox.information(
             self,
@@ -569,7 +714,8 @@ class MainWindow(QMainWindow):
             f"Удалено за период с {day_from:%d.%m.%Y} по "
             f"{day_to:%d.%m.%Y}: операций — {counts['operations']}, "
             f"поступлений кассы — {counts['cash']}, сумм прочих видов "
-            f"оплат — {counts['other']}.",
+            f"оплат — {counts['other']}. Виды оплат остались."
+            + backup_text(backups),
         )
 
     def _confirm_yes_no(self, title: str, question: str, details: str) -> bool:
@@ -624,10 +770,14 @@ class MainWindow(QMainWindow):
             item for item in data.cash_receipts
             if not self._in_period(item.date, day_from, day_to)
         ]
-        data.other_payments = [
-            item for item in data.other_payments
-            if not self._in_period(item.date, day_from, day_to)
-        ]
+        # v0.79.0: запись вида оплаты не удаляем — обнуляем сумму.
+        # Запись — это и карточка вида (ставка НДС, УНП, примечание,
+        # отмеченные даты): удали все записи вида за период, и
+        # настройки, набранные руками, пропадут (что и случилось,
+        # когда период накрывал все записи вида).
+        for item in data.other_payments:
+            if self._in_period(item.date, day_from, day_to):
+                item.amount = "0"
         self.store.save()
         self.refresh_all_views()
 
@@ -719,14 +869,24 @@ class MainWindow(QMainWindow):
             f"долгов переноса — {debts}.\n\n"
             "Поставщики, покупатели, виды оплат, рабочий календарь, "
             "пользователи и права остаются; у видов оплат обнуляются "
-            "только суммы. Отменить очистку будет нельзя — при нужной "
-            "копии сначала выгрузите базу тем же меню «База».",
+            "только суммы. Отменить очистку будет нельзя, но перед "
+            "очисткой программа сама снимет копию файла базы.",
         ):
             return
-        self._clear_current_base()
+        # v0.79.0: копия снимается до очистки — вернуться будет к чему
+        # даже если отмена нужна через неделю. Выгрузка в Excel такой
+        # страховкой не служит: она не несёт примечания и правила
+        # разноса (см. excelio).
+        backups = make_backup(self.store.base_key, "перед очисткой")
+        self._clear_current_base(backups)
 
-    def _clear_current_base(self) -> None:
-        """Удалить операции и суммы текущей базы (v0.40.0)."""
+    def _clear_current_base(self, backups: list[Path] | None = None) -> None:
+        """Удалить операции и суммы текущей базы (v0.40.0).
+
+        v0.79.0: ``backups`` — пути копий, снятых до очистки: о них
+        говорим в итоговом сообщении, чтобы человек знал, где лежит
+        прежняя база.
+        """
 
         data = self.store.data
         data.operations.clear()
@@ -751,7 +911,8 @@ class MainWindow(QMainWindow):
             "операции, поступления кассы и долги переноса удалены, "
             "суммы прочих видов оплат обнулены. Поставщики, "
             "покупатели и сами виды оплат (ставка НДС, УНП, "
-            "примечание) остались.",
+            "примечание) остались."
+            + backup_text(backups or []),
         )
 
     def _read_base(self, base_key: str) -> AppData:
@@ -924,6 +1085,16 @@ class MainWindow(QMainWindow):
             dialog.close()
         self._journal_dialogs.clear()
 
+        # v0.79.0: загрузка затирает базу целиком — сначала копия.
+        # Она и есть настоящая страховка: вернуть примечания и правила
+        # разноса из файла выгрузки нельзя, только из такой копии.
+        # Путей несколько: копия каждой базы пишется и рядом с
+        # базой, и на компьютер.
+        backups = [
+            *make_backup(BASE_MIR, "перед загрузкой"),
+            *make_backup(BASE_KORELICHI, "перед загрузкой"),
+        ]
+
         try:
             for base_key, data in bases.items():
                 self._write_base(base_key, data)
@@ -937,17 +1108,15 @@ class MainWindow(QMainWindow):
         # тем же, чтобы экраны со старой ссылкой не показывали пустоту.
         loaded = bases.get(self.store.base_key)
         if loaded is not None:
-            current = self.store.data
-            current.suppliers = loaded.suppliers
-            current.customers = loaded.customers
-            current.operations = loaded.operations
-            current.cash_receipts = loaded.cash_receipts
-            current.other_payments = loaded.other_payments
-            current.day_overrides = loaded.day_overrides
-            current.year_start = loaded.year_start
+            self._apply_base_data(loaded)
         self.refresh_all_views()
         QMessageBox.information(
-            self, "Загрузка баз", f"Базы {names} загружены из файла:\n" + path
+            self,
+            "Загрузка баз",
+            f"Базы {names} загружены из файла:\n" + path
+            + ("\n\nКопии прежних баз:\n"
+               + "\n".join(str(item) for item in backups)
+               if backups else ""),
         )
 
     def apply_current_user(self, user) -> None:

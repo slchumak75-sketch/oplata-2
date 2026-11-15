@@ -32,6 +32,7 @@ from __future__ import annotations
 
 import calendar as calendar_module
 import json
+import os
 from pathlib import Path
 from collections.abc import Callable
 from datetime import date, datetime
@@ -95,7 +96,12 @@ from ..statement_match import (
 
 # v0.54.0: УНП — 9 цифр (как в карточке поставщика/покупателя).
 UNP_LENGTH = 9
-from ..storage import OTHER_BASE, DataStore, data_path_for
+from ..storage import (
+    DOWNLOADS_DIR_ENV,
+    OTHER_BASE,
+    DataStore,
+    data_path_for,
+)
 from ..widgets import (
     AmountLineEdit,
     CollapsiblePanel,
@@ -392,16 +398,32 @@ class DataView(QWidget):
     # папке — чтобы их не уносило в облако вместе с самой базой.
     BACKUP_DIR_NAME = "База поставщики оплата"
 
-    def _backup_dir(self) -> Path:
-        """Папка для копий: «Загрузки\База поставщики оплата»."""
+    def backup_dir(self) -> Path:
+        """Папка для копий: «Загрузки\База поставщики оплата».
+
+        v0.79.0: метод открытый — по нему главное окно задаёт второй
+        каталог автокопий (первый — «Копии» рядом с самой базой).
+        """
+
+        from PySide6.QtCore import QStandardPaths
+
+        # v0.79.0: переопределение для тестов — иначе копии уходили
+        # бы в настоящие Загрузки машины (как OPLATA_PROGRAM_DIR
+        # у выгрузок в «Оплата база»).
+        override = os.environ.get(DOWNLOADS_DIR_ENV)
+        base = Path(override) if override else self._downloads_dir()
+        return base / self.BACKUP_DIR_NAME
+
+    @staticmethod
+    def _downloads_dir() -> Path:
+        """Каталог «Загрузки» средствами Qt (v0.79.0)."""
 
         from PySide6.QtCore import QStandardPaths
 
         downloads = QStandardPaths.writableLocation(
             QStandardPaths.StandardLocation.DownloadLocation
         )
-        base = Path(downloads) if downloads else Path.home() / "Downloads"
-        return base / self.BACKUP_DIR_NAME
+        return Path(downloads) if downloads else Path.home() / "Downloads"
 
     def _export_before_clear(self, target_dir: Path) -> Path | None:
         """Автоматическая выгрузка обеих баз в Excel перед очисткой.
@@ -454,7 +476,7 @@ class DataView(QWidget):
         """
 
         data = self.store.data
-        folder_text = str(self._backup_dir())
+        folder_text = str(self.backup_dir())
         answer = QMessageBox.warning(
             self,
             "Очистить базу",
@@ -475,7 +497,7 @@ class DataView(QWidget):
             self._update_admin_stats("Очистка отменена")
             return
 
-        folder = self._backup_dir()
+        folder = self.backup_dir()
         try:
             folder.mkdir(parents=True, exist_ok=True)
         except OSError as error:

@@ -30,7 +30,12 @@ def isolated_data_dir(tmp_path, monkeypatch):
     # v0.30.0: выгрузки при закрытии окна (автовыгрузка) не должны
     # попадать в настоящий каталог программы — им тоже нужен tmp.
     monkeypatch.setenv("OPLATA_PROGRAM_DIR", str(tmp_path / "program"))
+    # v0.79.0: локальные копии (Загрузки) — тоже в tmp, а не на машине.
+    monkeypatch.setenv("OPLATA_DOWNLOADS_DIR", str(tmp_path / "downloads"))
     yield
+    # Главное окно задаёт второй каталог копий на весь процесс —
+    # сбрасываем, чтобы следующий тест не писал копии в чужой tmp.
+    storage.set_extra_backup_dir(None)
 
 
 @pytest.fixture(autouse=True)
