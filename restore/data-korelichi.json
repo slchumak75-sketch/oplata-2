@@ -1,0 +1,464 @@
+{
+  "schema": 1,
+  "suppliers": [
+    {
+      "name": "ЧП \"ДАВЕРКО\"",
+      "unp": "290498702",
+      "id": "8c6eacdffef7",
+      "deferment_days": 0,
+      "prepayment": false,
+      "realization": false,
+      "archived": false,
+      "note": ""
+    },
+    {
+      "name": "ООО \"ДЖИ ДИСТРИБЬЮШН\"",
+      "unp": "193973738",
+      "id": "d6ea21f1125f",
+      "deferment_days": 0,
+      "prepayment": false,
+      "realization": false,
+      "archived": false,
+      "note": ""
+    },
+    {
+      "name": "ООО \"ТД КОМПЛЕКТ\"",
+      "unp": "192775574",
+      "id": "464fe1854676",
+      "deferment_days": 0,
+      "prepayment": false,
+      "realization": false,
+      "archived": false,
+      "note": ""
+    },
+    {
+      "name": "ООО \"ОМА\"",
+      "unp": "100005713",
+      "id": "5bfe8fa2109f",
+      "deferment_days": 0,
+      "prepayment": false,
+      "realization": false,
+      "archived": false,
+      "note": ""
+    },
+    {
+      "name": "ЧПУП \"МАВ\"",
+      "unp": "600112981",
+      "id": "6084f92c61bb",
+      "deferment_days": 0,
+      "prepayment": false,
+      "realization": false,
+      "archived": false,
+      "note": ""
+    },
+    {
+      "name": "ООО \"ВЕРГОХОЗ\"",
+      "unp": "192469995",
+      "id": "88998986582d",
+      "deferment_days": 0,
+      "prepayment": false,
+      "realization": false,
+      "archived": false,
+      "note": ""
+    },
+    {
+      "name": "ООО \"ХКБ ТРЕЙД\"",
+      "unp": "591016370",
+      "id": "d4c3936b1576",
+      "deferment_days": 0,
+      "prepayment": false,
+      "realization": false,
+      "archived": false,
+      "note": ""
+    },
+    {
+      "name": "ООО \"БЕЛАДМИРАЛСТРОЙ\"",
+      "unp": "693159118",
+      "id": "b995bb33c8b8",
+      "deferment_days": 0,
+      "prepayment": false,
+      "realization": false,
+      "archived": false,
+      "note": ""
+    },
+    {
+      "name": "ИТУП \"ЭЛСВИ\"",
+      "unp": "690656101",
+      "id": "0fb94a15e984",
+      "deferment_days": 0,
+      "prepayment": false,
+      "realization": false,
+      "archived": false,
+      "note": ""
+    },
+    {
+      "name": "ООО \"СТАЛЬВИТПРОКАТ\"",
+      "unp": "192989212",
+      "id": "b546f1721799",
+      "deferment_days": 0,
+      "prepayment": false,
+      "realization": false,
+      "archived": false,
+      "note": ""
+    },
+    {
+      "name": "ЧТУП \"АВТОНИКАХИМ ПЛЮС\"",
+      "unp": "690703601",
+      "id": "b787ffb5511b",
+      "deferment_days": 0,
+      "prepayment": false,
+      "realization": false,
+      "archived": false,
+      "note": ""
+    },
+    {
+      "name": "ООО \"ДИЛМАРКЕТ\"",
+      "unp": "190455128",
+      "id": "f009dbba3c54",
+      "deferment_days": 0,
+      "prepayment": false,
+      "realization": false,
+      "archived": false,
+      "note": ""
+    },
+    {
+      "name": "ООО \"ТОРГОВЫЙ ПОСАД\"",
+      "unp": "190638535",
+      "id": "b4a9f18394b3",
+      "deferment_days": 0,
+      "prepayment": false,
+      "realization": false,
+      "archived": false,
+      "note": ""
+    },
+    {
+      "name": "ООО \"АВИДО\"",
+      "unp": "591015121",
+      "id": "05f4d4044d2b",
+      "deferment_days": 0,
+      "prepayment": false,
+      "realization": false,
+      "archived": false,
+      "note": ""
+    },
+    {
+      "name": "ООО \"ЮЖНЫЙ ОКЕАН\"",
+      "unp": "190575709",
+      "id": "4c81cad25275",
+      "deferment_days": 0,
+      "prepayment": false,
+      "realization": false,
+      "archived": false,
+      "note": ""
+    },
+    {
+      "name": "ООО \"СИСТЕМА ООО\"",
+      "unp": "100220190",
+      "id": "4e47622a667b",
+      "deferment_days": 0,
+      "prepayment": false,
+      "realization": false,
+      "archived": false,
+      "note": ""
+    }
+  ],
+  "customers": [
+    {
+      "name": "КОРЕЛИЧСКОЕ РУП ЖКХ",
+      "unp": "500056584",
+      "id": "dfda5ef5e40e",
+      "deferment_days": 0,
+      "prepayment": false,
+      "realization": false,
+      "archived": false,
+      "note": ""
+    },
+    {
+      "name": "ГП \"МАЛЮШИЧИ\"",
+      "unp": "500021191",
+      "id": "895cdfa1ebcd",
+      "deferment_days": 0,
+      "prepayment": false,
+      "realization": false,
+      "archived": false,
+      "note": ""
+    },
+    {
+      "name": "ОАО \"КОРЕЛИЧСКАЯ СХТ\"",
+      "unp": "500011212",
+      "id": "fa3c48300899",
+      "deferment_days": 0,
+      "prepayment": false,
+      "realization": false,
+      "archived": false,
+      "note": ""
+    },
+    {
+      "name": "НОВОГРУДСКАЯ ДОСААФ",
+      "unp": "500274282",
+      "id": "a8ad216131a1",
+      "deferment_days": 0,
+      "prepayment": false,
+      "realization": false,
+      "archived": false,
+      "note": ""
+    },
+    {
+      "name": "ООО \"ЛВИО ТРАНС\"",
+      "unp": "590210389",
+      "id": "19821123f521",
+      "deferment_days": 0,
+      "prepayment": false,
+      "realization": false,
+      "archived": false,
+      "note": ""
+    },
+    {
+      "name": "ФИЛИАЛ \"БИОМАКС-КОРЕЛИЧИ\"",
+      "unp": "500833212",
+      "id": "efe3d7959410",
+      "deferment_days": 0,
+      "prepayment": false,
+      "realization": false,
+      "archived": false,
+      "note": ""
+    },
+    {
+      "name": "ООО \"МИРСТРОЙМАРКЕТ\"",
+      "unp": "590819945",
+      "id": "2e67aff74e85",
+      "deferment_days": 0,
+      "prepayment": false,
+      "realization": false,
+      "archived": false,
+      "note": ""
+    },
+    {
+      "name": "ГЛАВНОЕ УПРАВЛЕНИЕ МФ РБ",
+      "unp": "500563252",
+      "id": "4d1e78b06ce9",
+      "deferment_days": 0,
+      "prepayment": false,
+      "realization": false,
+      "archived": false,
+      "note": ""
+    }
+  ],
+  "operations": [],
+  "cash_receipts": [],
+  "other_payments": [
+    {
+      "date": "2026-11-12",
+      "name": "КОРЕЛИЧСКОЕ РУП ЖКХ",
+      "amount": "0.00",
+      "direction": "out",
+      "dates": [],
+      "vat_rate": "",
+      "unp": "",
+      "note": "",
+      "id": "d566fd052865"
+    },
+    {
+      "date": "2026-11-12",
+      "name": "ООО \"ТТЦ МИКС\"",
+      "amount": "0.00",
+      "direction": "out",
+      "dates": [],
+      "vat_rate": "",
+      "unp": "",
+      "note": "",
+      "id": "8ded0f88525a"
+    },
+    {
+      "date": "2026-11-12",
+      "name": "РУП \"БЕЛТЕЛЕКОМ\"",
+      "amount": "0.00",
+      "direction": "out",
+      "dates": [],
+      "vat_rate": "",
+      "unp": "",
+      "note": "",
+      "id": "81f512750617"
+    },
+    {
+      "date": "2026-11-12",
+      "name": "ООО \"МИРСЕРВИССИТИ\"",
+      "amount": "0.00",
+      "direction": "out",
+      "dates": [],
+      "vat_rate": "",
+      "unp": "",
+      "note": "",
+      "id": "24833f5de5b8"
+    },
+    {
+      "date": "2026-11-12",
+      "name": "ГУ МФ ПО ГРОДНЕНСКОЙ ОБЛАСТИ",
+      "amount": "0.00",
+      "direction": "out",
+      "dates": [],
+      "vat_rate": "",
+      "unp": "",
+      "note": "",
+      "id": "2c412327a262"
+    },
+    {
+      "date": "2026-11-12",
+      "name": "ГП \"ЦЕНТР СИСТЕМ ИДЕНТИФИКАЦИИ\"",
+      "amount": "0.00",
+      "direction": "out",
+      "dates": [],
+      "vat_rate": "",
+      "unp": "",
+      "note": "",
+      "id": "44fe09f28fd0"
+    },
+    {
+      "date": "2026-11-12",
+      "name": "РУП \"ПРОИЗВОДСТВЕННОЕ ОБЪЕДИНЕНИЕ \"БЕЛОРУСНЕФТЬ\"",
+      "amount": "0.00",
+      "direction": "out",
+      "dates": [],
+      "vat_rate": "",
+      "unp": "",
+      "note": "",
+      "id": "884f25f92cb4"
+    },
+    {
+      "date": "2026-11-13",
+      "name": "ОАО \"АСБ БЕЛАРУСБАНК\"",
+      "amount": "0.00",
+      "direction": "out",
+      "dates": [],
+      "vat_rate": "",
+      "unp": "",
+      "note": "",
+      "id": "6064b11d0566"
+    },
+    {
+      "date": "2026-11-13",
+      "name": "ГУ МФ ПО ГРОДНЕНСКОЙ ОБЛАСТИ (2)",
+      "amount": "0.00",
+      "direction": "out",
+      "dates": [],
+      "vat_rate": "",
+      "unp": "",
+      "note": "",
+      "id": "9d45d8048bf4"
+    },
+    {
+      "date": "2026-11-13",
+      "name": "ГУ МФ ПО ГРОДНЕНСКОЙ ОБЛАСТИ (3)",
+      "amount": "0.00",
+      "direction": "out",
+      "dates": [],
+      "vat_rate": "",
+      "unp": "",
+      "note": "",
+      "id": "b1ab2f86c429"
+    },
+    {
+      "date": "2026-10-21",
+      "name": "Прочие поступления",
+      "amount": "0.00",
+      "direction": "in",
+      "dates": [],
+      "vat_rate": "",
+      "unp": "",
+      "note": "",
+      "id": "015d009471fa"
+    },
+    {
+      "date": "2026-10-15",
+      "name": "ОАО \"АСБ БЕЛАРУСБАНК\"",
+      "amount": "0.00",
+      "direction": "out",
+      "dates": [],
+      "vat_rate": "",
+      "unp": "",
+      "note": "",
+      "id": "6194200fce7e"
+    },
+    {
+      "date": "2026-10-15",
+      "name": "ООО \"МИРСЕРВИССИТИ\"",
+      "amount": "0.00",
+      "direction": "out",
+      "dates": [],
+      "vat_rate": "",
+      "unp": "",
+      "note": "",
+      "id": "faef69d1df43"
+    },
+    {
+      "date": "2026-10-21",
+      "name": "ОАО \"АСБ БЕЛАРУСБАНК\"",
+      "amount": "0.00",
+      "direction": "out",
+      "dates": [],
+      "vat_rate": "",
+      "unp": "",
+      "note": "",
+      "id": "ca4b507a7ea2"
+    },
+    {
+      "date": "2026-10-21",
+      "name": "ООО \"МИРСЕРВИССИТИ\"",
+      "amount": "0.00",
+      "direction": "out",
+      "dates": [],
+      "vat_rate": "",
+      "unp": "",
+      "note": "",
+      "id": "c615bff8b2e1"
+    },
+    {
+      "date": "2026-10-21",
+      "name": "ГУ МФ ПО ГРОДНЕНСКОЙ ОБЛАСТИ (2)",
+      "amount": "0.00",
+      "direction": "out",
+      "dates": [],
+      "vat_rate": "",
+      "unp": "",
+      "note": "",
+      "id": "ff05d3508385"
+    },
+    {
+      "date": "2026-10-21",
+      "name": "ГУ МФ ПО ГРОДНЕНСКОЙ ОБЛАСТИ (3)",
+      "amount": "0.00",
+      "direction": "out",
+      "dates": [],
+      "vat_rate": "",
+      "unp": "",
+      "note": "",
+      "id": "2540eaa4626a"
+    },
+    {
+      "date": "2026-11-14",
+      "name": "ОАО \"АСБ БЕЛАРУСБАНК\" (2)",
+      "amount": "0.00",
+      "direction": "out",
+      "dates": [],
+      "vat_rate": "",
+      "unp": "",
+      "note": "",
+      "id": "403660a2ef8d"
+    }
+  ],
+  "day_overrides": {},
+  "kkm_reports": [],
+  "year_start": {
+    "date": "",
+    "supplier_debts": [],
+    "customer_debts": [],
+    "funds": "0.00"
+  },
+  "bank": {
+    "name": "ОАО \"АСБ БЕЛАРУСБАНК\"",
+    "unp": ""
+  },
+  "imported_statement_rows": [],
+  "imported_statement_writes": [],
+  "routing_rules": []
+}
