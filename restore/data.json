@@ -1,0 +1,1827 @@
+{
+  "schema": 1,
+  "suppliers": [
+    {
+      "name": "ООО \"ОМА\"",
+      "unp": "100005713",
+      "id": "5433f792c4e4",
+      "deferment_days": 0,
+      "prepayment": false,
+      "realization": false,
+      "archived": false,
+      "note": ""
+    },
+    {
+      "name": "ООО \"ТД КОМПЛЕКТ\"",
+      "unp": "192775574",
+      "id": "c7370559bb95",
+      "deferment_days": 0,
+      "prepayment": false,
+      "realization": false,
+      "archived": false,
+      "note": ""
+    },
+    {
+      "name": "ООО \"АЛЬТЕРИНИ\"",
+      "unp": "100220190",
+      "id": "18b70b9f8c49",
+      "deferment_days": 0,
+      "prepayment": false,
+      "realization": false,
+      "archived": false,
+      "note": ""
+    },
+    {
+      "name": "ООО \"ВЕРГОХОЗ\"",
+      "unp": "192469995",
+      "id": "e76a3655bbe7",
+      "deferment_days": 0,
+      "prepayment": false,
+      "realization": false,
+      "archived": false,
+      "note": ""
+    },
+    {
+      "name": "ООО \"БЕЛАДМИРАЛСТРОЙ\"",
+      "unp": "693159118",
+      "id": "e6dd1c9f822b",
+      "deferment_days": 0,
+      "prepayment": false,
+      "realization": false,
+      "archived": false,
+      "note": ""
+    },
+    {
+      "name": "ООО \"ХКБ ТРЕЙД\"",
+      "unp": "591016370",
+      "id": "4df1f437187c",
+      "deferment_days": 0,
+      "prepayment": false,
+      "realization": false,
+      "archived": false,
+      "note": ""
+    },
+    {
+      "name": "ООО \"ЭЛСВИ\"",
+      "unp": "690656101",
+      "id": "1a8ec5a2e435",
+      "deferment_days": 0,
+      "prepayment": false,
+      "realization": false,
+      "archived": false,
+      "note": ""
+    },
+    {
+      "name": "ООО \"СТАЛЬВИТПРОКАТ\"",
+      "unp": "192989212",
+      "id": "a9fdb379095c",
+      "deferment_days": 0,
+      "prepayment": false,
+      "realization": false,
+      "archived": false,
+      "note": ""
+    },
+    {
+      "name": "ЧП \"ДАВЕРКО\"",
+      "unp": "290498702",
+      "id": "7ce0db3cdeb3",
+      "deferment_days": 0,
+      "prepayment": false,
+      "realization": false,
+      "archived": false,
+      "note": ""
+    },
+    {
+      "name": "ООО \"ДЖИ ДИСТРИБЬЮШН\"",
+      "unp": "193973738",
+      "id": "d27690824833",
+      "deferment_days": 0,
+      "prepayment": false,
+      "realization": false,
+      "archived": false,
+      "note": ""
+    },
+    {
+      "name": "ЧПУП \"МАВ\"",
+      "unp": "600112981",
+      "id": "c86ea318ac0a",
+      "deferment_days": 0,
+      "prepayment": false,
+      "realization": false,
+      "archived": false,
+      "note": ""
+    },
+    {
+      "name": "ООО \"МАГНУМ МАРКЕТ ПЛЮС\"",
+      "unp": "192612816",
+      "id": "6da9c164b74d",
+      "deferment_days": 0,
+      "prepayment": false,
+      "realization": false,
+      "archived": false,
+      "note": ""
+    },
+    {
+      "name": "ООО \"ОБЕРЕГ ТОРГ\"",
+      "unp": "391725302",
+      "id": "6740062e3dfb",
+      "deferment_days": 0,
+      "prepayment": false,
+      "realization": false,
+      "archived": false,
+      "note": ""
+    },
+    {
+      "name": "ООО \"КУЛЬТБЫТХОЗТОРГПЛЮС\"",
+      "unp": "192553707",
+      "id": "64b52270d475",
+      "deferment_days": 0,
+      "prepayment": false,
+      "realization": false,
+      "archived": false,
+      "note": ""
+    },
+    {
+      "name": "ООО \"НЕМАНЭЛЕКТРОСТРОЙ\"",
+      "unp": "590958199",
+      "id": "9be7b2467f48",
+      "deferment_days": 0,
+      "prepayment": false,
+      "realization": false,
+      "archived": false,
+      "note": ""
+    },
+    {
+      "name": "ЧУП \"БОМАКСТРОЙ\"",
+      "unp": "690292910",
+      "id": "2b5c0f1704fd",
+      "deferment_days": 0,
+      "prepayment": false,
+      "realization": false,
+      "archived": false,
+      "note": ""
+    },
+    {
+      "name": "ИООО \"АЛИДИ ВЕСТ\"",
+      "unp": "191688253",
+      "id": "75008e1f9a03",
+      "deferment_days": 0,
+      "prepayment": false,
+      "realization": false,
+      "archived": false,
+      "note": ""
+    },
+    {
+      "name": "ООО \"ДИЛМАРКЕТ\"",
+      "unp": "190455128",
+      "id": "42630baa7c58",
+      "deferment_days": 0,
+      "prepayment": false,
+      "realization": false,
+      "archived": false,
+      "note": ""
+    },
+    {
+      "name": "ООО \"ТЕРВА\"",
+      "unp": "391747684",
+      "id": "11a18702205e",
+      "deferment_days": 0,
+      "prepayment": false,
+      "realization": false,
+      "archived": false,
+      "note": ""
+    },
+    {
+      "name": "ООО \"АЛВАИС\"",
+      "unp": "190641599",
+      "id": "467388448df0",
+      "deferment_days": 0,
+      "prepayment": false,
+      "realization": false,
+      "archived": false,
+      "note": ""
+    },
+    {
+      "name": "ООО \"ЮЖНЫЙ ОКЕАН\"",
+      "unp": "190575709",
+      "id": "9cf99d6d879d",
+      "deferment_days": 0,
+      "prepayment": false,
+      "realization": false,
+      "archived": false,
+      "note": ""
+    },
+    {
+      "name": "СП ДЕЛЬФА-БУГ ООО",
+      "unp": "200588261",
+      "id": "7a828b47d7d8",
+      "deferment_days": 0,
+      "prepayment": false,
+      "realization": false,
+      "archived": false,
+      "note": ""
+    },
+    {
+      "name": "ООО \"ТОРГОВЫЙ ПОСАД\"",
+      "unp": "190638535",
+      "id": "483facab9099",
+      "deferment_days": 0,
+      "prepayment": false,
+      "realization": false,
+      "archived": false,
+      "note": ""
+    },
+    {
+      "name": "ООО \"ПАРФЮМБЫТХИМ\"",
+      "unp": "190361208",
+      "id": "91ce7e25efae",
+      "deferment_days": 0,
+      "prepayment": false,
+      "realization": false,
+      "archived": false,
+      "note": ""
+    },
+    {
+      "name": "ООО \"ЗАПАДНЫЙ ДВОР\"",
+      "unp": "190361080",
+      "id": "981e029356e2",
+      "deferment_days": 0,
+      "prepayment": false,
+      "realization": false,
+      "archived": false,
+      "note": ""
+    },
+    {
+      "name": "ООО \"АВИДО\"",
+      "unp": "591015121",
+      "id": "2cf7259d228c",
+      "deferment_days": 0,
+      "prepayment": false,
+      "realization": false,
+      "archived": false,
+      "note": ""
+    },
+    {
+      "name": "ООО \" ТОРГОВАЯ СЕТЬ \"ПРОДМИР\"",
+      "unp": "490314725",
+      "id": "cab28b20ae24",
+      "deferment_days": 0,
+      "prepayment": false,
+      "realization": false,
+      "archived": false,
+      "note": ""
+    },
+    {
+      "name": "ГП \"УПРАВЛЯЮЩАЯ КОМПАНИЯ ХОЛДИНГА \"БЦК\"",
+      "unp": "192039638",
+      "id": "bec66a7aab89",
+      "deferment_days": 0,
+      "prepayment": false,
+      "realization": false,
+      "archived": false,
+      "note": ""
+    },
+    {
+      "name": "ООО \"СЭЛЬВИН\"",
+      "unp": "100819821",
+      "id": "752e1bc274f4",
+      "deferment_days": 0,
+      "prepayment": false,
+      "realization": false,
+      "archived": false,
+      "note": ""
+    },
+    {
+      "name": "ЧТУП \"АВТОНИКАХИМ ПЛЮС\"",
+      "unp": "690703601",
+      "id": "cdaa9d0c82c5",
+      "deferment_days": 0,
+      "prepayment": false,
+      "realization": false,
+      "archived": false,
+      "note": ""
+    },
+    {
+      "name": "ОАО \"ПИВОВАРЕННАЯ КОМПАНИЯ АЛИВАРИЯ\"",
+      "unp": "100128525",
+      "id": "d2db5ecab3f2",
+      "deferment_days": 0,
+      "prepayment": false,
+      "realization": false,
+      "archived": false,
+      "note": ""
+    },
+    {
+      "name": "ООО \"ДЖИОСТАЙЛБЕЛ\"",
+      "unp": "193473649",
+      "id": "d4f4442a59a2",
+      "deferment_days": 0,
+      "prepayment": false,
+      "realization": false,
+      "archived": false,
+      "note": ""
+    },
+    {
+      "name": "ЗАО \"ТВК\"",
+      "unp": "100082364",
+      "id": "c1f0e11a0e7c",
+      "deferment_days": 0,
+      "prepayment": false,
+      "realization": false,
+      "archived": false,
+      "note": ""
+    },
+    {
+      "name": "ОАО \"ПРОДТОВАРЫ\"",
+      "unp": "200019837",
+      "id": "61bde11c4e04",
+      "deferment_days": 0,
+      "prepayment": false,
+      "realization": false,
+      "archived": false,
+      "note": ""
+    }
+  ],
+  "customers": [
+    {
+      "name": "ГРОДНЕНСКОЕ ОБЛПОТРЕБОБЩЕСТВО",
+      "unp": "590959404",
+      "id": "5902443755d5",
+      "deferment_days": 0,
+      "prepayment": false,
+      "realization": false,
+      "archived": false,
+      "note": ""
+    },
+    {
+      "name": "СПК \"ЖУХОВИЧИ\"",
+      "unp": "500021189",
+      "id": "abf5c5c23067",
+      "deferment_days": 0,
+      "prepayment": false,
+      "realization": false,
+      "archived": false,
+      "note": ""
+    },
+    {
+      "name": "ИП ЖИГАЛО",
+      "unp": "591635102",
+      "id": "1ab354581543",
+      "deferment_days": 0,
+      "prepayment": false,
+      "realization": false,
+      "archived": false,
+      "note": ""
+    },
+    {
+      "name": "КОРЕЛИЧСКОЕ РУП ЖКХ",
+      "unp": "500056584",
+      "id": "e2c3c3a2f673",
+      "deferment_days": 0,
+      "prepayment": false,
+      "realization": false,
+      "archived": false,
+      "note": ""
+    },
+    {
+      "name": "ГП \"МАЛЮШИЧИ\"",
+      "unp": "500021191",
+      "id": "e6bf55001957",
+      "deferment_days": 0,
+      "prepayment": false,
+      "realization": false,
+      "archived": false,
+      "note": ""
+    },
+    {
+      "name": "ОАО \"КОРЕЛИЧСКАЯ СХТ\"",
+      "unp": "500011212",
+      "id": "b0d5812660e6",
+      "deferment_days": 0,
+      "prepayment": false,
+      "realization": false,
+      "archived": false,
+      "note": ""
+    },
+    {
+      "name": "ГП \"ПТИЦЕФАБРИКА \"КРАСНОАРМЕЙСКАЯ\"",
+      "unp": "500021148",
+      "id": "2352d22d88a8",
+      "deferment_days": 0,
+      "prepayment": false,
+      "realization": false,
+      "archived": false,
+      "note": ""
+    },
+    {
+      "name": "ГЛАВНОЕ УПРАВЛЕНИЕ МФ РБ",
+      "unp": "500563252",
+      "id": "9c43cb02b628",
+      "deferment_days": 0,
+      "prepayment": false,
+      "realization": false,
+      "archived": false,
+      "note": ""
+    },
+    {
+      "name": "ООО \"ВАРА\"",
+      "unp": "100039571",
+      "id": "ae035639f865",
+      "deferment_days": 0,
+      "prepayment": false,
+      "realization": false,
+      "archived": false,
+      "note": ""
+    },
+    {
+      "name": "ООО \"СЛАВНАЯ КРОВЛЯ\"",
+      "unp": "691338127",
+      "id": "b16b6c539f66",
+      "deferment_days": 0,
+      "prepayment": false,
+      "realization": false,
+      "archived": false,
+      "note": ""
+    },
+    {
+      "name": "ОАО \"ГРОДНЕН.ЛИКЕРО-ВОДОЧНЫЙ ЗАВОД\"",
+      "unp": "500037786",
+      "id": "4770151db920",
+      "deferment_days": 0,
+      "prepayment": false,
+      "realization": false,
+      "archived": false,
+      "note": ""
+    },
+    {
+      "name": "ЧАСТНОЕ ПРЕДПРИЯТИЕ \"ЛЕТУЧИЙ ГУСАР\"",
+      "unp": "590204183",
+      "id": "f284237ba025",
+      "deferment_days": 0,
+      "prepayment": false,
+      "realization": false,
+      "archived": false,
+      "note": ""
+    },
+    {
+      "name": "ГЛАВНОЕ УПРАВЛЕНИЕ МФ РБ",
+      "unp": "500563252",
+      "id": "52ddd5d94633",
+      "deferment_days": 0,
+      "prepayment": false,
+      "realization": false,
+      "archived": false,
+      "note": ""
+    }
+  ],
+  "operations": [
+    {
+      "kind": "Оплата",
+      "counterparty_id": "abf5c5c23067",
+      "date": "2026-10-01",
+      "amount": "50.00",
+      "document": "",
+      "comment": "",
+      "due_date": "",
+      "invoiced": false,
+      "id": "170e65aad023"
+    },
+    {
+      "kind": "Оплата",
+      "counterparty_id": "ae035639f865",
+      "date": "2026-10-01",
+      "amount": "2023.52",
+      "document": "",
+      "comment": "",
+      "due_date": "",
+      "invoiced": false,
+      "id": "e7ece4dcf35d"
+    },
+    {
+      "kind": "Оплата",
+      "counterparty_id": "2352d22d88a8",
+      "date": "2026-10-02",
+      "amount": "206.81",
+      "document": "",
+      "comment": "",
+      "due_date": "",
+      "invoiced": false,
+      "id": "a99c84da178e"
+    },
+    {
+      "kind": "Оплата",
+      "counterparty_id": "abf5c5c23067",
+      "date": "2026-10-02",
+      "amount": "56.00",
+      "document": "",
+      "comment": "",
+      "due_date": "",
+      "invoiced": false,
+      "id": "1eca03ef36c2"
+    },
+    {
+      "kind": "Оплата",
+      "counterparty_id": "1ab354581543",
+      "date": "2026-10-05",
+      "amount": "120.00",
+      "document": "",
+      "comment": "",
+      "due_date": "",
+      "invoiced": false,
+      "id": "9700a5508e47"
+    },
+    {
+      "kind": "Оплата",
+      "counterparty_id": "b16b6c539f66",
+      "date": "2026-10-05",
+      "amount": "908.26",
+      "document": "",
+      "comment": "",
+      "due_date": "",
+      "invoiced": false,
+      "id": "844b8abd59c1"
+    },
+    {
+      "kind": "Оплата",
+      "counterparty_id": "4770151db920",
+      "date": "2026-10-06",
+      "amount": "112.29",
+      "document": "",
+      "comment": "",
+      "due_date": "",
+      "invoiced": false,
+      "id": "f2726cf6269d"
+    },
+    {
+      "kind": "Оплата",
+      "counterparty_id": "ae035639f865",
+      "date": "2026-10-06",
+      "amount": "240.78",
+      "document": "",
+      "comment": "",
+      "due_date": "",
+      "invoiced": false,
+      "id": "82f1b0fab036"
+    },
+    {
+      "kind": "Оплата",
+      "counterparty_id": "f284237ba025",
+      "date": "2026-10-06",
+      "amount": "1166.89",
+      "document": "",
+      "comment": "",
+      "due_date": "",
+      "invoiced": false,
+      "id": "adc5de126d46"
+    },
+    {
+      "kind": "Оплата",
+      "counterparty_id": "2cf7259d228c",
+      "date": "2026-10-06",
+      "amount": "1148.59",
+      "document": "",
+      "comment": "",
+      "due_date": "",
+      "invoiced": false,
+      "id": "12303d72bf8c"
+    },
+    {
+      "kind": "Оплата",
+      "counterparty_id": "483facab9099",
+      "date": "2026-10-06",
+      "amount": "679.35",
+      "document": "",
+      "comment": "",
+      "due_date": "",
+      "invoiced": false,
+      "id": "413e54f25917"
+    },
+    {
+      "kind": "Оплата",
+      "counterparty_id": "4df1f437187c",
+      "date": "2026-10-06",
+      "amount": "576.48",
+      "document": "",
+      "comment": "",
+      "due_date": "",
+      "invoiced": false,
+      "id": "357f5037640a"
+    },
+    {
+      "kind": "Оплата",
+      "counterparty_id": "64b52270d475",
+      "date": "2026-10-06",
+      "amount": "587.98",
+      "document": "",
+      "comment": "",
+      "due_date": "",
+      "invoiced": false,
+      "id": "b4ecd817d90e"
+    },
+    {
+      "kind": "Оплата",
+      "counterparty_id": "6da9c164b74d",
+      "date": "2026-10-06",
+      "amount": "1074.09",
+      "document": "",
+      "comment": "",
+      "due_date": "",
+      "invoiced": false,
+      "id": "fbe6f5988198"
+    },
+    {
+      "kind": "Оплата",
+      "counterparty_id": "91ce7e25efae",
+      "date": "2026-10-06",
+      "amount": "835.74",
+      "document": "",
+      "comment": "",
+      "due_date": "",
+      "invoiced": false,
+      "id": "0b2259362d7d"
+    },
+    {
+      "kind": "Оплата",
+      "counterparty_id": "981e029356e2",
+      "date": "2026-10-06",
+      "amount": "925.93",
+      "document": "",
+      "comment": "",
+      "due_date": "",
+      "invoiced": false,
+      "id": "79e0592dd1f2"
+    },
+    {
+      "kind": "Оплата",
+      "counterparty_id": "bec66a7aab89",
+      "date": "2026-10-06",
+      "amount": "7010.95",
+      "document": "",
+      "comment": "",
+      "due_date": "",
+      "invoiced": false,
+      "id": "f2db87826c32"
+    },
+    {
+      "kind": "Оплата",
+      "counterparty_id": "c86ea318ac0a",
+      "date": "2026-10-06",
+      "amount": "1294.44",
+      "document": "",
+      "comment": "",
+      "due_date": "",
+      "invoiced": false,
+      "id": "93c75029367e"
+    },
+    {
+      "kind": "Оплата",
+      "counterparty_id": "cab28b20ae24",
+      "date": "2026-10-06",
+      "amount": "3293.64",
+      "document": "",
+      "comment": "",
+      "due_date": "",
+      "invoiced": false,
+      "id": "cd93c5baf98a"
+    },
+    {
+      "kind": "Оплата",
+      "counterparty_id": "5433f792c4e4",
+      "date": "2026-10-08",
+      "amount": "3817.61",
+      "document": "",
+      "comment": "",
+      "due_date": "",
+      "invoiced": false,
+      "id": "a51230e280e3"
+    },
+    {
+      "kind": "Оплата",
+      "counterparty_id": "c7370559bb95",
+      "date": "2026-10-08",
+      "amount": "13971.98",
+      "document": "",
+      "comment": "",
+      "due_date": "",
+      "invoiced": false,
+      "id": "2f5c16e07fd4"
+    },
+    {
+      "kind": "Оплата",
+      "counterparty_id": "abf5c5c23067",
+      "date": "2026-10-09",
+      "amount": "91.36",
+      "document": "",
+      "comment": "",
+      "due_date": "",
+      "invoiced": false,
+      "id": "5557a10e7da6"
+    },
+    {
+      "kind": "Оплата",
+      "counterparty_id": "e2c3c3a2f673",
+      "date": "2026-10-09",
+      "amount": "79.63",
+      "document": "",
+      "comment": "",
+      "due_date": "",
+      "invoiced": false,
+      "id": "8da589f7cb4d"
+    },
+    {
+      "kind": "Оплата",
+      "counterparty_id": "2b5c0f1704fd",
+      "date": "2026-10-09",
+      "amount": "519.79",
+      "document": "",
+      "comment": "",
+      "due_date": "",
+      "invoiced": false,
+      "id": "7c07f243a561"
+    },
+    {
+      "kind": "Оплата",
+      "counterparty_id": "752e1bc274f4",
+      "date": "2026-10-09",
+      "amount": "3099.20",
+      "document": "",
+      "comment": "",
+      "due_date": "",
+      "invoiced": false,
+      "id": "def402905e77"
+    },
+    {
+      "kind": "Оплата",
+      "counterparty_id": "2352d22d88a8",
+      "date": "2026-10-12",
+      "amount": "138.80",
+      "document": "",
+      "comment": "",
+      "due_date": "",
+      "invoiced": false,
+      "id": "cfd3219a3f64"
+    },
+    {
+      "kind": "Оплата",
+      "counterparty_id": "52ddd5d94633",
+      "date": "2026-10-12",
+      "amount": "120.80",
+      "document": "",
+      "comment": "",
+      "due_date": "",
+      "invoiced": false,
+      "id": "e9fe486b1bed"
+    },
+    {
+      "kind": "Оплата",
+      "counterparty_id": "abf5c5c23067",
+      "date": "2026-10-12",
+      "amount": "216.66",
+      "document": "",
+      "comment": "",
+      "due_date": "",
+      "invoiced": false,
+      "id": "bfa038e5745a"
+    },
+    {
+      "kind": "Оплата",
+      "counterparty_id": "f284237ba025",
+      "date": "2026-10-12",
+      "amount": "446.63",
+      "document": "",
+      "comment": "",
+      "due_date": "",
+      "invoiced": false,
+      "id": "fca54682364d"
+    },
+    {
+      "kind": "Оплата",
+      "counterparty_id": "1a8ec5a2e435",
+      "date": "2026-10-13",
+      "amount": "691.62",
+      "document": "",
+      "comment": "",
+      "due_date": "",
+      "invoiced": false,
+      "id": "3aaf846f3f81"
+    },
+    {
+      "kind": "Оплата",
+      "counterparty_id": "2cf7259d228c",
+      "date": "2026-10-14",
+      "amount": "823.62",
+      "document": "",
+      "comment": "",
+      "due_date": "",
+      "invoiced": false,
+      "id": "42aa191def32"
+    },
+    {
+      "kind": "Оплата",
+      "counterparty_id": "467388448df0",
+      "date": "2026-10-14",
+      "amount": "443.94",
+      "document": "",
+      "comment": "",
+      "due_date": "",
+      "invoiced": false,
+      "id": "17b30d2e9c55"
+    },
+    {
+      "kind": "Оплата",
+      "counterparty_id": "5433f792c4e4",
+      "date": "2026-10-14",
+      "amount": "3883.46",
+      "document": "",
+      "comment": "",
+      "due_date": "",
+      "invoiced": false,
+      "id": "8f79cf9ebdb2"
+    },
+    {
+      "kind": "Оплата",
+      "counterparty_id": "61bde11c4e04",
+      "date": "2026-10-14",
+      "amount": "577.32",
+      "document": "",
+      "comment": "",
+      "due_date": "",
+      "invoiced": false,
+      "id": "b83868ec8819"
+    },
+    {
+      "kind": "Оплата",
+      "counterparty_id": "64b52270d475",
+      "date": "2026-10-14",
+      "amount": "1470.42",
+      "document": "",
+      "comment": "",
+      "due_date": "",
+      "invoiced": false,
+      "id": "90bcf54a395e"
+    },
+    {
+      "kind": "Оплата",
+      "counterparty_id": "6740062e3dfb",
+      "date": "2026-10-14",
+      "amount": "1956.61",
+      "document": "",
+      "comment": "",
+      "due_date": "",
+      "invoiced": false,
+      "id": "00911230eff5"
+    },
+    {
+      "kind": "Оплата",
+      "counterparty_id": "75008e1f9a03",
+      "date": "2026-10-14",
+      "amount": "422.60",
+      "document": "",
+      "comment": "",
+      "due_date": "",
+      "invoiced": false,
+      "id": "d4304b73151b"
+    },
+    {
+      "kind": "Оплата",
+      "counterparty_id": "7ce0db3cdeb3",
+      "date": "2026-10-14",
+      "amount": "703.20",
+      "document": "",
+      "comment": "",
+      "due_date": "",
+      "invoiced": false,
+      "id": "6d2557751f02"
+    },
+    {
+      "kind": "Оплата",
+      "counterparty_id": "c1f0e11a0e7c",
+      "date": "2026-10-14",
+      "amount": "451.84",
+      "document": "",
+      "comment": "",
+      "due_date": "",
+      "invoiced": false,
+      "id": "9722dde42ff2"
+    },
+    {
+      "kind": "Оплата",
+      "counterparty_id": "cdaa9d0c82c5",
+      "date": "2026-10-14",
+      "amount": "160.95",
+      "document": "",
+      "comment": "",
+      "due_date": "",
+      "invoiced": false,
+      "id": "3eb47b8dfa99"
+    },
+    {
+      "kind": "Оплата",
+      "counterparty_id": "d2db5ecab3f2",
+      "date": "2026-10-14",
+      "amount": "207.69",
+      "document": "",
+      "comment": "",
+      "due_date": "",
+      "invoiced": false,
+      "id": "e0aab40b128f"
+    },
+    {
+      "kind": "Оплата",
+      "counterparty_id": "d4f4442a59a2",
+      "date": "2026-10-14",
+      "amount": "426.93",
+      "document": "",
+      "comment": "",
+      "due_date": "",
+      "invoiced": false,
+      "id": "8b3e0fb88c3a"
+    },
+    {
+      "kind": "Оплата",
+      "counterparty_id": "e6dd1c9f822b",
+      "date": "2026-10-14",
+      "amount": "513.97",
+      "document": "",
+      "comment": "",
+      "due_date": "",
+      "invoiced": false,
+      "id": "fe27d942a729"
+    },
+    {
+      "kind": "Оплата",
+      "counterparty_id": "c7370559bb95",
+      "date": "2026-10-14",
+      "amount": "11765.34",
+      "document": "",
+      "comment": "",
+      "due_date": "",
+      "invoiced": false,
+      "id": "1c1e7d06ec79"
+    },
+    {
+      "kind": "Оплата",
+      "counterparty_id": "2352d22d88a8",
+      "date": "2026-10-07",
+      "amount": "428.72",
+      "document": "",
+      "comment": "",
+      "due_date": "",
+      "invoiced": false,
+      "id": "babbe7e04cd3"
+    },
+    {
+      "kind": "Оплата",
+      "counterparty_id": "abf5c5c23067",
+      "date": "2026-10-07",
+      "amount": "291.24",
+      "document": "",
+      "comment": "",
+      "due_date": "",
+      "invoiced": false,
+      "id": "8a4b2825dba2"
+    },
+    {
+      "kind": "Оплата",
+      "counterparty_id": "9c43cb02b628",
+      "date": "2026-10-30",
+      "amount": "105.04",
+      "document": "",
+      "comment": "",
+      "due_date": "",
+      "invoiced": false,
+      "id": "f47eca18d811"
+    },
+    {
+      "kind": "Оплата",
+      "counterparty_id": "75008e1f9a03",
+      "date": "2026-10-30",
+      "amount": "500.72",
+      "document": "",
+      "comment": "",
+      "due_date": "",
+      "invoiced": false,
+      "id": "ee4a717ebf0e"
+    },
+    {
+      "kind": "Оплата",
+      "counterparty_id": "2352d22d88a8",
+      "date": "2026-11-06",
+      "amount": "26.23",
+      "document": "",
+      "comment": "",
+      "due_date": "",
+      "invoiced": false,
+      "id": "bc963714dcc9"
+    },
+    {
+      "kind": "Оплата",
+      "counterparty_id": "abf5c5c23067",
+      "date": "2026-11-06",
+      "amount": "120.00",
+      "document": "",
+      "comment": "",
+      "due_date": "",
+      "invoiced": false,
+      "id": "34b5fd74749f"
+    },
+    {
+      "kind": "Оплата",
+      "counterparty_id": "2b5c0f1704fd",
+      "date": "2026-11-06",
+      "amount": "412.02",
+      "document": "",
+      "comment": "",
+      "due_date": "",
+      "invoiced": false,
+      "id": "c7a5c31105a8"
+    },
+    {
+      "kind": "Оплата",
+      "counterparty_id": "9be7b2467f48",
+      "date": "2026-11-06",
+      "amount": "159.02",
+      "document": "",
+      "comment": "",
+      "due_date": "",
+      "invoiced": false,
+      "id": "8eb73495dd8a"
+    }
+  ],
+  "cash_receipts": [
+    {
+      "date": "2026-09-30",
+      "source": "cash",
+      "amount": "52341.11",
+      "comment": "",
+      "id": "9d45399c3ca0"
+    },
+    {
+      "date": "2026-10-01",
+      "source": "card",
+      "amount": "2575.67",
+      "comment": "",
+      "id": "48478d77967a"
+    },
+    {
+      "date": "2026-10-01",
+      "source": "cash",
+      "amount": "11000.00",
+      "comment": "",
+      "id": "4eec7d78298e"
+    },
+    {
+      "date": "2026-10-02",
+      "source": "card",
+      "amount": "2069.27",
+      "comment": "",
+      "id": "e9aa2b674dde"
+    },
+    {
+      "date": "2026-10-05",
+      "source": "card",
+      "amount": "10683.70",
+      "comment": "",
+      "id": "a14c7a0f1521"
+    },
+    {
+      "date": "2026-10-05",
+      "source": "cash",
+      "amount": "10500.00",
+      "comment": "",
+      "id": "4c8ecd1564be"
+    },
+    {
+      "date": "2026-10-06",
+      "source": "card",
+      "amount": "1542.71",
+      "comment": "",
+      "id": "79bf2828162b"
+    },
+    {
+      "date": "2026-10-08",
+      "source": "card",
+      "amount": "3655.31",
+      "comment": "",
+      "id": "3dfdeb8cc877"
+    },
+    {
+      "date": "2026-10-08",
+      "source": "cash",
+      "amount": "7600.00",
+      "comment": "",
+      "id": "577a1269fe3d"
+    },
+    {
+      "date": "2026-10-09",
+      "source": "card",
+      "amount": "2805.92",
+      "comment": "",
+      "id": "bbf9f118fec8"
+    },
+    {
+      "date": "2026-10-12",
+      "source": "card",
+      "amount": "8604.34",
+      "comment": "",
+      "id": "5d4a97d114bf"
+    },
+    {
+      "date": "2026-10-12",
+      "source": "cash",
+      "amount": "9400.00",
+      "comment": "",
+      "id": "fdbbff96dde2"
+    },
+    {
+      "date": "2026-10-13",
+      "source": "card",
+      "amount": "1728.15",
+      "comment": "",
+      "id": "1dcae0aacc62"
+    },
+    {
+      "date": "2026-10-14",
+      "source": "card",
+      "amount": "2719.39",
+      "comment": "",
+      "id": "a6fe151c82f7"
+    },
+    {
+      "date": "2026-10-07",
+      "source": "card",
+      "amount": "2690.79",
+      "comment": "",
+      "id": "25393eebc4fd"
+    },
+    {
+      "date": "2026-10-30",
+      "source": "card",
+      "amount": "2617.76",
+      "comment": "",
+      "id": "7d7470c841f3"
+    },
+    {
+      "date": "2026-11-06",
+      "source": "card",
+      "amount": "1152.66",
+      "comment": "",
+      "id": "6dd1750bc20e"
+    }
+  ],
+  "other_payments": [
+    {
+      "date": "2026-11-12",
+      "name": "ООО \"ТТЦ МИКС\"",
+      "amount": "0.00",
+      "direction": "out",
+      "dates": [],
+      "vat_rate": "",
+      "unp": "",
+      "note": "",
+      "id": "e0f23ad601dc"
+    },
+    {
+      "date": "2026-11-12",
+      "name": "КОРЕЛИЧСКОЕ РУП ЖКХ",
+      "amount": "0.00",
+      "direction": "out",
+      "dates": [],
+      "vat_rate": "",
+      "unp": "",
+      "note": "",
+      "id": "c5d28878581e"
+    },
+    {
+      "date": "2026-11-12",
+      "name": "ООО \"КБ ТРСТ\"",
+      "amount": "0.00",
+      "direction": "out",
+      "dates": [],
+      "vat_rate": "",
+      "unp": "",
+      "note": "",
+      "id": "091f56f180c6"
+    },
+    {
+      "date": "2026-11-12",
+      "name": "ПРЕДСТАВИТЕЛЬСТВО БЕЛГОССТРАХА",
+      "amount": "0.00",
+      "direction": "out",
+      "dates": [],
+      "vat_rate": "",
+      "unp": "",
+      "note": "",
+      "id": "1ecb851a7c3c"
+    },
+    {
+      "date": "2026-11-12",
+      "name": "ГРОДНЕНСКАЯ ОБЛАСТНАЯ ОРГАНИЗАЦИЯ ПРОФСОЮЗА",
+      "amount": "0.00",
+      "direction": "out",
+      "dates": [],
+      "vat_rate": "",
+      "unp": "",
+      "note": "",
+      "id": "cf0a4d6226e5"
+    },
+    {
+      "date": "2026-11-12",
+      "name": "ГУ МФ ПО ГРОДНЕНСКОЙ ОБЛАСТИ",
+      "amount": "0.00",
+      "direction": "out",
+      "dates": [],
+      "vat_rate": "",
+      "unp": "",
+      "note": "",
+      "id": "8cf0d7a0ad57"
+    },
+    {
+      "date": "2026-11-12",
+      "name": "ЧП \"КОМППИКСЕРВИС\"",
+      "amount": "0.00",
+      "direction": "out",
+      "dates": [],
+      "vat_rate": "",
+      "unp": "",
+      "note": "",
+      "id": "f6d923557b5d"
+    },
+    {
+      "date": "2026-11-12",
+      "name": "ГП \"ЦЕНТР СИСТЕМ ИДЕНТИФИКАЦИИ\"",
+      "amount": "0.00",
+      "direction": "out",
+      "dates": [],
+      "vat_rate": "",
+      "unp": "",
+      "note": "",
+      "id": "73478531936a"
+    },
+    {
+      "date": "2026-11-12",
+      "name": "ОАО \"АСБ БЕЛАРУСБАНК\"",
+      "amount": "0.00",
+      "direction": "out",
+      "dates": [],
+      "vat_rate": "",
+      "unp": "",
+      "note": "",
+      "id": "a04aeec150a6"
+    },
+    {
+      "date": "2026-11-10",
+      "name": "ОАО \"АСБ БЕЛАРУСБАНК\"",
+      "amount": "0.00",
+      "direction": "out",
+      "dates": [],
+      "vat_rate": "",
+      "unp": "",
+      "note": "",
+      "id": "67fe3b097bf7"
+    },
+    {
+      "date": "2026-11-10",
+      "name": "ООО \"ТТЦ МИКС\"",
+      "amount": "0.00",
+      "direction": "out",
+      "dates": [],
+      "vat_rate": "",
+      "unp": "",
+      "note": "",
+      "id": "3d288391dd64"
+    },
+    {
+      "date": "2026-11-10",
+      "name": "КОРЕЛИЧСКОЕ РУП ЖКХ",
+      "amount": "0.00",
+      "direction": "out",
+      "dates": [],
+      "vat_rate": "",
+      "unp": "",
+      "note": "",
+      "id": "078cb7f05e33"
+    },
+    {
+      "date": "2026-11-10",
+      "name": "ООО \"КБ ТРСТ\"",
+      "amount": "0.00",
+      "direction": "out",
+      "dates": [],
+      "vat_rate": "",
+      "unp": "",
+      "note": "",
+      "id": "fa5abb788001"
+    },
+    {
+      "date": "2026-11-14",
+      "name": "ГУ МФ ПО ГРОДНЕНСКОЙ ОБЛАСТИ (2)",
+      "amount": "0.00",
+      "direction": "out",
+      "dates": [],
+      "vat_rate": "",
+      "unp": "",
+      "note": "",
+      "id": "1f7b523cc416"
+    },
+    {
+      "date": "2026-11-14",
+      "name": "ОАО \"АСБ БЕЛАРУСБАНК\" (2)",
+      "amount": "0.00",
+      "direction": "out",
+      "dates": [],
+      "vat_rate": "",
+      "unp": "",
+      "note": "",
+      "id": "7b1ebb86974f"
+    },
+    {
+      "date": "2026-11-06",
+      "name": "ОАО \"АСБ БЕЛАРУСБАНК\"",
+      "amount": "20.72",
+      "direction": "out",
+      "dates": [],
+      "vat_rate": "",
+      "unp": "",
+      "note": "",
+      "id": "12f0e80d4507"
+    },
+    {
+      "date": "2026-11-06",
+      "name": "ПРЕДСТАВИТЕЛЬСТВО БЕЛГОССТРАХА",
+      "amount": "86.00",
+      "direction": "out",
+      "dates": [],
+      "vat_rate": "",
+      "unp": "",
+      "note": "",
+      "id": "42304c04e2bb"
+    },
+    {
+      "date": "2026-11-06",
+      "name": "ГРОДНЕНСКАЯ ОБЛАСТНАЯ ОРГАНИЗАЦИЯ ПРОФСОЮЗА",
+      "amount": "119.70",
+      "direction": "out",
+      "dates": [],
+      "vat_rate": "",
+      "unp": "",
+      "note": "",
+      "id": "f3c01029ddda"
+    },
+    {
+      "date": "2026-11-06",
+      "name": "ГУ МФ ПО ГРОДНЕНСКОЙ ОБЛАСТИ",
+      "amount": "1322.26",
+      "direction": "out",
+      "dates": [],
+      "vat_rate": "",
+      "unp": "",
+      "note": "",
+      "id": "59828d57861e"
+    },
+    {
+      "date": "2026-11-06",
+      "name": "ГУ МФ ПО ГРОДНЕНСКОЙ ОБЛАСТИ (2)",
+      "amount": "3900.00",
+      "direction": "out",
+      "dates": [],
+      "vat_rate": "",
+      "unp": "",
+      "note": "",
+      "id": "430d69afa7ee"
+    },
+    {
+      "date": "2026-11-06",
+      "name": "ОАО \"АСБ БЕЛАРУСБАНК\" (2)",
+      "amount": "8586.99",
+      "direction": "out",
+      "dates": [],
+      "vat_rate": "",
+      "unp": "",
+      "note": "",
+      "id": "78d2f62900ab"
+    },
+    {
+      "date": "2026-11-10",
+      "name": "ГРОДНЕНСКАЯ ОБЛАСТНАЯ ОРГАНИЗАЦИЯ ПРОФСОЮЗА",
+      "amount": "0.00",
+      "direction": "out",
+      "dates": [],
+      "vat_rate": "",
+      "unp": "",
+      "note": "",
+      "id": "4d1e45b81267"
+    },
+    {
+      "date": "2026-11-05",
+      "name": "ОАО \"АСБ БЕЛАРУСБАНК\"",
+      "amount": "0.00",
+      "direction": "out",
+      "dates": [],
+      "vat_rate": "",
+      "unp": "",
+      "note": "",
+      "id": "24cf8a40f87e"
+    },
+    {
+      "date": "2026-11-03",
+      "name": "ОАО \"АСБ БЕЛАРУСБАНК\"",
+      "amount": "0.00",
+      "direction": "out",
+      "dates": [],
+      "vat_rate": "",
+      "unp": "",
+      "note": "",
+      "id": "26606bbc2a3c"
+    },
+    {
+      "date": "2026-10-30",
+      "name": "Прочие поступления",
+      "amount": "2.40",
+      "direction": "in",
+      "dates": [],
+      "vat_rate": "",
+      "unp": "",
+      "note": "",
+      "id": "2d27757bf25d"
+    },
+    {
+      "date": "2026-10-30",
+      "name": "ОАО \"АСБ БЕЛАРУСБАНК\"",
+      "amount": "46.78",
+      "direction": "out",
+      "dates": [],
+      "vat_rate": "",
+      "unp": "",
+      "note": "",
+      "id": "b82bd40c36c6"
+    },
+    {
+      "date": "2026-10-30",
+      "name": "ЧП \"КОМППИКСЕРВИС\"",
+      "amount": "96.00",
+      "direction": "out",
+      "dates": [],
+      "vat_rate": "",
+      "unp": "",
+      "note": "",
+      "id": "4dc70c91a18b"
+    },
+    {
+      "date": "2026-10-27",
+      "name": "ГП \"ЦЕНТР СИСТЕМ ИДЕНТИФИКАЦИИ\"",
+      "amount": "0.00",
+      "direction": "out",
+      "dates": [],
+      "vat_rate": "",
+      "unp": "",
+      "note": "",
+      "id": "57bfcca36b37"
+    },
+    {
+      "date": "2026-10-27",
+      "name": "ОАО \"АСБ БЕЛАРУСБАНК\"",
+      "amount": "0.00",
+      "direction": "out",
+      "dates": [],
+      "vat_rate": "",
+      "unp": "",
+      "note": "",
+      "id": "83cfe6d3a1b5"
+    },
+    {
+      "date": "2026-11-14",
+      "name": "ГУ МФ ПО ГРОДНЕНСКОЙ ОБЛАСТИ (3)",
+      "amount": "0.00",
+      "direction": "out",
+      "dates": [],
+      "vat_rate": "",
+      "unp": "",
+      "note": "",
+      "id": "7c59eb71595d"
+    },
+    {
+      "date": "2026-10-01",
+      "name": "ГУ МФ ПО ГРОДНЕНСКОЙ ОБЛАСТИ (3)",
+      "amount": "30000.00",
+      "direction": "out",
+      "dates": [],
+      "vat_rate": "",
+      "unp": "",
+      "note": "",
+      "id": "b49c2b0ae091"
+    },
+    {
+      "date": "2026-10-01",
+      "name": "ОАО \"АСБ БЕЛАРУСБАНК\"",
+      "amount": "34.53",
+      "direction": "out",
+      "dates": [],
+      "vat_rate": "",
+      "unp": "",
+      "note": "",
+      "id": "e60f231172c0"
+    },
+    {
+      "date": "2026-10-02",
+      "name": "ОАО \"АСБ БЕЛАРУСБАНК\"",
+      "amount": "118.73",
+      "direction": "out",
+      "dates": [],
+      "vat_rate": "",
+      "unp": "",
+      "note": "",
+      "id": "394bb4d04e9c"
+    },
+    {
+      "date": "2026-10-05",
+      "name": "ОАО \"АСБ БЕЛАРУСБАНК\"",
+      "amount": "169.69",
+      "direction": "out",
+      "dates": [],
+      "vat_rate": "",
+      "unp": "",
+      "note": "",
+      "id": "d9490293895c"
+    },
+    {
+      "date": "2026-10-06",
+      "name": "ОАО \"АСБ БЕЛАРУСБАНК\"",
+      "amount": "33.44",
+      "direction": "out",
+      "dates": [],
+      "vat_rate": "",
+      "unp": "",
+      "note": "",
+      "id": "e5e518a50ff4"
+    },
+    {
+      "date": "2026-10-10",
+      "name": "ИП СЕМЕНОВ Г.С.",
+      "amount": "0.00",
+      "direction": "out",
+      "dates": [],
+      "vat_rate": "",
+      "unp": "",
+      "note": "",
+      "id": "b87eddaa0b8a"
+    },
+    {
+      "date": "2026-10-07",
+      "name": "ГРОДНЕНСКАЯ ОБЛАСТНАЯ ОРГАНИЗАЦИЯ ПРОФСОЮЗА",
+      "amount": "110.80",
+      "direction": "out",
+      "dates": [],
+      "vat_rate": "",
+      "unp": "",
+      "note": "",
+      "id": "251354da9fb1"
+    },
+    {
+      "date": "2026-10-07",
+      "name": "ГУ МФ ПО ГРОДНЕНСКОЙ ОБЛАСТИ",
+      "amount": "1178.59",
+      "direction": "out",
+      "dates": [],
+      "vat_rate": "",
+      "unp": "",
+      "note": "",
+      "id": "b31cec72788c"
+    },
+    {
+      "date": "2026-10-07",
+      "name": "ГУ МФ ПО ГРОДНЕНСКОЙ ОБЛАСТИ (2)",
+      "amount": "3710.00",
+      "direction": "out",
+      "dates": [],
+      "vat_rate": "",
+      "unp": "",
+      "note": "",
+      "id": "a70cabb1b954"
+    },
+    {
+      "date": "2026-10-07",
+      "name": "ИП СЕМЕНОВ Г.С.",
+      "amount": "850.00",
+      "direction": "out",
+      "dates": [],
+      "vat_rate": "",
+      "unp": "",
+      "note": "",
+      "id": "d2308e7332c9"
+    },
+    {
+      "date": "2026-10-07",
+      "name": "КОРЕЛИЧСКОЕ РУП ЖКХ",
+      "amount": "172.08",
+      "direction": "out",
+      "dates": [],
+      "vat_rate": "",
+      "unp": "",
+      "note": "",
+      "id": "7185c0fe397e"
+    },
+    {
+      "date": "2026-10-07",
+      "name": "ОАО \"АСБ БЕЛАРУСБАНК\"",
+      "amount": "46.83",
+      "direction": "out",
+      "dates": [],
+      "vat_rate": "",
+      "unp": "",
+      "note": "",
+      "id": "31e819ecb994"
+    },
+    {
+      "date": "2026-10-07",
+      "name": "ОАО \"АСБ БЕЛАРУСБАНК\" (2)",
+      "amount": "8506.31",
+      "direction": "out",
+      "dates": [],
+      "vat_rate": "",
+      "unp": "",
+      "note": "",
+      "id": "516019dadb49"
+    },
+    {
+      "date": "2026-10-07",
+      "name": "ООО \"КБ ТРСТ\"",
+      "amount": "300.00",
+      "direction": "out",
+      "dates": [],
+      "vat_rate": "",
+      "unp": "",
+      "note": "",
+      "id": "2062c6a51523"
+    },
+    {
+      "date": "2026-10-07",
+      "name": "ООО \"ТТЦ МИКС\"",
+      "amount": "84.00",
+      "direction": "out",
+      "dates": [],
+      "vat_rate": "",
+      "unp": "",
+      "note": "",
+      "id": "1ed80ae3ebcd"
+    },
+    {
+      "date": "2026-10-07",
+      "name": "ПРЕДСТАВИТЕЛЬСТВО БЕЛГОССТРАХА",
+      "amount": "80.60",
+      "direction": "out",
+      "dates": [],
+      "vat_rate": "",
+      "unp": "",
+      "note": "",
+      "id": "e4928787c842"
+    },
+    {
+      "date": "2026-10-08",
+      "name": "ОАО \"АСБ БЕЛАРУСБАНК\"",
+      "amount": "46.22",
+      "direction": "out",
+      "dates": [],
+      "vat_rate": "",
+      "unp": "",
+      "note": "",
+      "id": "f7dec149b6b5"
+    },
+    {
+      "date": "2026-10-10",
+      "name": "КОРЕЛИЧСКИЙ УПС",
+      "amount": "0.00",
+      "direction": "out",
+      "dates": [],
+      "vat_rate": "",
+      "unp": "",
+      "note": "",
+      "id": "e9759a6d69da"
+    },
+    {
+      "date": "2026-10-09",
+      "name": "КОРЕЛИЧСКИЙ УПС",
+      "amount": "15.00",
+      "direction": "out",
+      "dates": [],
+      "vat_rate": "",
+      "unp": "",
+      "note": "",
+      "id": "e37df6ad1873"
+    },
+    {
+      "date": "2026-10-09",
+      "name": "ОАО \"АСБ БЕЛАРУСБАНК\"",
+      "amount": "49.45",
+      "direction": "out",
+      "dates": [],
+      "vat_rate": "",
+      "unp": "",
+      "note": "",
+      "id": "6c3c54571a24"
+    },
+    {
+      "date": "2026-10-12",
+      "name": "ОАО \"АСБ БЕЛАРУСБАНК\"",
+      "amount": "121.13",
+      "direction": "out",
+      "dates": [],
+      "vat_rate": "",
+      "unp": "",
+      "note": "",
+      "id": "5233fa46edef"
+    },
+    {
+      "date": "2026-11-14",
+      "name": "РУП \"БЕЛТЕЛЕКОМ\"",
+      "amount": "0.00",
+      "direction": "out",
+      "dates": [],
+      "vat_rate": "",
+      "unp": "",
+      "note": "",
+      "id": "8ad18dde61d2"
+    },
+    {
+      "date": "2026-10-13",
+      "name": "ОАО \"АСБ БЕЛАРУСБАНК\"",
+      "amount": "36.68",
+      "direction": "out",
+      "dates": [],
+      "vat_rate": "",
+      "unp": "",
+      "note": "",
+      "id": "0d924bd25c95"
+    },
+    {
+      "date": "2026-10-13",
+      "name": "РУП \"БЕЛТЕЛЕКОМ\"",
+      "amount": "80.24",
+      "direction": "out",
+      "dates": [],
+      "vat_rate": "",
+      "unp": "",
+      "note": "",
+      "id": "b195ce485d31"
+    },
+    {
+      "date": "2026-10-14",
+      "name": "ОАО \"АСБ БЕЛАРУСБАНК\"",
+      "amount": "38.04",
+      "direction": "out",
+      "dates": [],
+      "vat_rate": "",
+      "unp": "",
+      "note": "",
+      "id": "f96e84657a9a"
+    },
+    {
+      "date": "2026-11-09",
+      "name": "ПРЕДСТАВИТЕЛЬСТВО БЕЛГОССТРАХА",
+      "amount": "0.00",
+      "direction": "out",
+      "dates": [],
+      "vat_rate": "",
+      "unp": "",
+      "note": "",
+      "id": "3c8ced54a548"
+    },
+    {
+      "date": "2026-11-11",
+      "name": "ООО \"ТТЦ МИКС\"",
+      "amount": "0.00",
+      "direction": "out",
+      "dates": [],
+      "vat_rate": "",
+      "unp": "",
+      "note": "",
+      "id": "0eb93776de55"
+    },
+    {
+      "date": "2026-11-11",
+      "name": "ООО \"КБ ТРСТ\"",
+      "amount": "221.00",
+      "direction": "out",
+      "dates": [],
+      "vat_rate": "",
+      "unp": "",
+      "note": "",
+      "id": "3fcbc800bcdc"
+    }
+  ],
+  "day_overrides": {},
+  "kkm_reports": [],
+  "year_start": {
+    "date": "",
+    "supplier_debts": [],
+    "customer_debts": [],
+    "funds": "0.00"
+  },
+  "bank": {
+    "name": "ОАО \"АСБ БЕЛАРУСБАНК\"",
+    "unp": ""
+  },
+  "imported_statement_rows": [],
+  "imported_statement_writes": [],
+  "routing_rules": []
+}
