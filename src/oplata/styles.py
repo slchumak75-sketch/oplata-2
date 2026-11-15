@@ -78,6 +78,18 @@ WIDE_SCROLLBAR = (
     "QScrollBar::add-line:vertical,QScrollBar::sub-line:vertical{height:0}"
     "QScrollBar::add-page:vertical,QScrollBar::sub-page:vertical{"
     "background:#f7f2e9}"
+    # v0.78.0: горизонтальная полоса — той же толщины и того же цвета,
+    # что вертикальная. Раньше правил для неё не было: в «Сводке оплат»
+    # (таблица шире окна) полоса оставалась тонкой системной и
+    # выбивалась из вида таблицы.
+    "QScrollBar:horizontal{background:#f7f2e9;height:22px;margin:0}"
+    "QScrollBar::handle:horizontal{background:#d9c9b0;border-radius:6px;"
+    "min-width:40px;margin:3px 2px}"
+    "QScrollBar::handle:horizontal:hover{background:#c0a882}"
+    "QScrollBar::add-line:horizontal,QScrollBar::sub-line:horizontal{"
+    "width:0}"
+    "QScrollBar::add-page:horizontal,QScrollBar::sub-page:horizontal{"
+    "background:#f7f2e9}"
 )
 
 

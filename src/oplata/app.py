@@ -56,7 +56,7 @@ from .excelio import (
     export_bases,
     import_bases,
 )
-from .models import AppData, set_year_start_funds
+from .models import AppData, keep_payment_kinds, set_year_start_funds
 from .statement import StatementError, parse_statement
 from .statement_match import account_base_key
 from .storage import (
@@ -336,14 +336,12 @@ class MainWindow(QMainWindow):
         # v0.75.0: «База» — меню со всеми действиями над базой. Раньше
         # это были три отдельные кнопки («Выгрузить базы», «Загрузить
         # базы», «Очистить базу»); в меню они занимают одну строку.
-        # v0.77.0: на кнопке только птичка «вниз» — слово «База»
-        # убрано по просьбе пользователя: подпись дублировала название
-        # базы в шапке (переключатель «МИР/КОРЕЛИЧИ») и занимала место.
-        self.base_menu_button = QPushButton("▼")
+        # v0.78.0: подпись «База» вернулась. В v0.77.0 на кнопке была
+        # одна птичка «вниз» — вместо подписи её оставлять не надо:
+        # кнопка без слов непонятна, а глиф выглядел чужим на шапке.
+        self.base_menu_button = QPushButton("База")
         self.base_menu_button.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.base_menu_button.setToolTip(
-            "База: выгрузить, загрузить, очистить; конфигурация"
-        )
+        self.base_menu_button.setToolTip("Действия с базой данных")
         base_menu = QMenu(self.base_menu_button)
         # v0.76.0: «Конфигурация» лежит в этом же меню (в v0.75.0 для
         # неё была отдельная кнопка «+» — две кнопки с меню в углу
@@ -402,15 +400,9 @@ class MainWindow(QMainWindow):
             f"QPushButton:hover{{background:{styles.HEADER_TOOL_HOVER}}}"
         )
         # v0.75.0: в правом углу шапки тот же стиль получают
-        # «Загрузить выписку» и меню базы (v0.77.0: кнопка меню — одна
-        # птичка «вниз»).
+        # «Загрузить выписку» и меню «База».
         for btn in (self.statement_button, self.base_menu_button):
             btn.setStyleSheet(base_tools_style)
-        # v0.77.0: кнопка-птичка — узкая, с симметричными отступами:
-        # под одним глифом боковые поля ``6px 6px`` выглядят тесно.
-        self.base_menu_button.setStyleSheet(
-            base_tools_style + "QPushButton{padding:6px 10px}"
-        )
         self.base_button.setStyleSheet(
             f"QPushButton{{background:{styles.HEADER_CHECKED_BG};"
             f"color:{header_bg};"
@@ -723,11 +715,12 @@ class MainWindow(QMainWindow):
             f"«{BASE_TITLES[self.store.base_key]}»?",
             f"Будет удалено: операций — {operations}, "
             f"поступлений кассы — {cash}, "
-            f"прочих видов оплат — {others}, "
+            f"сумм прочих видов оплат — {others}, "
             f"долгов переноса — {debts}.\n\n"
-            "Поставщики, покупатели, рабочий календарь, пользователи "
-            "и права остаются. Отменить очистку будет нельзя — при "
-            "нужной копии сначала выгрузите базу тем же меню «База».",
+            "Поставщики, покупатели, виды оплат, рабочий календарь, "
+            "пользователи и права остаются; у видов оплат обнуляются "
+            "только суммы. Отменить очистку будет нельзя — при нужной "
+            "копии сначала выгрузите базу тем же меню «База».",
         ):
             return
         self._clear_current_base()
@@ -738,7 +731,12 @@ class MainWindow(QMainWindow):
         data = self.store.data
         data.operations.clear()
         data.cash_receipts.clear()
-        data.other_payments.clear()
+        # v0.78.0: виды оплат не удаляем — это справочник, как
+        # поставщики и покупатели. У вида есть карточка (ставка НДС,
+        # УНП, примечание, отмеченные даты), и живёт она в первой
+        # записи вида: сотри записи — пропадут и настройки. Поэтому
+        # оставляем по одной записи на вид, с пустой суммой.
+        data.other_payments = keep_payment_kinds(data.other_payments)
         # Перенос на 1 января — это тоже суммы, их убираем; дату
         # остатков и справочники не трогаем.
         data.year_start.supplier_debts.clear()
@@ -750,8 +748,10 @@ class MainWindow(QMainWindow):
             self,
             "Очистка базы",
             f"База «{BASE_TITLES[self.store.base_key]}» очищена: "
-            "операции, поступления кассы, прочие виды оплат и долги "
-            "переноса удалены. Поставщики и покупатели остались.",
+            "операции, поступления кассы и долги переноса удалены, "
+            "суммы прочих видов оплат обнулены. Поставщики, "
+            "покупатели и сами виды оплат (ставка НДС, УНП, "
+            "примечание) остались.",
         )
 
     def _read_base(self, base_key: str) -> AppData:

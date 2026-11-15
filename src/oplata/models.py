@@ -15,7 +15,7 @@
 from __future__ import annotations
 
 import uuid
-from dataclasses import asdict, dataclass, field
+from dataclasses import asdict, dataclass, field, replace
 from decimal import Decimal, InvalidOperation
 
 
@@ -391,6 +391,28 @@ class Bank:
             name=str(data.get("name", "") or ""),
             unp=str(data.get("unp", "") or ""),
         )
+
+
+def keep_payment_kinds(payments: list["OtherPayment"]) -> list["OtherPayment"]:
+    """Оставить виды оплат, убрав из них деньги (v0.78.0).
+
+    Запись вида — это не только сумма, но и **карточка** вида: ставка
+    НДС, УНП, примечание и отмеченные в календаре даты лежат в первой
+    записи этого вида (v0.24.0, v0.33.0, v0.55.0). Раньше «Очистить
+    базу» стирала ``other_payments`` целиком и вместе с деньгами
+    терялись настройки, которые человек набирал руками.
+
+    Теперь от вида остаётся одна запись — его карточка с нулевой
+    суммой. Справочник цел, денег в базе нет.
+    """
+
+    kept: dict[tuple[str, str], OtherPayment] = {}
+    for payment in payments:
+        key = (payment.name, payment.direction)
+        if key in kept:
+            continue
+        kept[key] = replace(payment, amount="0", dates=list(payment.dates))
+    return list(kept.values())
 
 
 @dataclass
