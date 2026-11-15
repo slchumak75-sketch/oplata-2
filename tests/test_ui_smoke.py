@@ -4921,12 +4921,13 @@ def test_payments_summary_freezes_first_three_columns(qt_app, store):
     dialog.close()
 
 
-def test_base_menu_button_is_labelled_base(qt_app, store):
-    """v0.78.0: на кнопке меню — подпись «База», а не значок.
+def test_base_menu_button_shows_one_glyph(qt_app, store):
+    """v0.80.0: на кнопке меню — один символ, птичка «вниз».
 
-    В v0.77.0 на кнопке была одна птичка «вниз»: вместо подписи её
-    оставлять не надо, — кнопка без слов непонятна. Что за кнопка,
-    говорят и подпись, и подсказка.
+    Слова «База» на кнопке нет (v0.78.0 вернул его, в v0.80.0 убрали
+    по просьбе пользователя): подпись дублирует переключатель базы
+    «МИР»/«КОРЕЛИЧИ» в той же шапке и занимает место. Что за кнопка,
+    по-прежнему говорит подсказка.
     """
     from oplata.app import MainWindow
 
@@ -4935,8 +4936,8 @@ def test_base_menu_button_is_labelled_base(qt_app, store):
     qt_app.processEvents()
 
     button = window.base_menu_button
-    assert button.text() == "База"
-    assert "▼" not in button.text()
+    assert button.text() == "▼"
+    assert "баз" not in button.text().lower(), "слова «База» на кнопке нет"
     assert "баз" in button.toolTip().lower(), "подсказка объясняет назначение"
     # Меню на месте: шесть пунктов, последний — «Конфигурация»
     # (v0.79.0 добавил «Восстановить из копии…»).
