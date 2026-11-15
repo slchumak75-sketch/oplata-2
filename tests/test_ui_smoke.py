@@ -4843,6 +4843,29 @@ def test_payments_summary_number_columns_are_wider(qt_app, store):
     dialog.close()
 
 
+def test_horizontal_scrollbar_is_styled_like_the_vertical_one():
+    """v0.78.0: горизонтальная полоса — такой же ширины, как вертикальная.
+
+    ``WIDE_SCROLLBAR`` описывал только ``:vertical``: полоса в «Сводке
+    оплат» (таблица шире окна) оставалась тонкой системной и выбивалась
+    из вида таблицы.
+    """
+
+    from oplata import styles
+
+    sheet = styles.WIDE_SCROLLBAR
+    assert "QScrollBar:vertical{background:#f7f2e9;width:22px" in sheet
+    assert "QScrollBar:horizontal{background:#f7f2e9;height:22px" in sheet
+    # Бегунок, фон дорожки и цвет при наведении — те же, что у вертикали.
+    for part in (
+        "QScrollBar::handle:horizontal{background:#d9c9b0;border-radius:6px",
+        "QScrollBar::handle:horizontal:hover{background:#c0a882}",
+        "QScrollBar::add-page:horizontal,QScrollBar::sub-page:horizontal{"
+        "background:#f7f2e9}",
+    ):
+        assert part in sheet
+
+
 def test_payments_summary_freezes_first_three_columns(qt_app, store):
     """v0.77.0: «Вид оплаты», «НДС» и «Примечание» остаются на месте.
 
@@ -4890,11 +4913,12 @@ def test_payments_summary_freezes_first_three_columns(qt_app, store):
     dialog.close()
 
 
-def test_base_menu_button_shows_only_the_arrow(qt_app, store):
-    """v0.77.0: на кнопке меню — одна птичка «вниз», без слова «База».
+def test_base_menu_button_is_labelled_base(qt_app, store):
+    """v0.78.0: на кнопке меню — подпись «База», а не значок.
 
-    Подпись дублировала переключатель базы («МИР»/«КОРЕЛИЧИ») в той же
-    шапке и отъедала место у вкладок. Что за кнопка — говорит подсказка.
+    В v0.77.0 на кнопке была одна птичка «вниз»: вместо подписи её
+    оставлять не надо, — кнопка без слов непонятна. Что за кнопка,
+    говорят и подпись, и подсказка.
     """
     from oplata.app import MainWindow
 
@@ -4903,9 +4927,9 @@ def test_base_menu_button_shows_only_the_arrow(qt_app, store):
     qt_app.processEvents()
 
     button = window.base_menu_button
-    assert button.text() == "▼"
-    assert "База" not in button.text()
-    assert "База" in button.toolTip(), "подсказка Explain назначение"
+    assert button.text() == "База"
+    assert "▼" not in button.text()
+    assert "баз" in button.toolTip().lower(), "подсказка объясняет назначение"
     # Меню на месте: пять пунктов, последний — «Конфигурация».
     titles = [
         action.text()
@@ -5894,6 +5918,40 @@ def _click_message_box_button(monkeypatch, title_substring):
     monkeypatch.setattr(QMessageBox, "exec", fake_exec)
 
 
+def test_keep_payment_kinds_empties_money_only():
+    """v0.78.0: от вида оплаты остаётся его карточка с пустой суммой."""
+
+    from oplata.models import INCOMING, OtherPayment, keep_payment_kinds
+
+    payments = [
+        OtherPayment(
+            date="2026-10-05", name="Аренда", amount="240.00", vat_rate="20",
+            unp="111222333", note="офис", dates=["2026-10-05"],
+        ),
+        OtherPayment(date="2026-11-05", name="Аренда", amount="240.00"),
+        OtherPayment(date="2026-11-07", name="Реклама", amount="100.00"),
+        OtherPayment(
+            date="2026-11-08", name="Яндекс", amount="60.00",
+            direction=INCOMING,
+        ),
+    ]
+    kept = keep_payment_kinds(payments)
+    # По одной записи на вид; направление различает блоки «Оплата» и
+    # «Поступление», поэтому «Аренда» и «Яндекс» — разные виды.
+    assert sorted(kept_kind_name(k) for k in kept) == [
+        "Аренда", "Реклама", "Яндекс",
+    ]
+    rent = next(k for k in kept if k.name == "Аренда")
+    assert rent.amount == "0"
+    assert rent.vat_rate == "20" and rent.unp == "111222333"
+    assert rent.note == "офис" and rent.dates == ["2026-10-05"]
+    assert all(k.amount == "0" for k in kept), "денег не осталось"
+
+
+def kept_kind_name(kind) -> str:
+    return str(kind.name)
+
+
 def test_clear_base_keeps_partners_and_removes_money(
     qt_app, store, monkeypatch, tmp_path
 ):
@@ -5926,7 +5984,15 @@ def test_clear_base_keeps_partners_and_removes_money(
     )
     data.cash_receipts.append(CashReceipt(date="2026-10-27", amount="50.00"))
     data.other_payments.append(
-        OtherPayment(date="2026-10-27", name="Аренда", amount="30.00")
+        OtherPayment(
+            date="2026-10-27", name="Аренда", amount="30.00", vat_rate="20",
+            unp="111222333", note="офис", dates=["2026-10-27"],
+        )
+    )
+    # Вторая запись того же вида: её сумма тоже должна уйти, а вид —
+    # остаться в единственном экземпляре (это его карточка).
+    data.other_payments.append(
+        OtherPayment(date="2026-10-28", name="Аренда", amount="40.00")
     )
     data.year_start.supplier_debts.append(
         YearStartDebt(counterparty_id=supplier.id, amount="10.00")
@@ -5964,7 +6030,17 @@ def test_clear_base_keeps_partners_and_removes_money(
     qt_app.processEvents()
     assert data.operations == []
     assert data.cash_receipts == []
-    assert data.other_payments == []
+    # v0.78.0: виды оплат остаются — стираются только суммы. Карточка
+    # вида (ставка НДС, УНП, примечание, отмеченные даты) живёт в его
+    # первой записи, поэтому вид нельзя удалять целиком.
+    assert len(data.other_payments) == 1, "от вида осталась одна запись"
+    kind = data.other_payments[0]
+    assert kind.name == "Аренда"
+    assert kind.amount in ("0", "0.00"), "деньги удалены"
+    assert kind.vat_rate == "20", "ставка НДС вида осталась"
+    assert kind.unp == "111222333", "УНП вида остался"
+    assert kind.note == "офис", "примечание вида осталось"
+    assert kind.dates == ["2026-10-27"], "календарь вида остался"
     assert data.year_start.supplier_debts == []
     assert data.year_start.customer_debts == []
     assert data.year_start.funds == "0.00"
@@ -7400,6 +7476,68 @@ def test_week_view_opens_dialogs_on_the_date_from_the_header(
     view.week_start = date(2026, 11, 23)
     view.refresh()
     assert view._shown_day() == date(2026, 11, 23)
+    view.close()
+
+
+def test_week_date_field_moves_the_week_without_the_go_button(
+    qt_app, store
+):
+    """v0.78.0: дату ввели в поле — неделя пошла, «Перейти» не нужен.
+
+    Раньше поле «Дата» в шапке недели ни на что не влияло: переводила
+    неделю только кнопка «Перейти». Человек вписывал 12.11.2026, жал
+    Enter — таблица оставалась на прежней неделе, и окно «Поставка»
+    открывалось на сегодняшней дате.
+    """
+    from datetime import date
+
+    from PySide6.QtCore import QDate
+
+    from oplata.views.week_view import WeekView
+    from oplata.widgets import date_edit_value
+
+    view = WeekView(store, kind="supplier", on_open_card=lambda _id: None)
+    view.show()
+    qt_app.processEvents()
+    view.reset_to_today()
+    qt_app.processEvents()
+    assert view.date_edit.date().toString("dd.MM.yyyy") == date.today().strftime(
+        "%d.%m.%Y"
+    )
+
+    opened: list = []
+    view.on_open_delivery = lambda cid, day: opened.append(day)
+
+    # Вписали дату и нажали Enter — кнопку «Перейти» не трогали.
+    view.date_edit.setDate(QDate(2026, 11, 12))
+    view.date_edit.editingFinished.emit()
+    qt_app.processEvents()
+
+    assert date_edit_value(view.date_edit) == date(2026, 11, 12)
+    # Неделя 09.11 (пн) — 15.11 (вс): выбранный день внутри неё.
+    assert view._days[0] == date(2026, 11, 9)
+    assert view._shown_day() == date(2026, 11, 12)
+
+    view._on_context_menu(
+        view.table.visualItemRect(
+            view.table.item(view.table.rowCount() - 1, 0)
+        ).center()
+    )
+    assert opened[-1] == date(2026, 11, 12)
+
+    # Выбор в календаре — тоже переводит, потому что ввода в поле нет.
+    calendar = view.date_edit.calendarWidget()
+    calendar.clicked.emit(QDate(2026, 11, 19))
+    qt_app.processEvents()
+    assert view._days[0] == date(2026, 11, 16)
+    assert view._shown_day() == date(2026, 11, 19)
+
+    # Программная установка даты (её делает обновление таблицы) перехода
+    # не вызывает — иначе refresh ушёл бы по кругу.
+    week_before = view._days[0]
+    view.refresh()
+    qt_app.processEvents()
+    assert view._days[0] == week_before
     view.close()
 
 

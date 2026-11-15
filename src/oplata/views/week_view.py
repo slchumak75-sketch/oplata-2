@@ -501,6 +501,18 @@ class WeekView(QWidget):
 
         bar.addWidget(QLabel("Дата"))
         self.date_edit = make_date_edit(self.week_start)
+        # v0.78.0: поле «Дата» само переводит неделю. Раньше переводила
+        # только кнопка «Перейти»: вписал 12.11.2026, нажал Enter —
+        # таблица осталась на прежней неделе, а окно «Поставка»,
+        # открытое правым кликом, вставало на сегодняшней дате.
+        self._applying_date = False
+        self.date_edit.editingFinished.connect(self._on_date_entered)
+        # Выбор в календаре — отдельно: сама дата при этом меняется без
+        # ввода в поле, и ``editingFinished`` не придёт.
+        calendar = self.date_edit.calendarWidget()
+        if calendar is not None:
+            calendar.clicked.connect(self._on_date_entered)
+            calendar.activated.connect(self._on_date_entered)
         bar.addWidget(self.date_edit)
 
         go_btn = QPushButton("Перейти")
@@ -576,6 +588,28 @@ class WeekView(QWidget):
     def _go_to_date(self) -> None:
         self.goto_date(date_edit_value(self.date_edit))
 
+    def _on_date_entered(self, *_args) -> None:
+        """Дата в поле «Дата» выбрана — переходим на её неделю (v0.78.0).
+
+        Раньше переводила только кнопка «Перейти»: вписал 12.11.2026,
+        нажал Enter — таблица осталась на прежней неделе, и окно
+        «Поставка», открытое правым кликом, вставало на сегодняшней
+        дате.
+
+        Слушаем ``editingFinished`` (Enter или уход из поля) и сигналы
+        календаря, но не ``dateChanged``: пока дату печатают, она
+        меняется на каждой цифре года, и переход уводил бы неделю под
+        руками, а обновление таблицы вдобавок переписывало бы поле.
+        """
+
+        if self._applying_date:
+            return  # дату ставит программа, а не человек
+        day = date_edit_value(self.date_edit)
+        if self._current_day == day and self._days:
+            if self._days[0] <= day <= self._days[-1]:
+                return  # уже стоим на этой дате
+        self.goto_date(day)
+
     def goto_date(self, day: date) -> None:
         """Перейти на неделю, содержащую ``day`` (также после «Поставки»).
 
@@ -598,7 +632,11 @@ class WeekView(QWidget):
 
         today = date.today()
         self.goto_date(today)
-        set_date_edit(self.date_edit, today)
+        self._applying_date = True
+        try:
+            set_date_edit(self.date_edit, today)
+        finally:
+            self._applying_date = False
 
     def _open_journal_for_item(self, item: QTableWidgetItem) -> None:
         """Журнал операций контрагента из строки (v0.52.0).
@@ -705,13 +743,20 @@ class WeekView(QWidget):
         прижимается к её краю.
         """
 
-        if not self._days:
+        days = self._days
+        if not days:
             return self._current_day or date.today()
-        day = self._current_day or self._days[0]
-        if day < self._days[0]:
-            return self._days[0]
-        if day > self._days[-1]:
-            return self._days[-1]
+        # v0.78.0: главное — что стоит в поле «Дата». _current_day нужен
+        # на случай, если поле ещё не построено или в нём дата вне
+        # показанной недели.
+        edit = getattr(self, "date_edit", None)
+        day = date_edit_value(edit) if edit is not None else None
+        if day is None or not (days[0] <= day <= days[-1]):
+            day = self._current_day or days[0]
+        if day < days[0]:
+            return days[0]
+        if day > days[-1]:
+            return days[-1]
         return day
 
     def _on_item_changed(self, item: QTableWidgetItem) -> None:
@@ -1271,7 +1316,13 @@ class WeekView(QWidget):
         # v0.77.0: в поле остаётся день, на который перешли (12.11, а не
         # понедельник 09.11); понедельник показываем, только если своего
         # дня нет — например, при первом построении таблицы.
-        set_date_edit(self.date_edit, self._current_day or self.week_start)
+        # v0.78.0: установка помечена флагом — сама по себе она не
+        # должна запускать переход (иначе refresh ушёл бы по кругу).
+        self._applying_date = True
+        try:
+            set_date_edit(self.date_edit, self._current_day or self.week_start)
+        finally:
+            self._applying_date = False
         self.week_label.setText(
             f"Неделя: {fmt_date(days[0])} — {fmt_date(days[-1])}"
         )
