@@ -2031,6 +2031,31 @@ class MoneyBlock(QFrame):
                 btn.setVisible(not read_only)
 
 
+class _PageContent(QWidget):
+    """Содержимое страницы: не просит высоты сверх того, что нужно (v0.83.0).
+
+    ``QScrollArea`` с ``setWidgetResizable(True)`` даёт виджету не меньше,
+    чем его ``sizeHint``. А «Сводка» справа просит ровно столько, сколько
+    занимает её содержимое: чем больше видов оплат, тем выше плашка. Из-за
+    этого страница растягивалась выше окна, и появлялась полоса прокрутки
+    (v0.48.0) — хотя сами блоки слева просят по минимуму немного (372
+    точки из 970). Здесь «хочу» по высоте — только необходимый минимум:
+    больше места виджет всё равно получит (по высоте окна), а меньше
+    своего содержимого уже не попросит. Ширину не трогаем: её держит
+    раскладка долями (73 : 27).
+    """
+
+    def heightForWidth(self, width):  # noqa: N802
+        """Сколько хотим по высоте при этой ширине: только необходимое.
+
+        Эту величину ``QScrollArea`` и берёт за желаемую высоту
+        содержимого (``widgetResizable``): отсюда и тянулась страница
+        выше окна. Возвращаем минимум — остальное даст высота окна.
+        """
+
+        return self.minimumSizeHint().height()
+
+
 class _FixedScrollArea(QScrollArea):
     """Область без прокрутки: страница стоит неподвижно (v0.82.0).
 
@@ -2087,7 +2112,9 @@ class ReceiptsView(QWidget):
         scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         scroll.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         scroll.setStyleSheet(styles.WIDE_SCROLLBAR_ON_AREA)
-        content = QWidget()
+        # v0.83.0: контейнер не просит лишней высоты (см. класс выше) —
+        # иначе «Сводка» растягивала страницу выше окна.
+        content = _PageContent()
         scroll.setWidget(content)
         outer.addWidget(scroll)
         self.scroll_area = scroll

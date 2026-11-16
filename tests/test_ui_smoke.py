@@ -6610,6 +6610,56 @@ def test_receipts_page_stays_fixed_without_scroll(qt_app, store):
     window.close()
 
 
+def test_receipts_page_fits_into_the_window(qt_app, store):
+    """v0.83.0: страница влезает в окно целиком, прокрутка — в таблице.
+
+    С v0.48.0 страница прокручивалась, и справа появлялась полоса
+    (замечание пользователя: «в предыдущих версиях всё влезало,
+    прокрутка была только в таблице оплаты»). Причина: плашка «Сводка»
+    просит по высоте столько, сколько занимает её содержимое (чем
+    больше видов оплат, тем выше плашка), а ``QScrollArea`` при
+    ``widgetResizable`` берёт эту величину за желаемую высоту страницы
+    — страница растягивалась выше окна. Теперь содержимое просит по
+    высоте только необходимое и встаёт ровно в окно, а прокрутка
+    остаётся там, где она и была, — в таблице «Оплата».
+    """
+
+    from oplata.app import IDX_RECEIPTS, MainWindow
+    from oplata.models import OUTGOING, add_other_payment
+
+    # Много своих видов оплат: таблица «Оплата» заведомо длиннее окна.
+    for index in range(30):
+        add_other_payment(store.data, f"Вид оплаты {index + 1}", "2026-11-10", OUTGOING)
+
+    window = MainWindow(store)
+    window.resize(1920, 1040)
+    window.show()
+    window.show_page(IDX_RECEIPTS)
+    qt_app.processEvents()
+    view = window.receipts_view
+    scroll = view.scroll_area
+    incoming, outgoing = view.blocks
+
+    for height in (1040, 900):
+        window.resize(1920, height)
+        qt_app.processEvents()
+        # Страница встаёт ровно в окно: места хватает, полосы нет.
+        assert scroll.verticalScrollBar().maximum() == 0
+        assert scroll.widget().height() == scroll.viewport().height()
+        # Блоки уложились в отведённую им высоту, не наезжая друг на друга.
+        assert (
+            incoming.height() + view.left_layout.spacing() + outgoing.height()
+            <= view.left.height() + 1
+        )
+        for block in (incoming, outgoing):
+            assert block.height() >= block.minimumHeight()
+
+    # Прокрутка осталась там, где и была, — в таблице «Оплата».
+    assert outgoing.table.verticalScrollBar().isVisible() is True
+    assert outgoing.table.verticalScrollBar().maximum() > 0
+    window.close()
+
+
 def test_money_block_content_stays_inside_its_frame(qt_app, store):
     """v0.48.0: содержимое блока не вылезает за его рамку в тесном окне.
 
