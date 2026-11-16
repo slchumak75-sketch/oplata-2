@@ -6498,7 +6498,8 @@ def test_receipts_page_has_no_vertical_scroll(qt_app, store):
 
     Полоса стояла у правого края, за плашкой «Сводка», и путала:
     казалось, что прокручивается сама сводка (просьба пользователя —
-    убрать). Прежде полоса появлялась по необходимости, а в v0.48.0
+    убрать); без полосы страница стоит неподвижно (v0.82.0). Прежде
+    полоса появлялась по необходимости, а в v0.48.0
     страница не прокручивалась вовсе: рамка «Поступления» сжималась
     (235 точек при содержимом 249) и его таблица с фиксированной
     высотой вылезала наружу, наезжая на блок «Оплата», а «Оплата»
@@ -6542,6 +6543,70 @@ def test_receipts_page_has_no_vertical_scroll(qt_app, store):
     )
     for table in (incoming.table, outgoing.table):
         assert table.horizontalScrollBar().maximum() == 0
+    window.close()
+
+
+def test_receipts_page_stays_fixed_without_scroll(qt_app, store):
+    """v0.82.0: без полосы страница стоит неподвижно.
+
+    В v0.81.0 полосу убрали, но ``QScrollArea`` от этого прокручиваться
+    не перестала, и страница дёргалась вверх-вниз (замечание
+    пользователя): крутилась колесом мыши и — что заметнее всего —
+    сама доезжала до виджета, получившего фокус. Полосы при этом не
+    было видно, поэтому это выглядело как «страница не зафиксирована».
+    Теперь полосы нет и ехать некуда: ни колесо, ни фокус, ни
+    обновление данных не двигают содержимое.
+    """
+
+    from PySide6.QtCore import QPoint
+    from PySide6.QtCore import QPointF
+    from PySide6.QtGui import QWheelEvent
+
+    from oplata.app import IDX_RECEIPTS, MainWindow
+
+    window = MainWindow(store)
+    window.resize(1920, 1040)
+    window.show()
+    window.show_page(IDX_RECEIPTS)
+    qt_app.processEvents()
+    view = window.receipts_view
+    scroll = view.scroll_area
+    content = scroll.widget()
+    assert scroll.verticalScrollBar().isVisible() is False
+
+    def position() -> tuple[int, int]:
+        return (scroll.verticalScrollBar().value(), content.y())
+
+    assert position() == (0, 0)
+
+    # 1. Колесо мыши страницу не крутит.
+    scroll.wheelEvent(
+        QWheelEvent(
+            QPointF(500, 500),
+            QPointF(500, 500),
+            QPoint(0, 0),
+            QPoint(0, -240),
+            Qt.MouseButton.NoButton,
+            Qt.KeyboardModifier.NoModifier,
+            Qt.ScrollPhase.NoScrollPhase,
+            False,
+        )
+    )
+    qt_app.processEvents()
+    assert position() == (0, 0)
+
+    # 2. Клик по нижней ячейке таблицы «Оплата» не уводит страницу:
+    # раньше Qt доезжал до виджета, получившего фокус.
+    outgoing = view.blocks[1].table
+    outgoing.setCurrentCell(outgoing.rowCount() - 1, 2)
+    outgoing.setFocus()
+    qt_app.processEvents()
+    assert position() == (0, 0)
+
+    # 3. Обновление данных тоже не сдвигает страницу.
+    view.refresh()
+    qt_app.processEvents()
+    assert position() == (0, 0)
     window.close()
 
 

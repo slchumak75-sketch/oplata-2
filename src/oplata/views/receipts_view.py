@@ -2031,6 +2031,27 @@ class MoneyBlock(QFrame):
                 btn.setVisible(not read_only)
 
 
+class _FixedScrollArea(QScrollArea):
+    """Область без прокрутки: страница стоит неподвижно (v0.82.0).
+
+    Выключенной полосы (v0.81.0) мало: ``QScrollArea`` от этого
+    прокручиваться не перестаёт — она крутится колесом мыши и, что
+    заметнее всего, сама доезжает до виджета, получившего фокус: стоит
+    кликнуть ячейку в нижней строке таблицы «Оплата», как содержимое
+    уезжает вверх. Полосы при этом не видно, поэтому страница выглядела
+    «незафиксированной» и дёргалась вверх-вниз. Здесь то и другое
+    гасится: полосы нет, значит, и ехать некуда.
+    """
+
+    def wheelEvent(self, event) -> None:  # noqa: N802
+        """Колесо мыши страницу не крутит."""
+
+        event.ignore()
+
+    def ensureWidgetVisible(self, child, xmargin=50, ymargin=50) -> None:
+        """Не доезжаем до виджета с фокусом: страница зафиксирована."""
+
+
 class ReceiptsView(QWidget):
     """Слева блоки «Поступление» и «Оплата», справа — «Сводка»."""
 
@@ -2055,15 +2076,15 @@ class ReceiptsView(QWidget):
         outer = QVBoxLayout(self)
         outer.setContentsMargins(0, 0, 0, 0)
         outer.setSpacing(0)
-        scroll = QScrollArea(self)
+        # v0.82.0: область без прокрутки (класс ниже) — страница стоит
+        # неподвижно. Полоса выключена с v0.81.0 (просьба пользователя):
+        # она стояла у правого края, за плашкой «Сводка», и путала —
+        # казалось, что прокручивается сама сводка.
+        scroll = _FixedScrollArea(self)
         scroll.setWidgetResizable(True)
         scroll.setFrameShape(QFrame.Shape.NoFrame)
         # Горизонтальной прокрутки нет (общее правило таблиц).
         scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
-        # v0.81.0: вертикальной полосы нет вовсе (просьба пользователя):
-        # она стояла у правого края, за плашкой «Сводка», и путала —
-        # казалось, что прокручивается сама сводка. Место под неё тоже
-        # не занимаем: таблицы считают ширину по окну (v0.81.0).
         scroll.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         scroll.setStyleSheet(styles.WIDE_SCROLLBAR_ON_AREA)
         content = QWidget()
@@ -2826,6 +2847,11 @@ class ReceiptsView(QWidget):
                             )
                         ),
                     )
+        # v0.82.0: страница стоит неподвижно — после пересчёта держим
+        # начало. Иначе пересчёт геометрии подтягивал содержимое сам,
+        # и страница сдвигалась под руками.
+        self.scroll_area.verticalScrollBar().setValue(0)
+        self.scroll_area.horizontalScrollBar().setValue(0)
 
 
 def _parse_day(value: str) -> date | None:
