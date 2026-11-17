@@ -88,6 +88,13 @@ class RealizationDialog(QDialog):
 
         root.addWidget(QLabel("Сумма с НДС *"))
         self.amount_edit = make_amount_edit()
+        # v0.84.0: Enter в сумме — то же, что кнопка «Реализация» (сумма
+        # уходит в таблицу, окно закрывается). Раньше Enter срабатывал
+        # как «Закрыть» и введённая сумма пропадала.
+        self.amount_edit.returnPressed.connect(self._save)
+        # v0.84.0: Enter в сумме — то же, что кнопка «Реализация» (сумма
+        # уходит в таблицу, окно закрывается). Раньше Enter срабатывал
+        # как «Закрыть» и введённая сумма пропадала.
         root.addWidget(self.amount_edit)
         amount_hint = QLabel(
             "Одна сумма уже с НДС в руб.; она появится в столбце "

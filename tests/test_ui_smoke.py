@@ -362,6 +362,75 @@ def test_delivery_dialog_saves_and_debt_shows_in_week(qt_app, store):
     window.close()
 
 
+def test_enter_in_delivery_amount_saves_and_closes(qt_app, store):
+    """v0.84.0: Enter в сумме «Поставки» сохраняет её, окно закрывается.
+
+    Раньше Enter в поле суммы срабатывал как кнопка по умолчанию —
+    «Закрыть», — и введённая сумма пропадала (замечание пользователя:
+    «при введении суммы и нажатии ввод окно схлопывалось и сумма сразу
+    заносилась в таблицу»). Теперь Enter — то же, что кнопка «Приход».
+    """
+
+    from datetime import date
+
+    from PySide6.QtCore import Qt
+    from PySide6.QtTest import QTest
+    from PySide6.QtWidgets import QDialog
+
+    from oplata.dialogs.delivery_dialog import DeliveryDialog
+
+    supplier = next(s for s in store.data.suppliers if s.name == "ггг")
+    dialog = DeliveryDialog(store, supplier.id, preset_date=date(2026, 10, 26))
+    dialog.show()
+    dialog.amount_edit.setFocus()
+    dialog.amount_edit.setText("1 000,00")
+    qt_app.processEvents()
+    QTest.keyClick(dialog.amount_edit, Qt.Key.Key_Return)
+    qt_app.processEvents()
+
+    assert dialog.changed is True
+    assert dialog.result() == int(QDialog.DialogCode.Accepted)
+    assert dialog.isVisible() is False, "окно схлопнулось"
+    (op,) = store.data.operations
+    assert (op.kind, op.date, op.due_date, op.amount) == (
+        "Приход",
+        "2026-10-26",
+        "2026-11-05",
+        "1000.00",
+    )
+    dialog.close()
+
+
+def test_escape_closes_delivery_without_saving(qt_app, store):
+    """v0.84.0: Enter сохраняет, но отмена осталась отменой.
+
+    Esc (и кнопка «Закрыть») закрывает окно без сохранения: введённая
+    сумма в базу не попадает.
+    """
+
+    from datetime import date
+
+    from PySide6.QtCore import Qt
+    from PySide6.QtTest import QTest
+    from PySide6.QtWidgets import QDialog
+
+    from oplata.dialogs.delivery_dialog import DeliveryDialog
+
+    supplier = next(s for s in store.data.suppliers if s.name == "ггг")
+    dialog = DeliveryDialog(store, supplier.id, preset_date=date(2026, 10, 26))
+    dialog.show()
+    dialog.amount_edit.setFocus()
+    dialog.amount_edit.setText("7 777,00")
+    qt_app.processEvents()
+    QTest.keyClick(dialog.amount_edit, Qt.Key.Key_Escape)
+    qt_app.processEvents()
+
+    assert dialog.result() == int(QDialog.DialogCode.Rejected)
+    assert dialog.changed is False
+    assert store.data.operations == [], "сумма не сохранилась"
+    dialog.close()
+
+
 def test_operations_journal_shows_name_and_minimizes_previous(qt_app, store):
     """v0.27.3: имя контрагента в шапке журнала, прошлый журнал свёрнут.
 
@@ -1094,6 +1163,47 @@ def test_realization_dialog_saves_without_due_date(qt_app, store):
         "2026-10-27",
         "1250.50",
         "",
+    )
+    dialog.close()
+
+
+def test_enter_in_realization_amount_saves_and_closes(qt_app, store):
+    """v0.84.0: Enter в сумме «Реализации» сохраняет её, окно закрывается.
+
+    Раньше Enter закрывал окно кнопкой «Закрыть», и сумма пропадала
+    (замечание пользователя). Теперь Enter — то же, что кнопка
+    «Реализация»: сумма уходит в базу и видна в таблице покупателей.
+    """
+
+    from datetime import date
+
+    from PySide6.QtCore import Qt
+    from PySide6.QtTest import QTest
+    from PySide6.QtWidgets import QDialog
+
+    from oplata.dialogs.realization_dialog import RealizationDialog
+    from oplata.models import Counterparty
+
+    customer = Counterparty(name="Покупатель В")
+    store.data.customers.append(customer)
+    store.save()
+    dialog = RealizationDialog(store, customer.id, preset_date=date(2026, 10, 27))
+    dialog.show()
+    dialog.amount_edit.setFocus()
+    dialog.amount_edit.setText("2 500,50")
+    qt_app.processEvents()
+    QTest.keyClick(dialog.amount_edit, Qt.Key.Key_Return)
+    qt_app.processEvents()
+
+    assert dialog.changed is True
+    assert dialog.result() == int(QDialog.DialogCode.Accepted)
+    assert dialog.isVisible() is False, "окно схлопнулось"
+    (op,) = store.data.operations
+    assert (op.kind, op.counterparty_id, op.date, op.amount) == (
+        "Реализация",
+        customer.id,
+        "2026-10-27",
+        "2500.50",
     )
     dialog.close()
 
