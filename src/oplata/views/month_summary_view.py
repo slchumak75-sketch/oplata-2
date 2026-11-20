@@ -30,7 +30,7 @@ from __future__ import annotations
 
 from datetime import date
 
-from PySide6.QtCore import QEvent, Qt
+from PySide6.QtCore import QEvent, Qt, QTimer
 from PySide6.QtWidgets import (
     QAbstractItemView,
     QDialog,
@@ -361,6 +361,20 @@ class MonthSummaryDialog(QDialog):
         for column in numeric:
             header.setSectionResizeMode(column, QHeaderView.ResizeMode.Interactive)
             table.setColumnWidth(column, width)
+
+    def showEvent(self, event):  # noqa: N802 - имя из Qt
+        """Пересчитать закреплённые колонки, когда окно уже показано.
+
+        v0.86.0: при первом показе таблица сообщает о размере раньше,
+        чем раскладка доходит до конца, и накладка оставалась короче
+        таблицы на несколько строк — левые колонки обрывались, а
+        выглядело это как «другая таблица, наклеенная сверху». Ждём,
+        пока размер станет настоящим, и переставляем ещё раз.
+        """
+
+        super().showEvent(event)
+        if self.frozen_columns is not None:
+            QTimer.singleShot(0, self.frozen_columns.relayout)
 
     def eventFilter(self, watched, event):  # noqa: N802 - имя из Qt
         """Переставить закреплённые колонки при изменении таблицы."""

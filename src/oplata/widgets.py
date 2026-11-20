@@ -664,6 +664,11 @@ class FrozenColumns(QObject):
         # Сама накладка не должна перехватывать ни фокус, ни ввод:
         # это просто картинка поверх левой части таблицы.
         view.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+        # v0.86.0: накладка — только картинка. Мышь (колесо, клики,
+        # наведение) проходит сквозь неё к основной таблице. Иначе над
+        # левыми колонками прокрутка и наведение вели себя иначе, чем
+        # над правой частью: казалось, что слева лежит отдельная таблица.
+        view.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, True)
         view.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
         view.setSelectionMode(QAbstractItemView.SelectionMode.NoSelection)
         view.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
@@ -678,9 +683,10 @@ class FrozenColumns(QObject):
         for column in range(count, table.columnCount()):
             view.setColumnHidden(column, True)
         # Прокрутка по вертикали — общая с основной таблицей: колесо
-        # над закреплёнными колонками листает обе таблицы.
+        # над закреплёнными колонками листает обе таблицы. Следим только
+        # за основной: значение её полосы и смещение накладки считаются
+        # по-разному (см. ``_follow_main``), поэтому обратной связи нет.
         table.verticalScrollBar().valueChanged.connect(self._follow_main)
-        view.verticalScrollBar().valueChanged.connect(self._follow_frozen)
         # Ширина закреплённых колонок меняется вместе с основной.
         table.horizontalHeader().sectionResized.connect(self._sync_widths)
         view.show()
@@ -693,12 +699,22 @@ class FrozenColumns(QObject):
         table = self.table
         self._sync_widths()
         self._sync_heights()
+        # v0.86.0: у накладки своя рамка — её надо вычесть из смещения,
+        # иначе содержимое (и строки) стоит на 1 px ниже и правее, чем в
+        # таблице: «строки слева немного двигаются вверх-вниз».
         frame = table.frameWidth()
+        own = self.view.frameWidth()
+        header = table.horizontalHeader().height()
+        # Верх накладки ставим так, чтобы **поле строк** началось там же,
+        # где у таблицы: своя шапка накладки встаёт на место шапки
+        # таблицы, а не под неё.
+        top = max(frame + header - own - self.view.horizontalHeader().height(), 0)
         self.view.setGeometry(
-            table.verticalHeader().width() + frame,
-            frame,
-            sum(table.columnWidth(column) for column in range(self.count)),
-            table.horizontalHeader().height() + table.viewport().height(),
+            table.verticalHeader().width() + frame - own,
+            top,
+            sum(table.columnWidth(column) for column in range(self.count))
+            + 2 * own,
+            frame + header + table.viewport().height() - top,
         )
         self.view.raise_()
 
@@ -714,12 +730,22 @@ class FrozenColumns(QObject):
         for row in range(table.rowCount()):
             self.view.setRowHeight(row, table.rowHeight(row))
 
-    def _follow_main(self, value: int) -> None:
-        bar = self.view.verticalScrollBar()
-        if bar.value() != value:
-            bar.setValue(value)
+    def _follow_main(self, _value: int) -> None:
+        """Держать строки накладки там же, где они стоят в таблице.
 
-    def _follow_frozen(self, value: int) -> None:
-        bar = self.table.verticalScrollBar()
-        if bar.value() != value:
-            bar.setValue(value)
+        v0.86.0: основная таблица листается **по строкам**, а накладка —
+        по пикселям, поэтому копировать значение полосы нельзя: «8» у
+        одной значит 8 строк, у другой — 8 пикселей, и строки слева
+        уезжали относительно правой части (замечание пользователя:
+        «левая часть как будто другая наклеенная сверху таблица, в
+        которой строки могут немного двигаться вверх вниз»). Берём
+        настоящее смещение строки в пикселях.
+        """
+
+        table = self.table
+        if table.rowCount() == 0:
+            return
+        offset = -table.rowViewportPosition(0)
+        bar = self.view.verticalScrollBar()
+        if bar.value() != offset:
+            bar.setValue(offset)

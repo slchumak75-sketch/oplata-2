@@ -88,6 +88,12 @@ class ReportRow:
     kind: str = CALCULATED
     # Справочная ставка НДС (0, 20, 25) — только у строк затрат.
     vat_rate: str = ""
+    # Примечание вида оплаты — из его карточки (v0.86.0). У остальных
+    # строк примечания нет.
+    note: str = ""
+    # Суммы из «Оплаты» до ручной правки — только у строк затрат.
+    # По ним видно, что именно поправили в «Отчете» (v0.86.0).
+    from_payments: tuple = ()
     # Жирным: итоговые строки файла.
     bold: bool = False
 
@@ -154,21 +160,82 @@ def quarter_realization(data: AppData, year: int, quarter: int) -> Decimal:
     return total
 
 
-def expense_rows(data: AppData, year: int) -> list[tuple[str, str, tuple]]:
-    """Строки затрат: (название, ставка НДС, суммы по кварталам).
+def expense_key(name: str) -> str:
+    """Ключ строки затрат в файле данных: ``expense:<название вида>``."""
+
+    return f"expense:{name}"
+
+
+@dataclass(frozen=True)
+class ExpenseRow:
+    """Строка затрат «Отчета» — вид оплаты из блока «Оплата» (v0.86.0)."""
+
+    name: str
+    note: str
+    vat_rate: str
+    quarters: tuple[Decimal, Decimal, Decimal, Decimal]
+    # Какие кварталы введены руками в «Отчете» (индексы 0…3).
+    manual_quarters: tuple[int, ...] = ()
+    # Суммы из «Оплаты» до правки — чтобы показать их в подсказке.
+    from_payments: tuple[Decimal, Decimal, Decimal, Decimal] = (
+        ZERO, ZERO, ZERO, ZERO,
+    )
+
+    @property
+    def total(self) -> Decimal:
+        return sum(self.quarters, ZERO)
+
+
+def expense_rows(
+    data: AppData,
+    year: int,
+    report: OrganizationReport | None = None,
+) -> list[ExpenseRow]:
+    """Строки затрат: вид оплаты, примечание, ставка НДС и суммы.
 
     Берём «Сводку оплат» — там по строке на каждый вид оплаты с суммами
     по месяцам и кварталам. Строку «Поставщики» пропускаем: оплаты
     поставщикам в отчёте отдельной строкой не идут (в файле такой
     строки нет).
+
+    **v0.86.0: затраты можно поправить вручную.** Правка живёт только
+    внутри «Отчета»: введённое число заменяет сумму из «Оплаты» за этот
+    квартал, а сами оплаты не меняются. Поэтому «Оплата» и «Отчет»
+    после правки расходятся — так и задумано (правило пользователя:
+    «правки в таблице отчет влияют только на данные и результат в
+    таблице отчет, в обратную сторону на оплаты они не влияют»).
+    Пустая клетка — снова сумма из «Оплаты».
     """
 
     summary = calc.payments_summary(data, year)
-    result: list[tuple[str, str, tuple]] = []
+    notes = calc.outgoing_notes(data)
+    manual = report if report is not None else getattr(
+        data, "org_report", OrganizationReport()
+    )
+    result: list[ExpenseRow] = []
     for row in summary.rows:
         if row.name == calc.SUPPLIERS_PAYMENTS_TITLE:
             continue
-        result.append((row.name, row.vat_rate, tuple(row.quarters)))
+        key = expense_key(row.name)
+        quarters: list[Decimal] = []
+        edited: list[int] = []
+        for number in range(4):
+            entered = manual.quarter(year, key, number)
+            if str(entered or "").strip():
+                quarters.append(_money(entered))
+                edited.append(number)
+            else:
+                quarters.append(row.quarters[number])
+        result.append(
+            ExpenseRow(
+                name=row.name,
+                note=notes.get(row.name, ""),
+                vat_rate=row.vat_rate,
+                quarters=tuple(quarters),  # type: ignore[arg-type]
+                manual_quarters=tuple(edited),
+                from_payments=tuple(row.quarters),  # type: ignore[arg-type]
+            )
+        )
     return result
 
 
@@ -240,9 +307,10 @@ def organization_report(
     incoming = entered(INCOMING_VAT_ROW)
     cost_sale = entered(COST_SALE_ROW)
 
-    expenses = expense_rows(data, year)
+    expenses = expense_rows(data, year, manual)
     expense_quarters = [
-        sum((row[2][number] for row in expenses), ZERO) for number in range(4)
+        sum((row.quarters[number] for row in expenses), ZERO)
+        for number in range(4)
     ]
     cost_expenses = tuple(expense_quarters)
 
@@ -335,15 +403,17 @@ def organization_report(
             bold=True,
         ),
     ]
-    for name, vat_rate, quarters in expenses:
+    for expense in expenses:
         rows.append(
             ReportRow(
-                key=f"expense:{name}",
-                title=name,
-                quarters=tuple(quarters),  # type: ignore[arg-type]
-                total=sum(quarters, ZERO),
+                key=expense_key(expense.name),
+                title=expense.name,
+                quarters=expense.quarters,
+                total=expense.total,
                 kind=EXPENSE,
-                vat_rate=vat_rate,
+                vat_rate=expense.vat_rate,
+                note=expense.note,
+                from_payments=expense.from_payments,
             )
         )
     return OrganizationReportData(year=year, rows=tuple(rows))
