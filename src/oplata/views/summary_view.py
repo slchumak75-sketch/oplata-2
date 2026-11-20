@@ -8,6 +8,11 @@
   просрочено и оплата понедельно на три недели вперёд;
 * «Месяц» — итоги реестра «Отчеты ККМ» за весь месяц (v0.43.0).
 
+v0.85.0: слова «Поступление» и «Оплата» в блоках и слово «Сводка»
+здесь — **кнопки** (просьба пользователя): «Сводка» открывает журнал
+движения средств, блоки — свои сводки. Плашка больше не сворачивается,
+а внизу её осталась одна кнопка — «Отчет».
+
 Цифры считает ``calc`` простыми суммами по сохранённым данным; долг
 берётся архивным графиком сроков (оплата долг не уменьшает —
 требование v0.3.1). Печать не добавляет формул: она оформляет ровно
@@ -38,11 +43,11 @@ from .. import calc, styles
 from ..dates import fmt_money_plain
 from ..storage import DataStore
 from ..widgets import (
-    CollapsiblePanel,
     arrow_button,
     date_edit_value,
     fit_date_edit_width,
     make_date_edit,
+    panel_title_button,
 )
 
 # v0.71.0: стрелки в шапке «Сводки» у́же обычных (44 px вместо 52):
@@ -143,19 +148,30 @@ class SummaryView(QWidget):
         root.addLayout(tools)
 
         # --- плашка со всеми строками ---
-        self.panel = CollapsiblePanel("Сводка", expanded=True)
-        # Заголовок «Сводка» — тем же шрифтом, что и заголовки блоков
-        # «Поступление»/«Оплата» (v0.15.0); подзаголовки блоков внутри
-        # мельче (см. ``_add_section``).
-        self.panel.toggle.setStyleSheet(
-            "QPushButton{background:transparent;border:none;text-align:left;"
-            # v0.23.6: шрифт панели «Сводка» крупнее обычного на 50%.
-            f"padding:2px 0;font-weight:800;font-size:{styles.fs_summary(15)}px;"
-            f"color:{styles.TEXT}}}"
-            "QPushButton:hover{background:transparent}"
+        # v0.85.0: плашка больше **не сворачивается** (просьба
+        # пользователя), а слово «Сводка» стало кнопкой: по нажатию
+        # открывается журнал движения средств — раньше за него отвечала
+        # кнопка внизу плашки.
+        self.panel = QFrame()
+        self.panel.setObjectName("Panel")
+        panel_layout = QVBoxLayout(self.panel)
+        panel_layout.setContentsMargins(14, 10, 14, 10)
+        panel_layout.setSpacing(8)
+        header_row = QHBoxLayout()
+        header_row.setContentsMargins(0, 0, 0, 0)
+        self.title_button = panel_title_button(
+            "Сводка",
+            styles.fs_summary(15),
+            "Журнал движения средств за 30 дней",
         )
-        content = self.panel.content_layout
+        self.title_button.clicked.connect(self._open_funds_movement)
+        header_row.addWidget(self.title_button)
+        header_row.addStretch(1)
+        panel_layout.addLayout(header_row)
+
+        content = QVBoxLayout()
         content.setSpacing(4)  # v0.43.0: плашка целиком на экране
+        panel_layout.addLayout(content)
 
         self._add_section(
             content,
@@ -213,40 +229,21 @@ class SummaryView(QWidget):
         )
         root.addWidget(self.panel)
 
-        # --- v0.33.0: три кнопки — внизу панели, в столбик: сводка
-        # поступлений, сводка оплат, журнал движения средств. Раньше
-        # кнопки сводок стояли в самом верху (v0.32.0), а журнал — в
-        # шапке рядом с переключателем архивных. ---
-        summaries = QVBoxLayout()
-        summaries.setSpacing(4)
-        # v0.43.0: кнопки стоят плотнее — плашка должна влезть целиком
-        # на экран 768 точек по высоте.
-        summaries.setContentsMargins(0, 2, 0, 0)
-        self.incoming_summary_button = QPushButton("Сводка поступлений")
-        self.incoming_summary_button.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.incoming_summary_button.setToolTip(
-            "Поступления помесячно, поквартально и за год по активной базе"
+        # --- v0.85.0: три прежние кнопки («Сводка поступлений»,
+        # «Сводка оплат», «Журнал движения средств») убраны — их работу
+        # делают заголовки-кнопки блоков и плашки. Внизу осталась одна
+        # кнопка — «Отчет» (просьба пользователя).
+        buttons = QHBoxLayout()
+        buttons.setContentsMargins(0, 2, 0, 0)
+        self.report_button = QPushButton("Отчет")
+        self.report_button.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.report_button.setToolTip(
+            "Отчет по организации: выручка, НДС, затраты и прибыль "
+            "по кварталам"
         )
-        self.incoming_summary_button.clicked.connect(self._open_incoming_summary)
-        summaries.addWidget(self.incoming_summary_button)
-
-        self.payments_summary_button = QPushButton("Сводка оплат")
-        self.payments_summary_button.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.payments_summary_button.setToolTip(
-            "Оплаты помесячно, поквартально и за год по активной базе"
-        )
-        self.payments_summary_button.clicked.connect(self._open_payments_summary)
-        summaries.addWidget(self.payments_summary_button)
-
-        self.movement_button = QPushButton("Журнал движения средств")
-        self.movement_button.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.movement_button.setToolTip(
-            "Поступления и оплаты за последние 30 дней с остатком по каждой "
-            "записи"
-        )
-        self.movement_button.clicked.connect(self._open_funds_movement)
-        summaries.addWidget(self.movement_button)
-        root.addLayout(summaries)
+        self.report_button.clicked.connect(self._open_report)
+        buttons.addWidget(self.report_button)
+        root.addLayout(buttons)
 
         root.addStretch(1)
 
@@ -339,6 +336,14 @@ class SummaryView(QWidget):
         return self._captions[key].text()
 
     # --------------------------------------------------------------- журнал
+    def _open_report(self) -> None:
+        """Открыть «Отчет по организации» за год из «Сводки» (v0.85.0)."""
+
+        from .org_report_view import OrganizationReportDialog
+
+        dialog = OrganizationReportDialog(self.store, self.current_date(), self)
+        dialog.exec()
+
     def _open_funds_movement(self) -> None:
         """Открыть журнал движения средств за 30 дней (v0.22.1)."""
 

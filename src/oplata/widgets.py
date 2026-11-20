@@ -195,6 +195,40 @@ def green_button(text: str) -> QPushButton:
     return btn
 
 
+def panel_title_button(
+    text: str,
+    font_size: int | None = None,
+    tooltip: str = "",
+) -> QPushButton:
+    """Заголовок плашки в виде кнопки (v0.85.0).
+
+    Просьба пользователя: слова «Поступление», «Оплата» и «Сводка» —
+    кнопки, по нажатию открывается своя таблица (сводка поступлений,
+    сводка оплат, журнал движения средств). Шрифт — как у прежних
+    заголовков-подписей (жирный, крупный), но с рамкой и подсветкой,
+    чтобы было видно: это кнопка, а не подпись.
+    """
+
+    button = QPushButton(text)
+    button.setObjectName("PanelTitleButton")
+    size = f"font-size:{font_size}px;" if font_size else ""
+    button.setStyleSheet(
+        "QPushButton#PanelTitleButton{"
+        f"background:{styles.PANEL_BG};border:1px solid {styles.BORDER};"
+        "border-radius:8px;text-align:left;padding:4px 12px;"
+        f"font-weight:800;{size}color:{styles.TEXT}}}"
+        "QPushButton#PanelTitleButton:hover{"
+        f"background:{styles.ACCENT};border-color:{styles.ACCENT};color:#fff}}"
+        "QPushButton#PanelTitleButton:pressed{"
+        f"background:{styles.ACCENT_HOVER};border-color:{styles.ACCENT_HOVER};"
+        "color:#fff}"
+    )
+    button.setCursor(Qt.CursorShape.PointingHandCursor)
+    if tooltip:
+        button.setToolTip(tooltip)
+    return button
+
+
 def blue_button(text: str) -> QPushButton:
     btn = QPushButton(text)
     btn.setStyleSheet(
