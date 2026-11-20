@@ -847,3 +847,208 @@ def test_funds_movement_puts_customer_payment_into_income_column():
     ]
     assert movement.income == Decimal("1500")
     assert movement.payments == Decimal("1000")
+
+
+# ----------------------------------------------------- Отчет по организации
+# v0.85.0: таблица построена по файлу «ОТЧЕТ ПО ОРГАНИЗАЦИИ мир 2.xlsx».
+# В тесте данные подобраны так, чтобы получить ровно цифры файла: если
+# расчёт разойдётся хоть на копейку, тест это покажет.
+_Мир2_ККМ = ("222089.52", "524274.57", "565032.51")
+_Мир2_Накладные = ("36733.92", "61764.70", "58110.19")
+_Мир2_Ручные = {
+    "vat_sale": ("5807.67", "10020.50", "9457.61", ""),
+    "goods_no_vat": ("7661.50", "9285.49", "11791.00", ""),
+    "incoming_vat": ("35039.46", "85114.45", "66373.75", ""),
+    "cost_realization": ("152812.90", "344951.64", "368269.77", ""),
+}
+_Мир2_Затраты = (
+    ("фонд заработной платы", "", ("32789.98", "43329.24", "44803.28")),
+    ("фзн", "", ("11148.59", "15165.15", "15681.15")),
+    ("бензин", "20", ("1340.01", "1408.94", "1124.48")),
+    ("амортизация основных средств", "", ("0", "407.41", "1222.23")),
+    ("аренда", "", ("4037.76", "4037.76", "4037.76")),
+    ("комунальные услуги", "20", ("2687.41", "2255.60", "2411.70")),
+    ("комунальные услуги (без НДС)", "", ("1441.08", "1559.27", "1340.31")),
+    ("транспортные услуги", "20", ("125.00", "1660.00", "1085.00")),
+    ("транспортные услуги (без НДС)", "", ("800.00", "4960.00", "4250.00")),
+    ("обслуживание компьютера", "", ("900.00", "900.00", "900.00")),
+    ("телефон интернет", "25", ("199.00", "194.35", "191.88")),
+    ("услуги банка", "", ("2203.94", "5186.01", "5943.07")),
+    ("обсл.кассы (МИКС)", "20", ("210.00", "210.00", "210.00")),
+    ("обс.КСА (Забелла)", "20", ("192.00", "192.00", "192.00")),
+    ("товары приобритение", "20", ("763.51", "675.26", "198.25")),
+    ("списание товара собств.нужды", "20", ("433.81", "2807.80", "988.66")),
+    ("Завадский (1С)", "", ("2070.00", "1060.00", "120.00")),
+    ("услуги больница", "20", ("77.25", "0", "0")),
+    ("Забелла лицензия", "20", ("0", "828.00", "0")),
+    ("обслуж.терм. (Туссон)", "20", ("0", "120.00", "120.00")),
+    ("ТН Накладные", "20", ("0", "42.00", "42.00")),
+    ("инвест.вычет", "", ("0", "0", "11733.32")),
+    ("обслуж.эл.тг эрспектр", "20", ("0", "0", "218.88")),
+    ("журнал", "20", ("0", "0", "157.80")),
+)
+
+
+def _мир2() -> tuple[AppData, "OrganizationReport"]:
+    """Данные, из которых получается ровно файл «мир 2»."""
+
+    from oplata.models import (
+        KkmReport,
+        OrganizationReport,
+        OtherPayment,
+        add_realization,
+    )
+
+    data = AppData()
+    customer = Counterparty(name="Покупатель")
+    data.customers.append(customer)
+    months = ((1, 2, 3), (4, 5, 6), (7, 8, 9))
+    for quarter, quarter_months in enumerate(months):
+        middle = quarter_months[1]
+        data.kkm_reports.append(
+            KkmReport(date=f"2026-{middle:02d}-15", amount=_Мир2_ККМ[quarter])
+        )
+        # Реализация именно по накладной (``invoiced``): в отчёт идёт
+        # «Реализация Покупателям» из «Сводки».
+        operation = add_realization(
+            data, customer.id, f"2026-{middle:02d}-10", Decimal(_Мир2_Накладные[quarter])
+        )
+        operation.invoiced = True
+        for name, vat_rate, amounts in _Мир2_Затраты:
+            data.other_payments.append(
+                OtherPayment(
+                    date=f"2026-{middle:02d}-05",
+                    name=name,
+                    amount=amounts[quarter],
+                    direction="out",
+                    vat_rate=vat_rate,
+                )
+            )
+
+    report = OrganizationReport()
+    for key, values in _Мир2_Ручные.items():
+        for quarter, value in enumerate(values):
+            report.set_quarter(2026, key, quarter, value)
+    return data, report
+
+
+def test_organization_report_matches_the_xlsx_file():
+    """v0.85.0: «Отчет» повторяет файл «мир 2» до копейки.
+
+    Проверяются все строки, которые в файле заполнены: 1кв, 2кв, 3кв и
+    «Итого». Формулы взяты из файла (см. ``report.py``).
+    """
+
+    from oplata import report as report_calc
+
+    data, manual = _мир2()
+    report = report_calc.organization_report(data, 2026, manual)
+
+    # (ключ строки, 1кв, 2кв, 3кв, «Итого») — значения из файла.
+    expected = (
+        ("vat_tax", "7858.08", "12384.12", "36759.55", "57001.75"),
+        ("profit_tax", "546.18", "11592.64", "11201.84", "23340.66"),
+        ("profit", "2730.88", "57963.21", "56009.21", "116703.30"),
+        ("net_profit", "2184.70", "46370.57", "44807.37", "93362.64"),
+        ("emission_kkm", "222089.52", "524274.57", "565032.51", "1311396.60"),
+        ("sale_invoiced", "36733.92", "61764.70", "58110.19", "156608.81"),
+        ("revenue_total", "258823.44", "586039.27", "623142.70", "1468005.41"),
+        ("vat_kkm", "36052.65", "86105.13", "92434.34", "214592.12"),
+        ("vat_sale", "5807.67", "10020.50", "9457.61", "25285.78"),
+        ("vat_total", "41860.32", "96125.63", "101891.95", "239877.90"),
+        ("goods_no_vat", "7661.50", "9285.49", "11791.00", "28737.99"),
+        ("vat_deduction", "1037.21", "1372.94", "1241.35", "3651.51"),
+        ("incoming_vat", "35039.46", "85114.45", "66373.75", "186527.66"),
+        ("incoming_vat_net", "34002.25", "83741.51", "65132.40", "182876.15"),
+        ("cost_realization", "152812.90", "344951.64", "368269.77", "866034.31"),
+        ("cost_expenses", "61419.34", "86998.79", "96971.77", "245389.90"),
+    )
+    for key, *values in expected:
+        for index, want in enumerate(values):
+            # 1кв…3кв — столбцы 0…2, «Итого» — столбец 4.
+            column = index if index < 3 else 4
+            got = report.value(key, column)
+            assert abs(got - Decimal(want)) <= Decimal("0.01"), (
+                f"{key}, столбец {column}: {got} вместо {want}"
+            )
+
+
+def test_organization_report_deduction_total_is_its_own_formula():
+    """v0.85.0: «Итого» по вычету считается за год, а не сложением.
+
+    В файле «Итого» строки «Вычет по товарам без НДС» на копейку
+    больше суммы кварталов (3651,51 против 3651,50): у неё своя формула
+    ``R[-1]C/R[-5]C*R[1]C``. Повторяем ровно это.
+    """
+
+    from oplata import report as report_calc
+
+    data, manual = _мир2()
+    report = report_calc.organization_report(data, 2026, manual)
+    row = report.row("vat_deduction")
+    total = row.total
+    quarters = sum(row.quarters, Decimal("0"))
+    assert round(total, 2) == Decimal("3651.51")
+    assert round(quarters, 2) == Decimal("3651.51")  # сходится, 4кв = 0
+    # 4 квартал — остаток до «Итого» (в файле 0).
+    assert round(row.quarters[3], 2) == Decimal("0")
+
+
+def test_organization_report_expenses_skip_suppliers_and_keep_vat():
+    """v0.85.0: затраты — виды оплат, кроме «Поставщики», с их НДС."""
+
+    from oplata import report as report_calc
+    from oplata.models import OtherPayment, add_supplier_payment
+
+    data = AppData()
+    supplier = Counterparty(name="Поставщик")
+    data.suppliers.append(supplier)
+    add_supplier_payment(data, supplier.id, "2026-02-10", Decimal("9999"))
+    data.other_payments.append(
+        OtherPayment(
+            date="2026-02-05",
+            name="Аренда",
+            amount="1000",
+            direction="out",
+            vat_rate="20",
+        )
+    )
+    report = report_calc.organization_report(data, 2026)
+    names = [row.title for row in report.rows]
+    assert "Поставщик" not in names and "Поставщики" not in names
+    expense = next(row for row in report.rows if row.title == "Аренда")
+    assert expense.expense is True
+    assert expense.vat_rate == "20"
+    assert expense.quarters[0] == Decimal("1000")
+    # «Себестоимость затрат без НДС» — сумма строк затрат: поставщик
+    # (9999) в неё не попал.
+    assert report.value("cost_expenses", 0) == Decimal("1000")
+
+
+def test_organization_report_quarter_four_is_empty_without_data():
+    """v0.85.0: пустой квартал — нули, а не ошибка."""
+
+    from oplata import report as report_calc
+
+    data, manual = _мир2()
+    report = report_calc.organization_report(data, 2026, manual)
+    for key in ("emission_kkm", "sale_invoiced", "revenue_total", "vat_total"):
+        assert report.value(key, 3) == Decimal("0")
+
+
+def test_organization_report_manual_values_survive_saving(tmp_path):
+    """v0.85.0: введённые вручную цифры сохраняются в data.json."""
+
+    from oplata.models import OrganizationReport
+    from oplata.storage import DataStore
+
+    store = DataStore(tmp_path / "data.json")
+    store.data.org_report.set_quarter(2026, "incoming_vat", 1, "1 234,56")
+    store.save()
+
+    again = DataStore(tmp_path / "data.json")
+    assert again.data.org_report.quarter(2026, "incoming_vat", 1) == "1 234,56"
+    # Пустая клетка и чужой год — не заполнено.
+    assert again.data.org_report.quarter(2026, "incoming_vat", 0) == ""
+    assert again.data.org_report.quarter(2025, "incoming_vat", 1) == ""
+    assert OrganizationReport.from_dict(None).years == {}

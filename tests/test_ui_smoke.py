@@ -2675,7 +2675,11 @@ def test_summary_panel_font_is_larger_others_unchanged(qt_app, store):
     window = MainWindow(store)
     summary = window.summary_view
     # Кегли блоков «Сводки» — крупнее обычных.
-    assert summary.panel.toggle.font().pixelSize() == styles.fs_summary(15)
+    # v0.85.0: «Сводка» — кнопка (открывает журнал движения средств),
+    # шрифт у неё прежний, крупный.
+    window.show()
+    qt_app.processEvents()
+    assert summary.title_button.font().pixelSize() == styles.fs_summary(15)
     caption = next(iter(summary._captions.values()))
     value = next(iter(summary._values.values()))
     assert caption.font().pixelSize() == styles.fs_summary(12)
@@ -5104,30 +5108,21 @@ def test_payments_summary_button_opens_monthly_table(qt_app, store, monkeypatch)
     window.show()
     qt_app.processEvents()
 
-    summary = window.summary_view
-    assert summary.incoming_summary_button.text() == "Сводка поступлений"
-    assert summary.payments_summary_button.text() == "Сводка оплат"
-    # v0.33.0: три кнопки — внизу панели, одна под другой: сводка
-    # поступлений, сводка оплат, журнал движения средств.
-    assert summary.incoming_summary_button.isVisible()
-    assert summary.payments_summary_button.isVisible()
-    assert summary.movement_button.isVisible()
-    assert (
-        summary.incoming_summary_button.pos().y()
-        < summary.payments_summary_button.pos().y()
-        < summary.movement_button.pos().y()
-    )
-    # Все три — под плашкой «Сводка» (v0.32.0 было наоборот).
-    assert summary.incoming_summary_button.pos().y() > summary.panel.pos().y()
-    # Переключатель архивных остался в шапке.
-    assert summary.show_archived.pos().y() < summary.panel.pos().y()
+    # v0.85.0: сводки открываются заголовками-кнопками блоков:
+    # «Поступление» — сводка поступлений, «Оплата» — сводка оплат
+    # (просьба пользователя). Внизу плашки «Сводка» их больше нет.
+    receipts = window.receipts_view
+    assert receipts.incoming.title_button.text() == "Поступление"
+    assert receipts.outgoing.title_button.text() == "Оплата"
+    assert receipts.incoming.title_button.isVisible()
+    assert receipts.outgoing.title_button.isVisible()
 
     opened: list[object] = []
     monkeypatch.setattr(
         "oplata.views.payments_summary_view.PaymentsSummaryDialog.exec",
         lambda self, *args, **kwargs: opened.append(self) or True,
     )
-    summary.payments_summary_button.click()
+    receipts.outgoing.title_button.click()
 
     assert len(opened) == 1, "кнопка не открыла окно сводки оплат"
     dialog = opened[0]
@@ -5295,7 +5290,7 @@ def test_incoming_summary_button_opens_monthly_table(qt_app, store, monkeypatch)
         "oplata.views.incoming_summary_view.IncomingSummaryDialog.exec",
         lambda self, *args, **kwargs: opened.append(self) or True,
     )
-    window.summary_view.incoming_summary_button.click()
+    window.receipts_view.incoming.title_button.click()
 
     assert len(opened) == 1, "кнопка не открыла окно сводки поступлений"
     dialog = opened[0]
@@ -5441,8 +5436,14 @@ def test_vat_rate_kept_on_duplicate(qt_app, store, monkeypatch):
     window.close()
 
 
-def test_summary_buttons_stay_under_the_panel(qt_app, store):
-    """v0.33.0: три кнопки — внизу панели «Сводка», в столбик."""
+def test_summary_bottom_has_only_the_report_button(qt_app, store):
+    """v0.85.0: внизу плашки «Сводка» — одна кнопка «Отчет».
+
+    Просьба пользователя: «Кнопки справа внизу убрать (Сводки и
+    журнал). Справа внизу сделать кнопку "Отчет"». Сводки и журнал
+    теперь открываются заголовками-кнопками: «Поступление», «Оплата» и
+    «Сводка».
+    """
     from oplata.app import MainWindow
 
     window = MainWindow(store)
@@ -5450,22 +5451,19 @@ def test_summary_buttons_stay_under_the_panel(qt_app, store):
     qt_app.processEvents()
     summary = window.summary_view
 
-    # Кнопка журнала переехала из шапки вниз: в шапке остался только
-    # переключатель архивных.
+    # Старых кнопок больше нет.
+    for gone in (
+        "incoming_summary_button",
+        "payments_summary_button",
+        "movement_button",
+    ):
+        assert not hasattr(summary, gone), f"кнопка {gone} должна была уйти"
+    # Внизу плашки — «Отчет», под плашкой и в одной колонке с ней.
+    assert summary.report_button.text() == "Отчет"
+    assert summary.report_button.isVisible()
+    assert summary.report_button.pos().y() > summary.panel.pos().y()
+    # Переключатель архивных остался в шапке, над плашкой.
     assert summary.show_archived.pos().y() < summary.panel.pos().y()
-    assert summary.movement_button.pos().y() > summary.panel.pos().y()
-    assert (
-        summary.incoming_summary_button.pos().y()
-        < summary.payments_summary_button.pos().y()
-        < summary.movement_button.pos().y()
-    )
-    assert summary.incoming_summary_button.pos().y() > summary.panel.pos().y()
-    # Все кнопки — в одной колонке (один и тот же левый край).
-    assert (
-        summary.incoming_summary_button.pos().x()
-        == summary.payments_summary_button.pos().x()
-        == summary.movement_button.pos().x()
-    )
     window.close()
 
 
@@ -11939,4 +11937,227 @@ def test_clear_tables_empties_only_amounts(qt_app, store, monkeypatch):
         "офис",
         ["2026-11-05"],
     )
+    window.close()
+
+
+# ----------------------------------------------------- Отчет (v0.85.0)
+def test_report_button_opens_organization_report(qt_app, store):
+    """v0.85.0: кнопка «Отчет» открывает таблицу по файлу «мир 2».
+
+    Просьба пользователя: «Справа внизу сделать кнопку "Отчет". При
+    нажатии этой кнопки нужно сделать отчет на основании файла…».
+    """
+
+    from oplata.app import MainWindow
+
+    window = MainWindow(store)
+    window.show()
+    qt_app.processEvents()
+
+    opened: list[object] = []
+    import oplata.views.org_report_view as report_view
+
+    original = report_view.OrganizationReportDialog.exec
+    report_view.OrganizationReportDialog.exec = (
+        lambda self, *args, **kwargs: opened.append(self) or True
+    )
+    try:
+        window.summary_view.report_button.click()
+    finally:
+        report_view.OrganizationReportDialog.exec = original
+
+    assert len(opened) == 1, "кнопка «Отчет» не открыла окно"
+    dialog = opened[0]
+    table = dialog.table
+    assert dialog.windowTitle().startswith("Отчет")
+    headers = [
+        table.horizontalHeaderItem(column).text()
+        for column in range(table.columnCount())
+    ]
+    # Столбцы — как в файле: название, НДС справочно, кварталы, «Итого».
+    assert headers == ["Наименование", "НДС", "1кв", "2кв", "3кв", "4кв", "Итого"]
+    names = [table.item(row, 0).text() for row in range(table.rowCount())]
+    # Порядок строк — как в файле (он начинается с итогов).
+    assert names[:6] == [
+        "Налог НДС",
+        "Налог на прибыль",
+        "Прибыль",
+        "Чистая прибыль",
+        "Выручка по отчетам ККМ с НДС",
+        "Реализация (Накладные) с НДС",
+    ]
+    assert "Себестоимость затрат без НДС" in names
+    dialog.close()
+    window.close()
+
+
+def test_report_cells_are_editable_only_for_manual_rows(qt_app, store):
+    """v0.85.0: руками заполняются только четыре строки бухгалтерии."""
+
+    from datetime import date
+
+    from PySide6.QtCore import Qt
+
+    from oplata.views.org_report_view import OrganizationReportDialog
+
+    dialog = OrganizationReportDialog(store, date(2026, 5, 5))
+    dialog.show()
+    qt_app.processEvents()
+    table = dialog.table
+    names = [table.item(row, 0).text() for row in range(table.rowCount())]
+
+    manual_titles = (
+        "НДС Реализация (Накладные)",
+        "Товары реализация без НДС",
+        "Входящий НДС",
+        "Себестоимость реализация без НДС",
+    )
+    for title in manual_titles:
+        row = names.index(title)
+        flags = table.item(row, 2).flags()
+        assert flags & Qt.ItemFlag.ItemIsEditable, f"{title} должна правиться"
+    # Расчётные строки не правятся: их считает программа.
+    for title in ("Итого НДС", "Прибыль", "Налог на прибыль"):
+        row = names.index(title)
+        flags = table.item(row, 2).flags()
+        assert not (flags & Qt.ItemFlag.ItemIsEditable), f"{title} — расчётная"
+    # Колонка «Итого» и справочный НДС не правятся никогда.
+    row = names.index("Входящий НДС")
+    assert not (table.item(row, 6).flags() & Qt.ItemFlag.ItemIsEditable)
+    assert not (table.item(row, 1).flags() & Qt.ItemFlag.ItemIsEditable)
+    dialog.close()
+
+
+def test_report_manual_value_is_saved_and_recalculates(qt_app, store):
+    """v0.85.0: введённая цифра сохраняется и пересчитывает таблицу."""
+
+    from datetime import date
+
+    from oplata.models import KkmReport
+    from oplata.views.org_report_view import OrganizationReportDialog
+
+    store.data.kkm_reports.append(KkmReport(date="2026-02-10", amount="120000"))
+    store.save()
+    dialog = OrganizationReportDialog(store, date(2026, 5, 5))
+    dialog.show()
+    qt_app.processEvents()
+    table = dialog.table
+    names = [table.item(row, 0).text() for row in range(table.rowCount())]
+    row = names.index("НДС Реализация (Накладные)")
+
+    # 1кв: НДС с выручки 120 000 − 120 000/1,2 = 20 000; минус 6 000 = 14 000.
+    table.item(row, 2).setText("6 000,00")
+    qt_app.processEvents()
+
+    assert store.data.org_report.quarter(2026, "vat_sale", 0) == "6 000,00"
+    assert dialog.table.item(row, 2).text() == "6 000,00"
+    vat_kkm_row = names.index("НДС Выручка по отчетам ККМ")
+    assert dialog.table.item(vat_kkm_row, 2).text() == "14 000,00"
+
+    # Мусор в клетке не портит данные и возвращает прежнее значение.
+    dialog.table.item(row, 2).setText("abc")
+    qt_app.processEvents()
+    assert store.data.org_report.quarter(2026, "vat_sale", 0) == "6 000,00"
+    assert dialog.table.item(row, 2).text() == "6 000,00"
+
+    # Пустая клетка — «не заполнено».
+    dialog.table.item(row, 2).setText("")
+    qt_app.processEvents()
+    assert store.data.org_report.quarter(2026, "vat_sale", 0) == ""
+    dialog.close()
+
+
+def test_report_expenses_are_yellow_and_come_with_vat(qt_app, store):
+    """v0.85.0: затраты — жёлтые, НДС справочно — из карточки вида."""
+
+    from datetime import date
+
+    from oplata.models import OtherPayment
+    from oplata.views.org_report_view import EXPENSE_BG, OrganizationReportDialog
+
+    store.data.other_payments = [
+        OtherPayment(
+            date="2026-02-05", name="Аренда", amount="1000", direction="out",
+            vat_rate="20",
+        ),
+        OtherPayment(
+            date="2026-05-05", name="Телефон интернет", amount="300",
+            direction="out", vat_rate="25",
+        ),
+    ]
+    store.save()
+    dialog = OrganizationReportDialog(store, date(2026, 5, 5))
+    dialog.show()
+    qt_app.processEvents()
+    table = dialog.table
+    names = [table.item(row, 0).text() for row in range(table.rowCount())]
+
+    rent = names.index("Аренда")
+    assert table.item(rent, 0).background().color().name() == EXPENSE_BG.name()
+    assert table.item(rent, 1).text() == "20 %"
+    assert table.item(rent, 2).text() == "1 000,00"
+    phone = names.index("Телефон интернет")
+    assert table.item(phone, 1).text() == "25 %"
+    # «Себестоимость затрат без НДС» — сумма строк затрат за квартал:
+    # 1кв — аренда (февраль), 2кв — телефон (май).
+    expenses = names.index("Себестоимость затрат без НДС")
+    assert table.item(expenses, 2).text() == "1 000,00"
+    assert table.item(expenses, 3).text() == "300,00"
+    # «Поставщики» отдельной строкой в отчёт не идут.
+    assert "Поставщики" not in names
+    dialog.close()
+
+
+def test_summary_title_is_a_button_that_opens_movement_journal(qt_app, store, monkeypatch):
+    """v0.85.0: «Сводка» — кнопка журнала, плашка не сворачивается."""
+
+    from oplata.app import MainWindow
+
+    window = MainWindow(store)
+    window.show()
+    qt_app.processEvents()
+    summary = window.summary_view
+
+    assert summary.title_button.text() == "Сводка"
+    # Просьба пользователя: плашку не делать сворачивающейся.
+    assert not hasattr(summary.panel, "toggle_expanded")
+
+    opened: list[object] = []
+    monkeypatch.setattr(
+        "oplata.views.funds_view.FundsMovementDialog.exec",
+        lambda self, *args, **kwargs: opened.append(self) or True,
+    )
+    summary.title_button.click()
+    assert len(opened) == 1, "«Сводка» не открыла журнал движения средств"
+    assert opened[0].windowTitle().startswith("Журнал")
+    window.close()
+
+
+def test_block_titles_are_buttons_of_their_summaries(qt_app, store, monkeypatch):
+    """v0.85.0: «Поступление» и «Оплата» — кнопки своих сводок."""
+
+    from PySide6.QtWidgets import QPushButton
+
+    from oplata.app import MainWindow
+
+    window = MainWindow(store)
+    window.show()
+    qt_app.processEvents()
+    receipts = window.receipts_view
+
+    assert isinstance(receipts.incoming.title_button, QPushButton)
+    assert isinstance(receipts.outgoing.title_button, QPushButton)
+
+    opened: list[str] = []
+    monkeypatch.setattr(
+        "oplata.views.incoming_summary_view.IncomingSummaryDialog.exec",
+        lambda self, *args, **kwargs: opened.append("поступления") or True,
+    )
+    monkeypatch.setattr(
+        "oplata.views.payments_summary_view.PaymentsSummaryDialog.exec",
+        lambda self, *args, **kwargs: opened.append("оплаты") or True,
+    )
+    receipts.incoming.title_button.click()
+    receipts.outgoing.title_button.click()
+    assert opened == ["поступления", "оплаты"]
     window.close()

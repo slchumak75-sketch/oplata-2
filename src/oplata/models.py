@@ -415,6 +415,80 @@ def keep_payment_kinds(payments: list["OtherPayment"]) -> list["OtherPayment"]:
     return list(kept.values())
 
 
+# --------------------------------------------------------------- Отчет
+# v0.85.0: «Отчет по организации» (кнопка «Отчет» в плашке «Сводка»).
+# Четыре строки файла «ОТЧЕТ ПО ОРГАНИЗАЦИИ» приходят из бухгалтерии,
+# поэтому их значения пользователь вводит сам — по четырём кварталам.
+# Остальные строки отчёт считает (см. ``report.py``).
+REPORT_MANUAL_ROWS = (
+    ("vat_sale", "НДС Реализация (Накладные)"),
+    ("goods_no_vat", "Товары реализация без НДС"),
+    ("incoming_vat", "Входящий НДС"),
+    ("cost_realization", "Себестоимость реализация без НДС"),
+)
+
+
+@dataclass
+class OrganizationReport:
+    """Ручные значения «Отчета» — по годам и кварталам (v0.85.0).
+
+    Формат в файле данных::
+
+        "org_report": {"2026": {"incoming_vat": ["1", "", "3000", ""]}}
+
+    Четыре строки на кварталы 1кв…4кв; пустая строка — «не заполнено».
+    Введённое значение хранится строкой, как и все деньги в программе
+    (сумма «1 000,00» превращается в ``Decimal`` только при расчёте).
+    """
+
+    years: dict[str, dict[str, list[str]]] = field(default_factory=dict)
+
+    def quarter(self, year: int, key: str, number: int) -> str:
+        """Значение строки ``key`` за квартал ``number`` (0…3)."""
+
+        values = self.years.get(str(year), {}).get(key, [])
+        if 0 <= number < len(values):
+            return str(values[number] or "")
+        return ""
+
+    def set_quarter(self, year: int, key: str, number: int, text: str) -> None:
+        """Записать значение строки ``key`` за квартал ``number`` (0…3)."""
+
+        if not 0 <= number <= 3:
+            return
+        values = self.years.setdefault(str(year), {}).setdefault(
+            key, ["", "", "", ""]
+        )
+        while len(values) <= number:
+            values.append("")
+        values[number] = str(text or "")
+
+    def to_dict(self) -> dict:
+        return {
+            str(year): {
+                str(key): [str(value) for value in values]
+                for key, values in rows.items()
+            }
+            for year, rows in self.years.items()
+        }
+
+    @classmethod
+    def from_dict(cls, data: dict | None) -> "OrganizationReport":
+        result = cls()
+        if not isinstance(data, dict):
+            return result
+        for year, rows in data.items():
+            if not isinstance(rows, dict):
+                continue
+            for key, values in rows.items():
+                if not isinstance(values, list):
+                    continue
+                result.years.setdefault(str(year), {})[str(key)] = [
+                    str(value or "") for value in values
+                ]
+        return result
+
+
 @dataclass
 class AppData:
     """Весь сохраняемый набор данных (один JSON-файл, см. storage.py)."""
@@ -456,6 +530,9 @@ class AppData:
     # (панель «Свойства контрагента» в «Конфигурации»). Поле добавлено
     # в v0.69.0; в старых файлах его нет — пустой список.
     routing_rules: list[RoutingRule] = field(default_factory=list)
+    # Ручные значения «Отчета по организации» (v0.85.0). Поле
+    # добавлено в v0.85.0; в старых файлах его нет — пустая заготовка.
+    org_report: OrganizationReport = field(default_factory=OrganizationReport)
 
     def to_dict(self) -> dict:
         return {
@@ -483,6 +560,7 @@ class AppData:
                 dict(item) for item in self.imported_statement_writes
             ],
             "routing_rules": [asdict(rule) for rule in self.routing_rules],
+            "org_report": self.org_report.to_dict(),
         }
 
     @classmethod
@@ -531,6 +609,7 @@ class AppData:
                 )
                 for x in data.get("routing_rules", [])
             ],
+            org_report=OrganizationReport.from_dict(data.get("org_report")),
         )
         # Миграция v0.8.0: у покупателей прежний «Приход» теперь называется
         # «Реализация» и не имеет срока оплаты.

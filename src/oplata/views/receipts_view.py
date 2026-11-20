@@ -119,6 +119,7 @@ from ..models import (
 from ..statement_match import free_payment_name
 from ..storage import DataStore
 from ..widgets import (
+    panel_title_button,
     AmountLineEdit,
     RowHoverMixin,
     arrow_button,
@@ -1188,6 +1189,12 @@ class MoneyBlock(QFrame):
         on_remove_row: Callable[[str], None] | None = None,
         on_edit_card: Callable[[str], None] | None = None,
         on_duplicate_card: Callable[[str], None] | None = None,
+        # v0.85.0: заголовок блока — кнопка: «Поступление» открывает
+        # сводку поступлений, «Оплата» — сводку оплат (просьба
+        # пользователя; раньше эти сводки открывались кнопками внизу
+        # правой плашки «Сводка»).
+        on_title_clicked: Callable[[], None] | None = None,
+        title_tooltip: str = "",
         parent: QWidget | None = None,
         direction: str = OUTGOING,
         stretch_table: bool = False,
@@ -1218,6 +1225,7 @@ class MoneyBlock(QFrame):
         self.on_edit_card = on_edit_card
         self.on_duplicate_card = on_duplicate_card
         self.on_remove_row = on_remove_row
+        self.on_title_clicked = on_title_clicked
         self._updating = False  # заполнение таблицы не считается вводом
 
         root = QVBoxLayout(self)
@@ -1227,9 +1235,15 @@ class MoneyBlock(QFrame):
         # --- заголовок и дата в одну строчку ---
         top = QHBoxLayout()
         top.setSpacing(10)
-        header = QLabel(title)
-        header.setObjectName("PanelTitle")
-        top.addWidget(header)
+        # v0.85.0: заголовок блока — кнопка своей сводки, а не подпись.
+        self.title_button = panel_title_button(
+            title, styles.fs(15), title_tooltip
+        )
+        if on_title_clicked is not None:
+            self.title_button.clicked.connect(on_title_clicked)
+        else:
+            self.title_button.setEnabled(False)
+        top.addWidget(self.title_button)
         top.addSpacing(12)
         top.addWidget(QLabel("Дата"))
         self.date_edit = make_date_edit(_today())
@@ -2142,6 +2156,9 @@ class ReceiptsView(QWidget):
             # v0.25.1: те же карточка и «Дублировать» для «Поступления».
             on_edit_card=lambda key: self.edit_payment_card(key, INCOMING),
             on_duplicate_card=lambda key: self.duplicate_payment(key, INCOMING),
+            # v0.85.0: «Поступление» — кнопка сводки поступлений.
+            on_title_clicked=self.open_incoming_summary,
+            title_tooltip="Сводка поступлений: помесячно, поквартально и за год",
             direction=INCOMING,
         )
         self.outgoing = MoneyBlock(
@@ -2159,6 +2176,9 @@ class ReceiptsView(QWidget):
             # кнопка — «Дублировать» (просьба пользователя).
             on_edit_card=lambda key: self.edit_payment_card(key, OUTGOING),
             on_duplicate_card=lambda key: self.duplicate_payment(key, OUTGOING),
+            # v0.85.0: «Оплата» — кнопка сводки оплат.
+            on_title_clicked=self.open_payments_summary,
+            title_tooltip="Сводка оплат: помесячно, поквартально и за год",
             direction=OUTGOING,
             stretch_table=True,
         )
@@ -2550,6 +2570,27 @@ class ReceiptsView(QWidget):
         # Недельные таблицы и «Сводку» не трогаем: у наличных, карт и
         # прочих видов оплат нет контрагента, в таблицах они не участвуют
         # (ADR-017/018).
+
+    # ----------------------------------------------------------------- сводки
+    def open_incoming_summary(self) -> None:
+        """Открыть «Сводку поступлений» — кнопка «Поступление» (v0.85.0)."""
+
+        from .incoming_summary_view import IncomingSummaryDialog
+
+        dialog = IncomingSummaryDialog(
+            self.store, self.incoming.current_date(), self
+        )
+        dialog.exec()
+
+    def open_payments_summary(self) -> None:
+        """Открыть «Сводку оплат» — кнопка «Оплата» (v0.85.0)."""
+
+        from .payments_summary_view import PaymentsSummaryDialog
+
+        dialog = PaymentsSummaryDialog(
+            self.store, self.outgoing.current_date(), self
+        )
+        dialog.exec()
 
     # -------------------------------------------------------------- выпадающее
     def open_popup(
