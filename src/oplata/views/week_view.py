@@ -675,17 +675,18 @@ class WeekView(QWidget):
         counterparty_id = item.data(Qt.ItemDataRole.UserRole)
         if not counterparty_id:
             return
-        # v0.23.1: и у поставщика, и у покупателя клик по имени
-        # открывает **журнал операций** контрагента (просьба
-        # пользователя). Раньше у поставщика клик открывал «Поставку» —
-        # она осталась на двойном клике.
-        if self.on_open_operations is not None:
-            self.on_open_operations(str(counterparty_id))
-        elif self.kind == "supplier" and self.on_open_delivery is not None:
-            # Запасной вариант, если журнал не задан.
-            self.on_open_delivery(str(counterparty_id), None)
+        # v0.86.0: левая кнопка открывает «Поставку»/«Реализацию», а
+        # журнал операций переехал на правую кнопку (просьба
+        # пользователя: «Левая кнопка мыши "Поставка" — правая кнопка
+        # мыши "Журнал операций" (поменять местами)»). Раньше было
+        # наоборот с v0.23.1/v0.27.3.
+        day = self._shown_day()
+        if self.kind == "supplier" and self.on_open_delivery is not None:
+            self.on_open_delivery(str(counterparty_id), day)
         elif self.kind == "customer" and self.on_open_realization is not None:
-            self.on_open_realization(str(counterparty_id), None)
+            self.on_open_realization(str(counterparty_id), day)
+        elif self.on_open_operations is not None:
+            self.on_open_operations(str(counterparty_id))
         else:
             self.on_open_card(str(counterparty_id))
 
@@ -693,19 +694,22 @@ class WeekView(QWidget):
         """v0.27.3: двойной клик больше ничего не открывает.
 
         Раньше он открывал «Поставку»/«Реализацию», но по просьбе
-        пользователя двойной клик убран — окно открывается правой
-        кнопкой мыши. Метод оставлен: сигнал подключён, и пустой
-        обработчик нагляднее, чем снятое подключение.
+        пользователя двойной клик убран — окно открывается обычным
+        кликом (v0.86.0), журнал операций — правой кнопкой. Метод
+        оставлен: сигнал подключён, и пустой обработчик нагляднее, чем
+        снятое подключение.
         """
 
         _ = item
 
     def _on_context_menu(self, position) -> None:
-        """Правый клик по строке контрагента: «Поставка»/«Реализация».
+        """Правый клик по строке контрагента: журнал операций.
 
-        v0.27.3: вместо двойного клика, который убран по просьбе
-        пользователя. Работает по любой ячейке строки — как раньше
-        двойной клик по имени.
+        v0.27.3: открывалось окно «Поставка»/«Реализация» вместо
+        двойного клика, который убран по просьбе пользователя.
+        v0.86.0: местами поменялись — журнал теперь здесь, а
+        «Поставка»/«Реализация» на обычном клике. Работает по любой
+        ячейке строки — как раньше двойной клик по имени.
         """
 
         item = self.table.itemAt(position)
@@ -717,21 +721,19 @@ class WeekView(QWidget):
         counterparty_id = name_item.data(Qt.ItemDataRole.UserRole)
         if not counterparty_id:
             return
-        # v0.52.0: «Поставка»/«Реализация» меняют данные, поэтому без
-        # права ввода (v0.18.0) правый клик открывает журнал операций —
-        # он доступен всем, у кого есть вкладка.
-        if self.read_only:
-            self._open_journal_for_item(name_item)
-            return
-        # v0.77.0: окно открывается на дате, выбранной в шапке: иначе,
-        # разбирая прошлую неделю, приходилось каждый раз переставлять
-        # дату руками (v0.76.0 брал сегодняшний день, если тот попадал
-        # в показанную неделю, — выбранный день игнорировался).
-        day = self._shown_day()
-        if self.kind == "supplier" and self.on_open_delivery is not None:
-            self.on_open_delivery(str(counterparty_id), day)
+        # v0.86.0: правая кнопка открывает **журнал операций** — раньше
+        # здесь была «Поставка»/«Реализация», они переехали на левую
+        # кнопку (просьба пользователя поменять местами). Журнал только
+        # показывает операции, поэтому он доступен и без права ввода.
+        if self.on_open_operations is not None:
+            self.on_open_operations(str(counterparty_id))
+        elif self.kind == "supplier" and self.on_open_delivery is not None:
+            # Запасной вариант, если журнал не задан.
+            self.on_open_delivery(str(counterparty_id), self._shown_day())
         elif self.kind == "customer" and self.on_open_realization is not None:
-            self.on_open_realization(str(counterparty_id), day)
+            self.on_open_realization(str(counterparty_id), self._shown_day())
+        else:
+            self.on_open_card(str(counterparty_id))
 
     def _shown_day(self):
         """Дата плашки: день, выбранный в шапке (v0.77.0).

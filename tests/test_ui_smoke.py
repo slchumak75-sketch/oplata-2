@@ -2424,13 +2424,15 @@ def _DAY(view, day_index, subcolumn):
     return view._day_column(day_index, subcolumn)
 
 
-def test_supplier_click_opens_operations_journal(qt_app, store, monkeypatch):
-    """v0.23.1: клик по поставщику открывает журнал операций.
+def test_supplier_click_opens_delivery_and_right_click_journal(
+    qt_app, store, monkeypatch
+):
+    """v0.86.0: левая кнопка — «Поставка», правая — журнал операций.
 
-    Раньше клик открывал окно «Поставка» — по просьбе пользователя
-    поставщик теперь ведёт себя так же, как покупатель: клик — журнал
-    операций. v0.27.3: двойной клик убран, окно «Поставка» открывает
-    правый клик по строке.
+    Просьба пользователя: «В таблице поставщики Левая кнопка мыши
+    "Поставка" — правая кнопка мыши "Журнал операций" (поменять
+    местами)». До этого было наоборот: клик открывал журнал (v0.23.1),
+    а «Поставку» — правый клик (v0.27.3).
     """
 
     from datetime import date
@@ -2460,23 +2462,23 @@ def test_supplier_click_opens_operations_journal(qt_app, store, monkeypatch):
 
     # v0.55.0: первая строка таблицы — первый контрагент **по алфавиту**.
     supplier_id = view.counterparties()[0].id
+    # v0.86.0: клик по имени открывает окно «Поставка».
     view._on_item_clicked(table.item(row, 0))
-    assert opened == [("supplier", supplier_id)]
-    assert deliveries == []
+    assert deliveries == [supplier_id]
+    assert opened == []
 
-    # v0.27.3: двойной клик больше ничего не открывает, а окно
-    # «Поставка» — правый клик по строке контрагента.
+    # Правый клик — журнал операций.
     from PySide6.QtCore import QPoint
 
     view._on_item_double_clicked(table.item(row, 0))
-    assert deliveries == []
+    assert opened == []
     view._on_context_menu(
         QPoint(
             table.columnViewportPosition(0) + 5,
             table.rowViewportPosition(row) + 5,
         )
     )
-    assert deliveries == [supplier_id]
+    assert opened == [("supplier", supplier_id)]
     window.close()
 
 
@@ -5018,7 +5020,9 @@ def test_payments_summary_freezes_first_three_columns(qt_app, store):
 
     # Накладка лежит на левом краю таблицы и закрывает три колонки.
     assert view.pos().x() <= table.frameWidth()
-    assert view.width() == sum(
+    # v0.86.0: у накладки своя рамка, поэтому ширину меряем по её полю:
+    # оно должно быть ровно по трём закреплённым колонкам.
+    assert view.viewport().width() == sum(
         table.columnWidth(column) for column in range(3)
     )
 
@@ -7160,6 +7164,10 @@ def test_operations_journal_is_open_for_users_without_edit_rights(qt_app, store)
 
     Журнал только показывает операции: окно открывается без кнопок
     «Добавить/Изменить/Удалить» (v0.23.1).
+
+    v0.86.0: клик и правый клик поменялись местами — левая кнопка
+    открывает «Реализацию», правая — журнал. Без права ввода клик
+    остаётся журналом: «Реализация» меняет данные.
     """
     from oplata import access as access_module
     from oplata.app import IDX_CUSTOMERS, MainWindow
@@ -7180,14 +7188,14 @@ def test_operations_journal_is_open_for_users_without_edit_rights(qt_app, store)
         view = window.customers_view
         assert view.read_only is True
         item = view.table.item(FIRST_DATA_ROW, 0)
-        # Клик по имени открывает журнал.
+        # Клик по имени без права ввода открывает журнал: «Реализация»
+        # меняет данные и недоступна.
+        view.on_open_realization = lambda _cid, _d=None: opened.append("реализация")
         view._on_item_clicked(item)  # noqa: SLF001 - вызываем обработчик
         qt_app.processEvents()
         assert opened == ["customer"]
-        # Правый клик — тоже журнал: «Реализация» меняет данные и без
-        # права ввода недоступна.
+        # Правый клик — тоже журнал (v0.86.0: журнал переехал сюда).
         opened.clear()
-        view.on_open_realization = lambda _cid, _d=None: opened.append("реализация")
         view._on_context_menu(  # noqa: SLF001 - вызываем обработчик
             view.table.visualItemRect(item).center()
         )
@@ -7195,8 +7203,7 @@ def test_operations_journal_is_open_for_users_without_edit_rights(qt_app, store)
         assert opened == ["customer"]
         window.close()
 
-    # У администратора как прежде: клик — журнал, правый клик — окно
-    # «Реализация».
+    # У администратора: клик — окно «Реализация», правый клик — журнал.
     window = MainWindow(store, access_module.Access(admin))
     window.show()
     qt_app.processEvents()
@@ -7207,16 +7214,16 @@ def test_operations_journal_is_open_for_users_without_edit_rights(qt_app, store)
     view = window.customers_view
     assert view.read_only is False
     item = view.table.item(FIRST_DATA_ROW, 0)
+    view.on_open_realization = lambda _cid, _d=None: opened.append("реализация")
     view._on_item_clicked(item)  # noqa: SLF001 - вызываем обработчик
     qt_app.processEvents()
-    assert opened == ["customer"]
+    assert opened == ["реализация"]
     opened.clear()
-    view.on_open_realization = lambda _cid, _d=None: opened.append("реализация")
     view._on_context_menu(  # noqa: SLF001 - вызываем обработчик
         view.table.visualItemRect(item).center()
     )
     qt_app.processEvents()
-    assert opened == ["реализация"]
+    assert opened == ["customer"]
     window.close()
 
 
@@ -7725,13 +7732,12 @@ def test_week_view_opens_dialogs_on_the_date_from_the_header(
     assert view._shown_day() == date(2026, 11, 12)
 
     # И окно открывается на него же — дата уходит в обработчик.
+    # v0.86.0: «Поставка» открывается левым кликом (раньше — правым).
     opened: list = []
     view.on_open_delivery = lambda cid, day: opened.append((cid, day))
     row = view.table.rowCount() - 1
-    view._on_context_menu(view.table.visualItemRect(
-        view.table.item(row, 0)
-    ).center())
-    assert opened, "правый клик по строке не открыл «Поставку»"
+    view._on_item_clicked(view.table.item(row, 0))
+    assert opened, "клик по строке не открыл «Поставку»"
     assert opened[-1][1] == date(2026, 11, 12)
 
     # Стрелка «вперёд» уносит день ровно на неделю: 12.11 -> 19.11.
@@ -7786,11 +7792,7 @@ def test_week_date_field_moves_the_week_without_the_go_button(
     assert view._days[0] == date(2026, 11, 9)
     assert view._shown_day() == date(2026, 11, 12)
 
-    view._on_context_menu(
-        view.table.visualItemRect(
-            view.table.item(view.table.rowCount() - 1, 0)
-        ).center()
-    )
+    view._on_item_clicked(view.table.item(view.table.rowCount() - 1, 0))
     assert opened[-1] == date(2026, 11, 12)
 
     # Выбор в календаре — тоже переводит, потому что ввода в поле нет.
@@ -11432,6 +11434,110 @@ def test_frozen_header_grid_matches_table(qt_app, store):
     view.close()
 
 
+def test_month_summary_frozen_overlay_matches_rows(qt_app, store):
+    """v0.86.0: накладка закреплённых столбцов «Сводки» — вровень с таблицей.
+
+    Замечание пользователя: «В сводке оплат что-то с графикой … левая
+    часть (наименование, ндс, примечание) — как будто другая наклеенная
+    наверх таблица, в которой строки могут немного двигаться вверх-вниз».
+    Накладка была ниже таблицы (456 px против 577) и после прокрутки
+    уезжала на 227 px — теперь сверяется по пикселям.
+    """
+
+    from PySide6.QtCore import QPoint
+
+    from oplata.views.payments_summary_view import PaymentsSummaryDialog
+
+    view = PaymentsSummaryDialog(store, date.today())
+    view.show()
+    qt_app.processEvents()
+    view.refresh()
+    qt_app.processEvents()
+
+    table = view.table
+    frozen = view.frozen_columns.view
+    # Накладка закрывает шапку и всё поле строк — до полосы прокрутки,
+    # и её поле строк стоит там же, где у таблицы (пиксель в пиксель).
+    covered = (
+        table.frameWidth()
+        + table.horizontalHeader().height()
+        + table.viewport().height()
+    )
+    assert frozen.height() == covered, "накладка не вровень с таблицей"
+
+    def top(item_table, row):
+        point = item_table.viewport().mapToGlobal(
+            QPoint(0, item_table.rowViewportPosition(row))
+        )
+        return point.y()
+
+    for row in range(table.rowCount()):
+        assert top(frozen, row) == top(table, row), f"строка {row} съехала"
+    # После прокрутки — те же строки на тех же местах.
+    table.verticalScrollBar().setValue(3)
+    qt_app.processEvents()
+    for row in range(table.rowCount()):
+        assert top(frozen, row) == top(table, row), f"строка {row} уехала"
+    # Накладка не перехватывает мышь: кликаем по настоящей таблице.
+    assert frozen.testAttribute(
+        Qt.WidgetAttribute.WA_TransparentForMouseEvents
+    )
+    view.close()
+
+
+def test_report_column_widths_are_configured_like_other_tables(qt_app, store):
+    """v0.86.0: ширины «Отчета» настраиваются через «Конфигурацию».
+
+    Просьба пользователя: «Изменить ширину столбцов с учётом уже
+    существующих возможностей» — то есть «Редактировать поля» /
+    «Сохранить поля» / «Сбросить поля». Для этого окно отчёта
+    немодальное: из него можно уйти в «Конфигурацию» не закрывая.
+    """
+
+    from oplata import column_widths
+    from oplata.app import MainWindow
+
+    window = MainWindow(store)
+    window.show()
+    qt_app.processEvents()
+    summary = window.summary_view
+
+    summary.report_button.click()
+    qt_app.processEvents()
+    dialog = summary.report_dialog
+    assert dialog is not None and dialog.isVisible()
+    # Окно участвует в общих настройках полей.
+    assert dialog in window._resizable_views()
+
+    window._edit_column_widths(True)
+    assert dialog.resizer.enabled is True
+    dialog.table.setColumnWidth(0, 240)
+    dialog.table.setColumnWidth(1, 180)
+    window._save_column_widths()
+    saved = column_widths.load_all().get("org_report", {})
+    assert list(saved.get("columns", []))[:2] == [240, 180]
+
+    # Переоткрыли окно — ширины на месте.
+    dialog.close()
+    qt_app.processEvents()
+    summary.report_button.click()
+    qt_app.processEvents()
+    again = summary.report_dialog
+    assert again.table.columnWidth(0) == 240
+    assert again.table.columnWidth(1) == 180
+
+    # «Сбросить поля» — снова расчётные.
+    window._reset_column_widths()
+    again.close()
+    qt_app.processEvents()
+    summary.report_button.click()
+    qt_app.processEvents()
+    assert column_widths.load_all().get("org_report") is None
+    assert summary.report_dialog.table.columnWidth(0) != 240
+    summary.report_dialog.close()
+    window.close()
+
+
 def test_base_menu_and_plus_button_hold_base_actions(qt_app, store):
     """v0.76.0: меню «База» — одно на все действия, кнопки «+» нет.
 
@@ -11954,28 +12060,23 @@ def test_report_button_opens_organization_report(qt_app, store):
     window.show()
     qt_app.processEvents()
 
-    opened: list[object] = []
-    import oplata.views.org_report_view as report_view
-
-    original = report_view.OrganizationReportDialog.exec
-    report_view.OrganizationReportDialog.exec = (
-        lambda self, *args, **kwargs: opened.append(self) or True
-    )
-    try:
-        window.summary_view.report_button.click()
-    finally:
-        report_view.OrganizationReportDialog.exec = original
-
-    assert len(opened) == 1, "кнопка «Отчет» не открыла окно"
-    dialog = opened[0]
+    # v0.86.0: окно немодальное — открывается через show(), а не exec():
+    # так из него можно уйти в «Конфигурацию» настраивать ширины полей.
+    window.summary_view.report_button.click()
+    qt_app.processEvents()
+    dialog = window.summary_view.report_dialog
+    assert dialog is not None and dialog.isVisible(), "кнопка «Отчет» не открыла окно"
+    assert not dialog.isModal(), "окно «Отчет» должно быть немодальным"
     table = dialog.table
     assert dialog.windowTitle().startswith("Отчет")
     headers = [
         table.horizontalHeaderItem(column).text()
         for column in range(table.columnCount())
     ]
-    # Столбцы — как в файле: название, НДС справочно, кварталы, «Итого».
-    assert headers == ["Наименование", "НДС", "1кв", "2кв", "3кв", "4кв", "Итого"]
+    # Столбцы — как в файле, плюс «Примечание» вторым (v0.86.0).
+    assert headers == [
+        "Наименование", "Примечание", "НДС", "1кв", "2кв", "3кв", "4кв", "Итого"
+    ]
     names = [table.item(row, 0).text() for row in range(table.rowCount())]
     # Порядок строк — как в файле (он начинается с итогов).
     assert names[:6] == [
@@ -12012,18 +12113,22 @@ def test_report_cells_are_editable_only_for_manual_rows(qt_app, store):
         "Входящий НДС",
         "Себестоимость реализация без НДС",
     )
+    # v0.86.0: столбцы сдвинулись — «Примечание» встало вторым,
+    # кварталы начинаются с третьего (COL_FIRST_QUARTER = 3).
     for title in manual_titles:
         row = names.index(title)
-        flags = table.item(row, 2).flags()
+        flags = table.item(row, 3).flags()
         assert flags & Qt.ItemFlag.ItemIsEditable, f"{title} должна правиться"
     # Расчётные строки не правятся: их считает программа.
     for title in ("Итого НДС", "Прибыль", "Налог на прибыль"):
         row = names.index(title)
-        flags = table.item(row, 2).flags()
+        flags = table.item(row, 3).flags()
         assert not (flags & Qt.ItemFlag.ItemIsEditable), f"{title} — расчётная"
     # Колонка «Итого» и справочный НДС не правятся никогда.
     row = names.index("Входящий НДС")
-    assert not (table.item(row, 6).flags() & Qt.ItemFlag.ItemIsEditable)
+    assert not (table.item(row, 7).flags() & Qt.ItemFlag.ItemIsEditable)
+    assert not (table.item(row, 2).flags() & Qt.ItemFlag.ItemIsEditable)
+    # Название и примечание тоже только для чтения.
     assert not (table.item(row, 1).flags() & Qt.ItemFlag.ItemIsEditable)
     dialog.close()
 
@@ -12046,39 +12151,43 @@ def test_report_manual_value_is_saved_and_recalculates(qt_app, store):
     row = names.index("НДС Реализация (Накладные)")
 
     # 1кв: НДС с выручки 120 000 − 120 000/1,2 = 20 000; минус 6 000 = 14 000.
-    table.item(row, 2).setText("6 000,00")
+    table.item(row, 3).setText("6 000,00")
     qt_app.processEvents()
 
     assert store.data.org_report.quarter(2026, "vat_sale", 0) == "6 000,00"
-    assert dialog.table.item(row, 2).text() == "6 000,00"
+    assert dialog.table.item(row, 3).text() == "6 000,00"
     vat_kkm_row = names.index("НДС Выручка по отчетам ККМ")
-    assert dialog.table.item(vat_kkm_row, 2).text() == "14 000,00"
+    assert dialog.table.item(vat_kkm_row, 3).text() == "14 000,00"
 
     # Мусор в клетке не портит данные и возвращает прежнее значение.
-    dialog.table.item(row, 2).setText("abc")
+    dialog.table.item(row, 3).setText("abc")
     qt_app.processEvents()
     assert store.data.org_report.quarter(2026, "vat_sale", 0) == "6 000,00"
-    assert dialog.table.item(row, 2).text() == "6 000,00"
+    assert dialog.table.item(row, 3).text() == "6 000,00"
 
     # Пустая клетка — «не заполнено».
-    dialog.table.item(row, 2).setText("")
+    dialog.table.item(row, 3).setText("")
     qt_app.processEvents()
     assert store.data.org_report.quarter(2026, "vat_sale", 0) == ""
     dialog.close()
 
 
-def test_report_expenses_are_yellow_and_come_with_vat(qt_app, store):
-    """v0.85.0: затраты — жёлтые, НДС справочно — из карточки вида."""
+def test_report_expenses_come_with_vat_and_note(qt_app, store):
+    """v0.85.0: НДС затрат — справочно из карточки вида.
+
+    v0.86.0: жёлтая заливка затрат убрана, а во втором столбце теперь
+    «Примечание» из карточки оплаты (просьба пользователя).
+    """
 
     from datetime import date
 
     from oplata.models import OtherPayment
-    from oplata.views.org_report_view import EXPENSE_BG, OrganizationReportDialog
+    from oplata.views.org_report_view import OrganizationReportDialog
 
     store.data.other_payments = [
         OtherPayment(
             date="2026-02-05", name="Аренда", amount="1000", direction="out",
-            vat_rate="20",
+            vat_rate="20", note="офис",
         ),
         OtherPayment(
             date="2026-05-05", name="Телефон интернет", amount="300",
@@ -12093,18 +12202,86 @@ def test_report_expenses_are_yellow_and_come_with_vat(qt_app, store):
     names = [table.item(row, 0).text() for row in range(table.rowCount())]
 
     rent = names.index("Аренда")
-    assert table.item(rent, 0).background().color().name() == EXPENSE_BG.name()
-    assert table.item(rent, 1).text() == "20 %"
-    assert table.item(rent, 2).text() == "1 000,00"
+    # Жёлтой заливки больше нет: строка затрат — как обычная строка.
+    assert table.item(rent, 0).background().color().name() != "#ffff99"
+    # Второй столбец — примечание из «Оплаты» (у аренды — «офис»).
+    assert table.item(rent, 1).text() == "офис"
+    assert table.item(rent, 2).text() == "20 %"
+    assert table.item(rent, 3).text() == "1 000,00"
     phone = names.index("Телефон интернет")
-    assert table.item(phone, 1).text() == "25 %"
+    assert table.item(phone, 1).text() == ""
+    assert table.item(phone, 2).text() == "25 %"
     # «Себестоимость затрат без НДС» — сумма строк затрат за квартал:
     # 1кв — аренда (февраль), 2кв — телефон (май).
     expenses = names.index("Себестоимость затрат без НДС")
-    assert table.item(expenses, 2).text() == "1 000,00"
-    assert table.item(expenses, 3).text() == "300,00"
+    assert table.item(expenses, 3).text() == "1 000,00"
+    assert table.item(expenses, 4).text() == "300,00"
     # «Поставщики» отдельной строкой в отчёт не идут.
     assert "Поставщики" not in names
+    dialog.close()
+
+
+def test_report_expense_can_be_edited_without_touching_payments(qt_app, store):
+    """v0.86.0: затраты правятся руками, «Оплата» не меняется.
+
+    Просьба пользователя: «Сделать возможным редактирование затрат (из
+    оплаты) вручную» и правило: «Правки в таблице отчет влияют только на
+    данные и результат в таблице отчет. В обратную сторону на оплаты они
+    не влияют. Значения в таблице Оплаты и в Отчете после правки могут
+    расходиться».
+    """
+
+    from datetime import date
+
+    from oplata.models import OtherPayment
+    from oplata.views.org_report_view import MANUAL_BG, OrganizationReportDialog
+
+    store.data.other_payments = [
+        OtherPayment(
+            date="2026-02-05", name="Аренда", amount="1000", direction="out",
+            vat_rate="20",
+        ),
+    ]
+    store.save()
+    dialog = OrganizationReportDialog(store, date(2026, 5, 5))
+    dialog.show()
+    qt_app.processEvents()
+    table = dialog.table
+    names = [table.item(row, 0).text() for row in range(table.rowCount())]
+    rent = names.index("Аренда")
+
+    # Клетка затрат правится (была только для чтения в v0.85.0).
+    flags = table.item(rent, 3).flags()
+    assert flags & Qt.ItemFlag.ItemIsEditable
+
+    table.item(rent, 3).setText("7 500,00")
+    qt_app.processEvents()
+
+    # Правка записалась в «Отчет» под ключом затраты.
+    assert store.data.org_report.quarter(2026, "expense:Аренда", 0) == "7 500,00"
+    # Строка показывает введённое, а не сумму из «Оплаты».
+    assert table.item(rent, 3).text() == "7 500,00"
+    # «Себестоимость затрат без НДС» посчиталась по правке.
+    expenses = names.index("Себестоимость затрат без НДС")
+    assert table.item(expenses, 3).text() == "7 500,00"
+    # Сама оплата не изменилась — расхождение «Оплаты» и «Отчета»
+    # задумано пользователем.
+    assert store.data.other_payments[0].amount == "1000"
+    assert "1 000,00" in table.item(rent, 3).toolTip()
+
+    # Мусор не портит введённое.
+    table.item(rent, 3).setText("abc")
+    qt_app.processEvents()
+    assert store.data.org_report.quarter(2026, "expense:Аренда", 0) == "7 500,00"
+
+    # Очистили клетку — снова сумма из «Оплаты».
+    table.item(rent, 3).setText("")
+    qt_app.processEvents()
+    assert store.data.org_report.quarter(2026, "expense:Аренда", 0) == ""
+    assert table.item(rent, 3).text() == "1 000,00"
+    assert "Оплата" in table.item(rent, 3).toolTip()
+    # Подсветка — у строк, которые вводятся руками, а не у затрат.
+    assert table.item(rent, 3).background().color().name() != MANUAL_BG.name()
     dialog.close()
 
 

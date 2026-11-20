@@ -337,12 +337,28 @@ class SummaryView(QWidget):
 
     # --------------------------------------------------------------- журнал
     def _open_report(self) -> None:
-        """Открыть «Отчет по организации» за год из «Сводки» (v0.85.0)."""
+        """Открыть «Отчет по организации» за год из «Сводки» (v0.85.0).
+
+        v0.86.0: окно **немодальное** и одно на программу. Так ширины
+        его столбцов можно настроить существующим способом — уйти в
+        «Конфигурацию» → «Редактировать поля», не закрывая отчёт.
+        Повторное нажатие «Отчет» поднимает уже открытое окно.
+        """
 
         from .org_report_view import OrganizationReportDialog
 
-        dialog = OrganizationReportDialog(self.store, self.current_date(), self)
-        dialog.exec()
+        dialog = getattr(self, "report_dialog", None)
+        if dialog is not None and dialog.isVisible():
+            dialog.refresh()
+            dialog.raise_()
+            dialog.activateWindow()
+            return
+        self.report_dialog = OrganizationReportDialog(
+            self.store, self.current_date(), self
+        )
+        # Данные могли измениться, пока окно было закрыто.
+        self.report_dialog.refresh()
+        self.report_dialog.show()
 
     def _open_funds_movement(self) -> None:
         """Открыть журнал движения средств за 30 дней (v0.22.1)."""

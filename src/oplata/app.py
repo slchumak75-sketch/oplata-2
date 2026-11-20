@@ -707,6 +707,15 @@ class MainWindow(QMainWindow):
                 block = getattr(receipts, name, None)
                 if block is not None and hasattr(block, "save_widths"):
                     views.append(block)
+        # v0.86.0: открытое окно «Отчет» — тоже настраиваемая таблица.
+        # Оно немодальное, поэтому в «Конфигурацию» можно уйти, не
+        # закрывая его (просьба пользователя: «сделать возможным
+        # изменять ширину столбцов с учётом уже существующих
+        # возможностей в конфигурации»).
+        summary = getattr(self, "summary_view", None)
+        report = getattr(summary, "report_dialog", None) if summary else None
+        if report is not None and report.isVisible():
+            views.append(report)
         return [view for view in views if hasattr(view, "save_widths")]
 
     def _edit_column_widths(self, enabled: bool) -> str:
@@ -718,8 +727,8 @@ class MainWindow(QMainWindow):
             return "Правка полей закрыта: мышь снова только вводит данные."
         return (
             "Правка полей включена: тяните границы столбцов мышью в "
-            "«Поставщиках», «Покупателях», «Поступлении» и «Оплате», "
-            "затем нажмите «Сохранить поля»."
+            "«Поставщиках», «Покупателях», «Поступлении», «Оплате» "
+            "и в открытом окне «Отчет», затем нажмите «Сохранить поля»."
         )
 
     def _save_column_widths(self) -> str:
