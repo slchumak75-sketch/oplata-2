@@ -22,6 +22,7 @@ from PySide6.QtGui import QCloseEvent, QGuiApplication
 from PySide6.QtWidgets import (
     QApplication,
     QButtonGroup,
+    QDialog,
     QFileDialog,
     QFrame,
     QHBoxLayout,
@@ -1512,12 +1513,7 @@ class MainWindow(QMainWindow):
                     self._config_unlocked = True
                 return True
 
-        text, ok = QInputDialog.getText(
-            self,
-            title,
-            label,
-            QLineEdit.EchoMode.Password,
-        )
+        text, ok = self._ask_password_text(title, label)
         if ok and text and check_password(text):
             if unlock_config:
                 self._config_unlocked = True
@@ -1525,6 +1521,41 @@ class MainWindow(QMainWindow):
         if ok and unlock_config:
             self._config_unlocked = False
         return False
+
+    def _ask_password_text(self, title: str, label: str) -> tuple[str, bool]:
+        """Спросить пароль: окном с «Забыли пароль?» или простым запросом.
+
+        v0.88.0: если почта для восстановления настроена, пароль
+        спрашивает :class:`PasswordPromptDialog` — в нём есть кнопка
+        «Забыли пароль?», по которой приходит код и задаётся новый
+        пароль. Пока почта не настроена, лишняя кнопка вела бы в тупик,
+        поэтому остаётся прежний короткий запрос.
+
+        Возвращаем (текст, нажата ли «ОК»). После восстановления
+        возвращаем новый пароль: человек только что подтвердил доступ
+        почтой — заставлять его вводить пароль ещё раз незачем.
+        """
+
+        from .access import has_password
+        from . import mailer
+
+        if has_password() and mailer.is_configured():
+            from .views.recovery_view import PasswordPromptDialog
+
+            dialog = PasswordPromptDialog(title, label, self)
+            if dialog.exec() != QDialog.DialogCode.Accepted:
+                return "", False
+            return dialog.password, True
+
+        from PySide6.QtWidgets import QInputDialog, QLineEdit
+
+        text, ok = QInputDialog.getText(
+            self,
+            title,
+            label,
+            QLineEdit.EchoMode.Password,
+        )
+        return text, bool(ok)
 
     def apply_access(self) -> None:
         """Применить права пользователя: вкладки, база, ввод (v0.18.0)."""

@@ -1042,8 +1042,26 @@ class DataView(QWidget):
         self.users_password_btn.setToolTip("Пароль на раздел «Конфигурация»")
         self.users_password_btn.clicked.connect(self._change_password)
         buttons.addWidget(self.users_password_btn)
+        # v0.88.0: восстановление забытого пароля по почте (просьба
+        # пользователя: «сделать привязку к почте и получить пароль по
+        # почте»). Кнопка рядом со «Сменить пароль»: и то и другое про
+        # пароль на раздел.
+        self.users_mail_btn = QPushButton("Почта для восстановления")
+        self.users_mail_btn.setToolTip(
+            "Куда присылать код, если пароль на «Конфигурацию» забудут"
+        )
+        self.users_mail_btn.clicked.connect(self._open_mail_settings)
+        buttons.addWidget(self.users_mail_btn)
         buttons.addStretch(1)
         layout.addLayout(buttons)
+
+        # v0.88.0: видно, настроено ли восстановление, без открытия окна.
+        from .. import mailer
+
+        self.users_mail_label = QLabel(mailer.describe_settings(mailer.load_mail_settings()))
+        self.users_mail_label.setObjectName("Muted")
+        self.users_mail_label.setWordWrap(True)
+        layout.addWidget(self.users_mail_label)
 
         self.users_status_label = QLabel("")
         self.users_status_label.setObjectName("Muted")
@@ -1322,6 +1340,19 @@ class DataView(QWidget):
             f"Пользователи сохранены. Текущий пользователь: {users[row].name}"
         )
 
+    def _open_mail_settings(self) -> None:
+        """Настроить почту для восстановления пароля (v0.88.0)."""
+
+        from .. import mailer
+        from .recovery_view import MailSettingsDialog
+
+        dialog = MailSettingsDialog(self)
+        if dialog.exec() == dialog.DialogCode.Accepted:
+            self.users_status_label.setText("Настройки почты сохранены")
+        self.users_mail_label.setText(
+            mailer.describe_settings(mailer.load_mail_settings())
+        )
+
     def _change_password(self) -> None:
         """Сменить пароль на раздел «Конфигурация» (v0.18.0)."""
 
@@ -1339,6 +1370,8 @@ class DataView(QWidget):
         if not ok or not new_text:
             return
         set_password(new_text)
+        # v0.88.0: заодно гасится выданный код восстановления — это
+        # делает ``set_password``, чтобы правило не зависело от окна.
         self.users_status_label.setText("Пароль изменён")
 
     def set_read_only(self, read_only: bool, can_admin: bool = False) -> None:
@@ -1360,11 +1393,14 @@ class DataView(QWidget):
         # «Конфигурация» (она за паролем).
         self.admin_panel.setVisible(True)
         # Пользователей правит только тот, у кого есть право ввода данных.
+        # v0.88.0: «Почта для восстановления» — часть тех же настроек,
+        # значит и права те же.
         for btn in (
             self.users_add_btn,
             self.users_remove_btn,
             self.users_save_btn,
             self.users_password_btn,
+            self.users_mail_btn,
         ):
             btn.setVisible(not read_only)
         self.users_table.setEditTriggers(

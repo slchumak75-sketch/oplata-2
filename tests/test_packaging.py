@@ -283,3 +283,20 @@ def test_start_here_explains_updates_and_base_transfer():
     assert "Положить в тест" in text and "Выпустить" in text
     assert "ПЕРВЫЙ ЗАПУСК С ДИСКОМ" in text, "нет раздела о переносе базы"
     assert "Oplata-<версия>-Setup.exe" in text
+
+
+def test_start_here_explains_password_recovery():
+    """v0.88.0: в инструкции есть восстановление забытого пароля.
+
+    Пользователь просил привязку к почте; но у инструкции на компьютере
+    должен быть и ручной путь — она открывается в тот момент, когда
+    программа уже не пускает.
+    """
+
+    text = (ROOT / "packaging" / "START_HERE_RU.txt").read_text(encoding="utf-8")
+
+    assert "ЗАБЫЛИ ПАРОЛЬ" in text
+    assert "Забыли пароль?" in text
+    assert "пароль\n     приложения" in text or "пароль приложения" in text
+    # Ручной путь никуда не делся.
+    assert "users.json" in text
