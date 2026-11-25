@@ -204,10 +204,34 @@ jobs:
           # v0.87.0: установщик ставит программу целиком (без ZIP-распаковки,
           # из-за которой терялся Oplata.exe), без прав администратора.
           choco install innosetup --no-progress -y
-          $iscc = "C:\Program Files (x86)\Inno Setup 6\ISCC.exe"
-          if (-not (Test-Path $iscc)) { throw "Inno Setup not found" }
-          & $iscc "/DAppVersion=$env:APP_VERSION" "/DBuildDir=.\package-folder" ".\packaging\Oplata.iss"
-          if ($LASTEXITCODE -ne 0) { throw "Installer build failed" }
+          if ($LASTEXITCODE -ne 0) { Write-Host "choco returned $LASTEXITCODE, looking for existing Inno Setup" }
+
+          # Ищем ISCC.exe в любом месте установки (6.x, 6.3, 6.4, ...).
+          $iscc = @(
+            "C:\Program Files (x86)\Inno Setup 6\ISCC.exe",
+            "C:\Program Files\Inno Setup 6\ISCC.exe"
+          ) | Where-Object { Test-Path $_ } | Select-Object -First 1
+          if (-not $iscc) {
+            $iscc = (Get-ChildItem "C:\Program Files (x86)\Inno Setup*\ISCC.exe", "C:\Program Files\Inno Setup*\ISCC.exe" -ErrorAction SilentlyContinue |
+                     Select-Object -First 1).FullName
+          }
+          if (-not $iscc) {
+            $iscc = (Get-Command ISCC.exe -ErrorAction SilentlyContinue).Source
+          }
+          if (-not $iscc) { throw "Inno Setup not found after choco install" }
+          Write-Host "ISCC: $iscc"
+
+          # ВАЖНО: Inno Setup считает относительные пути ОТ ПАПКИ СКРИПТА
+          # (packaging\), поэтому BuildDir передаём абсолютным путём —
+          # иначе он ищет packaging\.\package-folder и падает с
+          # «No files found matching ...».
+          $buildDir = (Resolve-Path ".\package-folder").Path
+          if (-not (Test-Path "$buildDir\Oplata\Oplata.exe")) {
+            throw "package-folder is incomplete: $buildDir\Oplata\Oplata.exe not found"
+          }
+          Write-Host "BuildDir: $buildDir"
+          & $iscc "/DAppVersion=$env:APP_VERSION" "/DBuildDir=$buildDir" ".\packaging\Oplata.iss"
+          if ($LASTEXITCODE -ne 0) { throw "Installer build failed, ISCC exit code $LASTEXITCODE" }
           $setup = Get-ChildItem ".\installer\*.exe" | Select-Object -First 1
           if (-not $setup) { throw "Installer was not produced" }
           Write-Host "Installer: $($setup.FullName) ($([math]::Round($setup.Length/1MB,1)) MB)"

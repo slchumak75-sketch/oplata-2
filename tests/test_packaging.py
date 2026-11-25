@@ -252,6 +252,27 @@ def test_inno_setup_installer_is_shipped():
     assert "oplata-update.json" in workflow
 
 
+def test_inno_setup_gets_absolute_build_dir():
+    """Inno Setup считает относительные Source от папки .iss (packaging\\).
+
+    CI раньше передавал /DBuildDir=.\\package-folder, и ISCC искал
+    "packaging\\.\\package-folder\\Oplata\\*" → «No files found»; сборка
+    Windows падала. Поэтому BuildDir обязан быть абсолютным.
+    """
+
+    workflow = (
+        ROOT / ".github" / "workflows" / "build-windows.yml"
+    ).read_text(encoding="utf-8")
+
+    # Переменная вычисляется через Resolve-Path (абсолютный путь)...
+    assert "Resolve-Path" in workflow
+    assert '"/DBuildDir=$buildDir"' in workflow
+    # ...и относительный ./package-folder в аргументе ISCC больше не передаётся.
+    assert '/DBuildDir=.\\package-folder' not in workflow
+    # Перед сборкой проверяем, что папка сборки полная (есть Oplata.exe).
+    assert "package-folder is incomplete" in workflow
+
+
 def test_start_here_explains_updates_and_base_transfer():
     """v0.87.0: в инструкции есть обновление и перенос базы на Диск."""
 
