@@ -283,3 +283,39 @@ def test_start_here_explains_updates_and_base_transfer():
     assert "Положить в тест" in text and "Выпустить" in text
     assert "ПЕРВЫЙ ЗАПУСК С ДИСКОМ" in text, "нет раздела о переносе базы"
     assert "Oplata-<версия>-Setup.exe" in text
+
+
+def test_start_here_explains_password_recovery():
+    """v0.88.0: в инструкции есть восстановление забытого пароля.
+
+    Пользователь просил привязку к почте; но у инструкции на компьютере
+    должен быть и ручной путь — она открывается в тот момент, когда
+    программа уже не пускает.
+    """
+
+    text = (ROOT / "packaging" / "START_HERE_RU.txt").read_text(encoding="utf-8")
+
+    assert "ЗАБЫЛИ ПАРОЛЬ" in text
+    assert "Забыли пароль?" in text
+    assert "пароль\n     приложения" in text or "пароль приложения" in text
+    # Ручной путь никуда не делся.
+    assert "users.json" in text
+
+
+def test_test_runner_rejects_names_that_break_k_expression():
+    """Имена тестов идут в выражение -k — опасные символы отсекаются.
+
+    v0.88.0: параметризованный тест с адресом почты дал id
+    «test_...[a@mail.ru-...]». `pytest -k` не принимает «@», разбор
+    выражения падал, и весь прогон в CI умирал за 4 секунды — ещё до
+    запуска тестов, без единой строчки о причине. Скрипт теперь
+    проверяет имена заранее.
+    """
+
+    script = (ROOT / "scripts" / "run_tests.sh").read_text(encoding="utf-8")
+
+    assert "bad_names" in script
+    # Проверяются именно символы, ломающие -k, а не всё «не-слово»:
+    # точки и дефисы в параметрах ([1-expected0]) допустимы.
+    assert "grep -E '[@(),[:space:]]'" in script
+    assert "Имена тестов содержат символы" in script

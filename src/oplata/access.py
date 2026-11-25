@@ -89,6 +89,12 @@ def pages_from_keys(raw) -> list[int]:
 USERS_FILE_NAME = "users.json"
 CURRENT_USER_FILE_NAME = "current-user.json"
 
+# v0.88.0: ключ последнего запроса кода восстановления пароля по почте.
+# Живёт в том же ``users.json``; здесь объявлен, чтобы ``access`` мог
+# гасить код при любой смене пароля, не импортируя модуль почты
+# (иначе получился бы замкнутый импорт).
+PASSWORD_RESET_KEY = "password_reset"
+
 
 def users_path():
     """Файл со списком пользователей (общий для всех компьютеров)."""
@@ -276,6 +282,10 @@ def set_password(raw: str) -> None:
     salt = secrets.token_hex(8)
     data = _read_users_file()
     data["password"] = {"salt": salt, "hash": _hash_password(raw, salt)}
+    # v0.88.0: выданный код восстановления после смены пароля бесполезен —
+    # убираем его здесь, а не в окне, чтобы это работало при любом пути
+    # смены пароля (первый вход, «Сменить пароль», восстановление).
+    data.pop(PASSWORD_RESET_KEY, None)
     _write_users_file(data)
 
 
