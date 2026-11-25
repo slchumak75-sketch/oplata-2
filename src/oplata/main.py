@@ -60,12 +60,114 @@ def _offer_shared_base_transfer() -> None:
     )
 
 
+QT_LOAD_HELP = (
+    "Программа не смогла загрузить Qt (библиотеки окна).\n\n"
+    "Обычная причина: в папке программы остались файлы от прежней\n"
+    "версии — например, папку распаковали из архива ZIP поверх старой,\n"
+    "и рядом оказались несовместимые DLL.\n\n"
+    "Что сделать:\n"
+    "1. Поставьте программу заново установщиком\n"
+    "   Oplata-<версия>-Setup.exe — он заменяет файлы полностью.\n"
+    "2. Если установщик уже применяли: удалите программу\n"
+    "   («Оплаты — Строймаркет» в списке программ Windows)\n"
+    "   и поставьте заново тем же установщиком.\n"
+    "3. Данные при этом не пропадут: они лежат отдельно, в\n"
+    "   %APPDATA%\\OplataStroymarket или на Google Диске.\n\n"
+    "Технические подробности: {error}"
+)
+
+
+def _qt_files_report() -> str:
+    """Что за файлы Qt лежат рядом с программой (v0.88.1).
+
+    Нужно для разбора на расстоянии: у программы четыре компьютера, и
+    «пришлите скриншот» — единственный доступный способ понять, что
+    случилось. Видно версии и размеры — по ним сразу ясно, смешаны ли
+    файлы двух сборок.
+    """
+
+    import hashlib
+    import os
+    from pathlib import Path as _Path
+
+    # В собранной программе библиотеки лежат в _internal рядом с exe.
+    roots = []
+    if getattr(sys, "frozen", False):
+        exe_dir = _Path(sys.executable).resolve().parent
+        roots = [exe_dir / "_internal", exe_dir]
+    else:
+        roots = [_Path(__file__).resolve().parents[2]]
+
+    names = ("Qt6Core.dll", "pyside6.abi3.dll", "shiboken6.abi3.dll")
+    lines = []
+    try:
+        import PySide6
+        import shiboken6
+
+        lines.append(f"PySide6 {PySide6.__version__}, shiboken6 {shiboken6.__version__}")
+    except Exception:
+        lines.append("PySide6: определить версию не удалось")
+
+    for name in names:
+        for root in roots:
+            if not root.is_dir():
+                continue
+            for path in root.rglob(name):
+                try:
+                    size = path.stat().st_size
+                    digest = hashlib.sha256(path.read_bytes()).hexdigest()[:8]
+                except OSError:
+                    continue
+                lines.append(f"{name}: {size} байт, {digest}")
+                break
+            else:
+                continue
+            break
+    return "\n".join(lines)
+
+
+def _show_startup_error(error: BaseException) -> None:
+    """Показать понятную ошибку вместо английского трейсбека (v0.88.1).
+
+    Раньше при неудачной загрузке Qt пользователь видел окно PyInstaller
+    «Unhandled exception in script» с текстом «DLL load failed while
+    importing QtCore: Не найдена указанная процедура» — по нему нельзя
+    понять ни что случилось, ни что делать. Самый частый случай —
+    смешанные файлы от двух версий, и лечится он установщиком.
+    """
+
+    details = _qt_files_report()
+    text = QT_LOAD_HELP.format(error=error) + "\n\nФайлы рядом с программой:\n" + details
+    # Qt может не загрузиться вовсе — тогда показываем окно Windows.
+    try:
+        from PySide6.QtWidgets import QApplication, QMessageBox
+
+        app = QApplication.instance() or QApplication([])
+        QMessageBox.critical(None, "Оплаты — Строймаркет", text)
+        del app
+    except Exception:
+        try:
+            import ctypes
+
+            ctypes.windll.user32.MessageBoxW(  # type: ignore[attr-defined]
+                None, text, "Оплаты — Строймаркет", 0x10
+            )
+        except Exception:
+            print(text)
+
+
 def main(argv: list[str] | None = None) -> int:
     argv = list(sys.argv[1:] if argv is None else argv)
 
-    from PySide6.QtCore import QTimer
-    from PySide6.QtGui import QIcon
-    from PySide6.QtWidgets import QApplication
+    # v0.88.1: Qt грузится в try — иначе любая беда с DLL показывалась
+    # английским трейсбеком PyInstaller без единой подсказки.
+    try:
+        from PySide6.QtCore import QTimer
+        from PySide6.QtGui import QIcon
+        from PySide6.QtWidgets import QApplication
+    except ImportError as error:
+        _show_startup_error(error)
+        return 3
 
     from . import __app_name__, __version__, styles
     from .app import MainWindow
