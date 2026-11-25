@@ -63,6 +63,19 @@ jobs:
       - name: Install dependencies
         run: python -m pip install --disable-pip-version-check -r requirements.txt "pytest>=8,<9"
 
+      # v0.88.1: та же проверка, что и в Windows-сборке — версии Qt и
+      # shiboken обязаны совпадать и совпадать с закреплённой.
+      - name: Verify Qt version matches the pin
+        run: |
+          python - <<'PY'
+          import re, sys, PySide6, shiboken6
+          print("PySide6:", PySide6.__version__, "shiboken6:", shiboken6.__version__)
+          assert PySide6.__version__ == shiboken6.__version__, "версии PySide6 и shiboken6 разные"
+          pinned = re.search(r"^PySide6-Essentials==(\S+)", open("requirements.txt").read(), re.M).group(1)
+          assert PySide6.__version__ == pinned, f"поставлен {PySide6.__version__}, закреплён {pinned}"
+          print("Qt версия совпадает с закреплённой:", pinned)
+          PY
+
       # Частями (scripts/run_tests.sh): один длинный процесс с десятками
       # Qt-окон в offscreen-режиме может не дойти до конца прогона.
       - name: Run tests
@@ -90,6 +103,24 @@ jobs:
 
       - name: Install dependencies
         run: python -m pip install --disable-pip-version-check -r requirements.txt "pyinstaller>=6,<7"
+
+      # v0.88.1: проверяем, что Qt и shiboken одной версии и что это та
+      # версия, которая закреплена в requirements.txt. Смесь двух версий
+      # в сборке даёт у пользователя «Не найдена указанная процедура».
+      - name: Verify Qt version matches the pin
+        shell: pwsh
+        run: |
+          $pyside = python -c "import PySide6; print(PySide6.__version__)"
+          $shiboken = python -c "import shiboken6; print(shiboken6.__version__)"
+          Write-Host "PySide6: $pyside, shiboken6: $shiboken"
+          if ($pyside -ne $shiboken) {
+            throw "PySide6 ($pyside) и shiboken6 ($shiboken) разных версий — сборка не запустится"
+          }
+          $pinned = (Select-String -Path requirements.txt -Pattern '^PySide6-Essentials==(\S+)').Matches[0].Groups[1].Value
+          if ($pyside -ne $pinned) {
+            throw "Поставлен PySide6 $pyside, а закреплён $pinned — проверьте requirements.txt"
+          }
+          Write-Host "Qt версия совпадает с закреплённой: $pinned"
 
       - name: Read app version
         id: version

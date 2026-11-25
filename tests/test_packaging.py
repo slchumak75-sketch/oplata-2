@@ -319,3 +319,146 @@ def test_test_runner_rejects_names_that_break_k_expression():
     # точки и дефисы в параметрах ([1-expected0]) допустимы.
     assert "grep -E '[@(),[:space:]]'" in script
     assert "Имена тестов содержат символы" in script
+
+
+# ------------------------------------- закрепление версии Qt (v0.88.1)
+
+def test_pyside_version_is_pinned_exactly():
+    """Версия Qt закреплена точно, а не диапазоном.
+
+    v0.88.0 не запускалась на компьютере пользователя: «DLL load failed
+    while importing QtCore: Не найдена указанная процедура». Причина —
+    диапазон «>=6.7,<6.12»: 26 октября вышла 6.11.3 (за 25 минут до
+    сборки), а в ней Qt удалила символы версии QtPrivate_6_11_2, которые
+    просит pyside6.abi3.dll от 6.11.2. Смесь файлов двух версий в папке
+    программы даёт именно эту ошибку.
+    """
+
+    text = (ROOT / "requirements.txt").read_text(encoding="utf-8")
+    # Только строки зависимостей: в комментариях старый диапазон
+    # упоминается намеренно — как объяснение, почему его убрали.
+    deps = [line for line in text.splitlines() if line.strip() and not line.lstrip().startswith("#")]
+
+    assert "PySide6-Essentials==" in text
+    assert "shiboken6==" in text
+    # Диапазонов быть не должно: они и привели к подмене версии.
+    assert not any("PySide6-Essentials>=" in d for d in deps)
+    assert not any("<6.12" in d for d in deps)
+
+
+def test_pyside_and_shiboken_versions_match():
+    """PySide6 и shiboken6 — одна версия: иначе Qt не загрузится."""
+
+    import re
+
+    text = (ROOT / "requirements.txt").read_text(encoding="utf-8")
+
+    pyside = re.search(r"PySide6-Essentials==(\S+)", text)
+    shiboken = re.search(r"shiboken6==(\S+)", text)
+
+    assert pyside and shiboken
+    assert pyside.group(1) == shiboken.group(1)
+
+
+def test_project_metadata_pins_same_version():
+    """pyproject.toml не должен разрешать другую версию Qt."""
+
+    text = (ROOT / "pyproject.toml").read_text(encoding="utf-8")
+
+    assert "PySide6-Essentials==" in text
+    assert "PySide6-Essentials>=" not in text
+
+
+def test_installer_replaces_all_files_and_cleans_stale_ones():
+    """Установщик обязан заменять файлы и убирать остатки прежней версии.
+
+    Без ignoreversion Setup не заменяет файл без данных о версии, если
+    размер совпадает: shiboken6.abi3.dll и QtCore.pyd как раз такие
+    (проверено — у них нет version-info). Тогда рядом оказываются файлы
+    двух версий Qt, и программа падает при запуске.
+    """
+
+    iss = (ROOT / "packaging" / "Oplata.iss").read_text(encoding="utf-8-sig")
+
+    # Папка сборки ставится с ignoreversion — заменяются все файлы.
+    assert "recursesubdirs createallsubdirs ignoreversion" in iss
+    # Остатки прежней версии удаляются до установки...
+    assert "[InstallDelete]" in iss
+    assert 'Name: "{app}\\_internal"' in iss
+    assert 'Name: "{app}\\PySide6"' in iss
+    # ...и проверяются после установки на случай занятого файла.
+    assert "[Code]" in iss
+    assert "CleanStaleFiles" in iss
+    assert "ssPostInstall" in iss
+    # В [Code] недопустимы комментарии в фигурных скобках: {} заняты
+    # константами, и ISCC падал на компиляции (v0.88.1).
+    code = iss.split("[Code]", 1)[1].split("[UninstallDelete]", 1)[0]
+    for line in code.splitlines():
+        stripped = line.strip()
+        if stripped.startswith("{"):
+            raise AssertionError(f"комментарий в {{ }} внутри [Code]: {stripped}")
+
+
+def test_startup_qt_failure_is_explained_in_russian():
+    """Ошибка загрузки Qt показывается по-русски, с планом действий.
+
+    Раньше пользователь видел английское окно PyInstaller с текстом
+    «DLL load failed while importing QtCore» — по нему нельзя понять,
+    что делать. Теперь есть подсказка про установщик и сохранность базы.
+    """
+
+    text = (ROOT / "src" / "oplata" / "main.py").read_text(encoding="utf-8")
+
+    assert "_show_startup_error" in text
+    assert "QT_LOAD_HELP" in text
+    assert "не смогла загрузить Qt" in text
+    # Главный совет — переустановить установщиком.
+    assert "Setup.exe" in text
+    # И успокоить насчёт данных.
+    assert "данные при этом не пропадут" in text.lower()
+    # Qt грузится в try: иначе ошибка вылетает трейсбеком.
+    assert "except ImportError as error:" in text
+
+
+def test_startup_error_reports_qt_file_versions():
+    """При сбое Qt в сообщении есть версии и контрольные суммы файлов.
+
+    Это единственный способ разобрать причину на расстоянии: программа
+    стоит на четырёх компьютерах, и «пришлите скриншот» — весь доступный
+    канал. По размерам и хэшам сразу видно, смешаны ли файлы двух сборок
+    (у pyside6.abi3.dll размер одинаковый, а содержимое разное).
+    """
+
+    text = (ROOT / "src" / "oplata" / "main.py").read_text(encoding="utf-8")
+
+    assert "_qt_files_report" in text
+    assert "Qt6Core.dll" in text
+    assert "pyside6.abi3.dll" in text
+    assert "shiboken6.abi3.dll" in text
+    # В сообщение отчёт попадает вместе с подсказками.
+    assert "Файлы рядом с программой" in text
+
+
+def test_qt_files_report_finds_libraries_next_to_exe(tmp_path, monkeypatch):
+    """Отчёт ищет библиотеки в _internal рядом с exe (как в сборке)."""
+
+    import sys as _sys
+
+    from oplata import main as main_module
+
+    internal = tmp_path / "_internal" / "PySide6"
+    internal.mkdir(parents=True)
+    core_bytes = b"qt-core-bytes"      # 13 байт
+    pyside_bytes = b"pyside-bytes"     # 12 байт
+    (internal / "Qt6Core.dll").write_bytes(core_bytes)
+    (internal / "pyside6.abi3.dll").write_bytes(pyside_bytes)
+
+    monkeypatch.setattr(_sys, "frozen", True, raising=False)
+    monkeypatch.setattr(_sys, "executable", str(tmp_path / "Oplata.exe"))
+
+    report = main_module._qt_files_report()
+
+    assert f"Qt6Core.dll: {len(core_bytes)} байт" in report
+    assert f"pyside6.abi3.dll: {len(pyside_bytes)} байт" in report
+    # Контрольная сумма в отчёте — 8 символов: по ней сравнивают файлы.
+    assert len(report.split("Qt6Core.dll: ")[1].split(", ")[1].split("\n")[0]) == 8
