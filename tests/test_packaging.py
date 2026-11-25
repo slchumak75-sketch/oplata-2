@@ -300,3 +300,22 @@ def test_start_here_explains_password_recovery():
     assert "пароль\n     приложения" in text or "пароль приложения" in text
     # Ручной путь никуда не делся.
     assert "users.json" in text
+
+
+def test_test_runner_rejects_names_that_break_k_expression():
+    """Имена тестов идут в выражение -k — опасные символы отсекаются.
+
+    v0.88.0: параметризованный тест с адресом почты дал id
+    «test_...[a@mail.ru-...]». `pytest -k` не принимает «@», разбор
+    выражения падал, и весь прогон в CI умирал за 4 секунды — ещё до
+    запуска тестов, без единой строчки о причине. Скрипт теперь
+    проверяет имена заранее.
+    """
+
+    script = (ROOT / "scripts" / "run_tests.sh").read_text(encoding="utf-8")
+
+    assert "bad_names" in script
+    # Проверяются именно символы, ломающие -k, а не всё «не-слово»:
+    # точки и дефисы в параметрах ([1-expected0]) допустимы.
+    assert "grep -E '[@(),[:space:]]'" in script
+    assert "Имена тестов содержат символы" in script
