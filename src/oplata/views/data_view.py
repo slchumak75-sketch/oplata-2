@@ -63,7 +63,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from .. import styles
+from .. import local_settings, styles
 from ..access import (
     BASE_KORELICHI,
     BASE_MIR,
@@ -156,10 +156,20 @@ class DataView(QWidget):
         on_save_fields: Callable[[], str] | None = None,
         on_reset_fields: Callable[[], str] | None = None,
         on_edit_fields: Callable[[bool], str] | None = None,
+        on_open_updates: Callable[[], None] | None = None,
+        on_test_computer_changed: Callable[[], None] | None = None,
     ) -> None:
         super().__init__(parent)
         self.store = store
         self.on_calendar_saved = on_calendar_saved
+        # v0.87.0: плашка «Обновления» — окно обновления из «Конфигурации»
+        # (там же кнопки раздачи, которые видны только тестовому
+        # компьютеру) и сигнал «галочка тестового компьютера изменилась».
+        self.on_open_updates = on_open_updates
+        self.on_test_computer_changed = on_test_computer_changed
+        # Какого пользователя отметили тестовым компьютером при
+        # сохранении (для локального файла настроек).
+        self._test_computer_user = ""
         # v0.20.0: выбор текущего пользователя применяется сразу.
         self.on_users_saved = on_users_saved
         # v0.75.0: ширины колонок сохраняет MainWindow — в нём живут
@@ -274,6 +284,15 @@ class DataView(QWidget):
         self.users_panel = CollapsiblePanel("Пользователи и права", expanded=False)
         self._build_users_panel(self.users_panel.content_layout)
         root.addWidget(self.users_panel)
+
+        # --- v0.87.0: плашка «Обновления» ---
+        # Кнопки раздачи обновлений живут ИМЕННО здесь, в «Конфигурации»
+        # (за паролем): в верхней плашке и в окне обновления их нет.
+        # Так раздать обновление может только тот, кто знает пароль
+        # (просьба пользователя), а остальным доступна только установка.
+        self.update_panel = CollapsiblePanel("Обновления", expanded=False)
+        self._build_update_panel(self.update_panel.content_layout)
+        root.addWidget(self.update_panel)
 
         # --- раскрывающаяся плашка «Этот компьютер» ---
         # v0.76.0: так она называется с тех пор, как в неё переехали
@@ -854,6 +873,110 @@ class DataView(QWidget):
         self.routing_status_label.setText(f"Сохранено правил: {len(rules)}.")
         return True
 
+    def _build_update_panel(self, layout) -> None:
+        """Плашка «Обновления» (v0.87.0).
+
+        Здесь всё, что связано с обновлением программы: какая версия
+        установлена, окно обновления, папка на Google Диске и — только
+        на тестовом компьютере — кнопки раздачи.
+        """
+
+        from .. import __version__, local_settings, updates
+
+        self.update_version_label = QLabel(f"Установлена версия {__version__}")
+        layout.addWidget(self.update_version_label)
+
+        self.update_folder_label = QLabel(
+            "Папка обновлений: "
+            f"{updates.updates_dir(Path(self.store.path).parent)}"
+        )
+        self.update_folder_label.setObjectName("Muted")
+        self.update_folder_label.setWordWrap(True)
+        layout.addWidget(self.update_folder_label)
+
+        self.update_access_label = QLabel("")
+        self.update_access_label.setObjectName("Muted")
+        self.update_access_label.setWordWrap(True)
+        layout.addWidget(self.update_access_label)
+
+        row = QHBoxLayout()
+        row.setSpacing(8)
+        self.update_open_btn = QPushButton("Открыть окно обновления")
+        self.update_open_btn.setToolTip(
+            "Выбрать файл обновления и установить его на этот компьютер"
+        )
+        self.update_open_btn.clicked.connect(self._open_update_dialog)
+        row.addWidget(self.update_open_btn)
+        self.update_check_btn = QPushButton("Найти обновление на Диске")
+        self.update_check_btn.clicked.connect(self._check_updates)
+        row.addWidget(self.update_check_btn)
+        row.addStretch(1)
+        layout.addLayout(row)
+
+        self.update_status_label = QLabel("")
+        self.update_status_label.setObjectName("Muted")
+        self.update_status_label.setWordWrap(True)
+        layout.addWidget(self.update_status_label)
+
+        self.refresh_update_panel()
+
+    def refresh_update_panel(self) -> None:
+        """Пересчитать подписи плашки «Обновления» (v0.87.0)."""
+
+        if not hasattr(self, "update_access_label"):
+            return
+        from .. import __version__, local_settings, updates
+
+        test = local_settings.is_test_computer()
+        if test:
+            text = (
+                "Это тестовый компьютер: здесь можно готовить и раздавать "
+                "обновления другим компьютерам (кнопки в окне обновления)."
+            )
+        else:
+            text = (
+                "Этот компьютер не тестовый: обновления можно только "
+                "устанавливать. Раздачу разрешает галочка «Тестовый "
+                "компьютер» в таблице выше — на этом компьютере."
+            )
+        self.update_access_label.setText(text)
+        if hasattr(self, "update_folder_label"):
+            folder = updates.updates_dir(Path(self.store.path).parent)
+            self.update_folder_label.setText(f"Папка обновлений: {folder}")
+        if hasattr(self, "update_version_label"):
+            self.update_version_label.setText(f"Установлена версия {__version__}")
+
+    def _open_update_dialog(self) -> None:
+        """Окно обновления из «Конфигурации» (v0.87.0)."""
+
+        if self.on_open_updates is not None:
+            self.on_open_updates()
+
+    def _check_updates(self) -> None:
+        """Проверить папку обновлений на Диске (v0.87.0)."""
+
+        from .. import local_settings, updates
+
+        folder = Path(self.store.path).parent
+        try:
+            info = updates.find_update(
+                folder,
+                _app_version(),
+                allow_test=local_settings.is_test_computer(),
+            )
+        except OSError as error:
+            self.update_status_label.setText(f"Не удалось прочитать папку: {error}")
+            return
+        if info is None:
+            self.update_status_label.setText(
+                "Обновлений нет: в «Выпуске» лежит не новее установленной."
+            )
+            return
+        self.update_status_label.setText(
+            f"Доступно обновление: {updates.describe(info)}. "
+            "Нажмите «Открыть окно обновления» и установите."
+        )
+
     def _build_users_panel(self, layout) -> None:
         """Список пользователей и их права (v0.18.0)."""
 
@@ -861,7 +984,10 @@ class DataView(QWidget):
             "Кто работает на каждом компьютере и что этому пользователю "
             "разрешено. Отметьте в столбце «Текущий», кто работает на "
             "этом компьютере, и нажмите «Сохранить пользователей» — "
-            "программа сразу перейдёт в режим этого пользователя."
+            "программа сразу перейдёт в режим этого пользователя. "
+            "Столбец «Тестовый компьютер» разрешает раздачу обновлений "
+            "с ЭТОГО компьютера (v0.87.0); галочка стоит только здесь и "
+            "на другие компьютеры не переезжает."
         )
         hint.setObjectName("Muted")
         hint.setWordWrap(True)
@@ -870,11 +996,25 @@ class DataView(QWidget):
         # v0.20.0: столбец «Текущий» — какой пользователь работает на
         # этом компьютере (раньше программа спрашивала об этом при
         # первом запуске).
-        self.users_column_count = len(PAGE_TITLES) + 4
-        self.users_col_current = len(PAGE_TITLES) + 3
+        # v0.87.0: столбец «Тестовый компьютер» — с этого компьютера
+        # разрешено раздавать обновления (просьба пользователя:
+        # «делаем такой же столбец "Тестовый компьютер" я сам ставлю
+        # галочку на тот компьютер на котором буду работать»). Галочка
+        # хранится на компьютере, а не в общем users.json: иначе она
+        # включила бы раздачу сразу у всех.
+        self.users_column_count = len(PAGE_TITLES) + 5
+        self.users_col_test = len(PAGE_TITLES) + 3
+        self.users_col_current = len(PAGE_TITLES) + 4
         self.users_table = QTableWidget(0, self.users_column_count)
         self.users_table.setHorizontalHeaderLabels(
-            ["Пользователь", *PAGE_TITLES, "База", "Ввод данных", "Текущий"]
+            [
+                "Пользователь",
+                *PAGE_TITLES,
+                "База",
+                "Ввод данных",
+                "Тестовый компьютер",
+                "Текущий",
+            ]
         )
         self.users_table.verticalHeader().setVisible(False)
         self.users_table.setEditTriggers(
@@ -957,6 +1097,23 @@ class DataView(QWidget):
                 Qt.CheckState.Checked if user.can_edit else Qt.CheckState.Unchecked
             )
             self.users_table.setItem(row, 2 + len(PAGE_TITLES), edit_item)
+            # v0.87.0: с этого компьютера можно раздавать обновления.
+            test_item = QTableWidgetItem()
+            test_item.setFlags(
+                Qt.ItemFlag.ItemIsEnabled | Qt.ItemFlag.ItemIsUserCheckable
+            )
+            test_item.setToolTip(
+                "Разрешить раздачу обновлений с этого компьютера. "
+                "Галочка действует только на этом компьютере."
+            )
+            is_test = local_settings.is_test_computer() and (
+                not local_settings.test_user_id()
+                or local_settings.test_user_id() == user.id
+            )
+            test_item.setCheckState(
+                Qt.CheckState.Checked if is_test else Qt.CheckState.Unchecked
+            )
+            self.users_table.setItem(row, self.users_col_test, test_item)
             # v0.20.0: кто из пользователей работает на этом компьютере.
             current_item = QTableWidgetItem()
             current_item.setFlags(
@@ -969,20 +1126,71 @@ class DataView(QWidget):
             self.users_table.setItem(row, self.users_col_current, current_item)
 
     def _on_users_item_changed(self, item: QTableWidgetItem) -> None:
-        """Следим, чтобы «Текущий» был отмечен только у одного (v0.20.0)."""
+        """Следим за двумя одиночными галочками (v0.20.0, v0.87.0).
 
-        if item.column() != self.users_col_current:
+        «Текущий» — кто работает на компьютере; «Тестовый компьютер» —
+        с какого пользователя разрешена раздача обновлений. Обе галочки
+        стоят в одной строке: отметил тестовый — этот же пользователь
+        становится текущим (просьба пользователя: «кнопки текущий и
+        тестовый компьютер синхронизируются»).
+        """
+
+        column = item.column()
+        if column not in (self.users_col_current, self.users_col_test):
             return
         if item.checkState() != Qt.CheckState.Checked:
             return
+        row = item.row()
+        # v0.87.0: включение раздачи — только по подтверждению: это
+        # единственное место, где программа доверяет компьютеру право
+        # публиковать обновления для всех.
+        if column == self.users_col_test and not self._confirm_test_computer(row):
+            self.users_table.itemChanged.disconnect(self._on_users_item_changed)
+            try:
+                item.setCheckState(Qt.CheckState.Unchecked)
+            finally:
+                self.users_table.itemChanged.connect(self._on_users_item_changed)
+            return
         self.users_table.itemChanged.disconnect(self._on_users_item_changed)
         try:
-            for row in range(self.users_table.rowCount()):
-                other = self.users_table.item(row, self.users_col_current)
-                if other is not None and other is not item:
-                    other.setCheckState(Qt.CheckState.Unchecked)
+            for other_row in range(self.users_table.rowCount()):
+                for col in (self.users_col_current, self.users_col_test):
+                    other = self.users_table.item(other_row, col)
+                    if other is not None and other is not item:
+                        other.setCheckState(Qt.CheckState.Unchecked)
+            # v0.87.0: обе галочки — в одной строке. Отметили «Тестовый
+            # компьютер» — этот же пользователь становится «Текущим»
+            # (просьба пользователя: галочки синхронизируются).
+            if column == self.users_col_test:
+                current = self.users_table.item(row, self.users_col_current)
+                # Сравниваем явно: в PySide6 bool(CheckState.Unchecked)
+                # — True, поэтому «if not checkState()» не работает.
+                if (
+                    current is not None
+                    and current.checkState() != Qt.CheckState.Checked
+                ):
+                    current.setCheckState(Qt.CheckState.Checked)
         finally:
             self.users_table.itemChanged.connect(self._on_users_item_changed)
+
+    def _confirm_test_computer(self, row: int) -> bool:
+        """Спросить подтверждение перед разрешением раздачи (v0.87.0)."""
+
+        from PySide6.QtWidgets import QMessageBox
+
+        name_item = self.users_table.item(row, 0)
+        name = name_item.text().strip() if name_item is not None else "пользователь"
+        answer = QMessageBox.question(
+            self,
+            "Тестовый компьютер",
+            f"Разрешить раздачу обновлений с ЭТОГО компьютера "
+            f"пользователю «{name}»?\n\n"
+            "С этого компьютера можно будет класть обновления на общий "
+            "Google Диск. На других компьютерах галочка не появится.",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.Cancel,
+            QMessageBox.StandardButton.Cancel,
+        )
+        return answer == QMessageBox.StandardButton.Yes
 
     def _add_user_row(self) -> None:
         """Новый пользователь: только просмотр таблицы «Покупатели»."""
@@ -1053,6 +1261,16 @@ class DataView(QWidget):
                 edit_item is not None
                 and edit_item.checkState() == Qt.CheckState.Checked
             )
+            test_item = self.users_table.item(row, self.users_col_test)
+            is_test = bool(
+                test_item is not None
+                and test_item.checkState() == Qt.CheckState.Checked
+            )
+            # Галочка одна: запоминаем того, у кого она стоит. Раньше
+            # присваивание стояло без условия и сбрасывалось на каждой
+            # следующей (неотмеченной) строке.
+            if is_test:
+                self._test_computer_user = str(user_id or "")
             users.append(
                 User(
                     id=str(user_id or new_user_id()),
@@ -1075,8 +1293,19 @@ class DataView(QWidget):
         return -1
 
     def _save_users(self) -> None:
+        self._test_computer_user = ""
         users = self._collect_users()
         save_users(users)
+        # v0.87.0: галочка «Тестовый компьютер» — настройка КОМПЬЮТЕРА,
+        # поэтому лежит локально, а не в общем users.json (иначе
+        # включила бы раздачу сразу у всех). Запоминаем и пользователя:
+        # раздавать может только он.
+        local_settings.set_test_computer(
+            bool(self._test_computer_user), self._test_computer_user
+        )
+        self.refresh_update_panel()
+        if self.on_test_computer_changed is not None:
+            self.on_test_computer_changed()
         # v0.20.0: отмеченный пользователь становится текущим на этом
         # компьютере — главное окно сразу применяет его права.
         row = self._current_user_row()
@@ -1371,3 +1600,11 @@ class DataView(QWidget):
         if self.on_calendar_saved is not None:
             self.on_calendar_saved()
         return True
+
+
+def _app_version() -> str:
+    """Версия программы (без циклического импорта модуля)."""
+
+    from .. import __version__
+
+    return __version__

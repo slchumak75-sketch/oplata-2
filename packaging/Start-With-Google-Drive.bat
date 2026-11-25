@@ -31,6 +31,9 @@ if not defined OPLATA_DATA_DIR (
 )
 
 if not exist "%OPLATA_DATA_DIR%" mkdir "%OPLATA_DATA_DIR%"
+rem v0.87.0: отдельная переменная — по ней программа понимает, что
+rem запущена с Диска, и при пустой папке предложит перенести базу.
+set "OPLATA_DATA_DIR_GOOGLE=%OPLATA_DATA_DIR%"
 echo   База: %OPLATA_DATA_DIR%
 
 rem Ярлык «Оплаты» делаем до запуска программы: если PowerShell
@@ -56,17 +59,33 @@ rem ---------------------------------------------------------------------------
 rem  Ищем папку Google Диска по обычным расположениям. Внутри неё
 rem  программа создаёт подпапку Oplata — там лежат файлы базы.
 rem ---------------------------------------------------------------------------
+rem v0.87.0: обычные места в профиле.
 for %%P in (
   "%USERPROFILE%\Google Диск"
   "%USERPROFILE%\Google Drive"
   "%USERPROFILE%\GoogleDrive"
   "%USERPROFILE%\Мой диск"
   "%USERPROFILE%\My Drive"
-  "G:\Мой диск"
-  "G:\My Drive"
 ) do (
   if exist %%~P (
     set "OPLATA_DATA_DIR=%%~P\Oplata"
+    exit /b 0
+  )
+)
+rem v0.87.0: Google Drive for desktop монтирует Диск отдельной буквой —
+rem раньше проверялась только G:, и на других буквах папка «не
+rem находилась». Перебираем все буквы от A: до Z:.
+for %%D in (A B C D E F G H I J K L M N O P Q R S T U V W X Y Z) do (
+  if exist "%%D:\Мой диск" (
+    set "OPLATA_DATA_DIR=%%D:\Мой диск\Oplata"
+    exit /b 0
+  )
+  if exist "%%D:\My Drive" (
+    set "OPLATA_DATA_DIR=%%D:\My Drive\Oplata"
+    exit /b 0
+  )
+  if exist "%%D:\Google Drive" (
+    set "OPLATA_DATA_DIR=%%D:\Google Drive\Oplata"
     exit /b 0
   )
 )

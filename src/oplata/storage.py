@@ -75,6 +75,97 @@ def data_dir() -> Path:
     return Path.home() / ".local" / "share" / APP_DIR_NAME
 
 
+# v0.87.0: перенос уже наработанной базы в общую папку Google Диска.
+#
+# Замечание пользователя: «распаковал файл ... оплаты на гугл драйв не
+# появились». Причина была в самом устройстве программы: при запуске
+# через Start-With-Google-Drive.bat каталог данных меняется на папку
+# Диска, и если она пустая, программа создавала там **новую** базу с
+# демо-поставщиками. Старая база при этом цела, но никто её не
+# показывает: данные будто пропали.
+#
+# Теперь так: если папка на Диске пустая, а локальная база есть —
+# программа спрашивает и по согласию копирует файлы. Локальные файлы
+# **не удаляются** (человек должен видеть прежнюю базу на месте, пока
+# не убедится, что с Диском всё в порядке).
+PROMOTE_FILES = (
+    "data.json",
+    "data-korelichi.json",
+    "users.json",
+    "state.json",
+    "column-widths.json",
+)
+
+
+def local_data_dir() -> Path:
+    """Каталог данных **этого компьютера** (без OPLATA_DATA_DIR).
+
+    Именно оттуда берётся база, если программа раньше запускалась без
+    Google Диска.
+    """
+
+    appdata = os.environ.get("APPDATA")
+    if appdata:  # Windows
+        return Path(appdata) / APP_DIR_NAME
+    return Path.home() / ".local" / "share" / APP_DIR_NAME
+
+
+def shared_dir_candidate() -> str:
+    """Каталог данных, заданный bat-файлом Google Диска (пусто — нет)."""
+
+    return os.environ.get("OPLATA_DATA_DIR_GOOGLE") or ""
+
+
+def pending_promotion() -> list[Path]:
+    """Какие файлы можно перенести в общую папку (v0.87.0).
+
+    Пустой список — переносить нечего или не нужно: папка базы не
+    переопределена, в ней уже что-то есть либо локальных файлов нет.
+    """
+
+    shared = shared_dir_candidate()
+    if not shared:
+        return []
+    target = Path(shared)
+    local = local_data_dir()
+    try:
+        if target.resolve() == local.resolve():
+            return []
+    except OSError:
+        pass
+    # В общей папке уже есть база — ничего не перетираем.
+    if (target / DATA_FILE_NAME).exists():
+        return []
+    found: list[Path] = []
+    for name in PROMOTE_FILES:
+        source = local / name
+        if source.exists():
+            found.append(source)
+    return found
+
+
+def promote_to_shared() -> list[Path]:
+    """Скопировать локальную базу в общую папку (v0.87.0).
+
+    Возвращает пути созданных файлов. Исходные файлы остаются на месте.
+    """
+
+    files = pending_promotion()
+    made: list[Path] = []
+    for source in files:
+        target = Path(shared_dir_candidate()) / source.name
+        try:
+            target.parent.mkdir(parents=True, exist_ok=True)
+            # Копия, а не перенос: локальная база — запасной вариант.
+            tmp = target.with_name(target.name + ".part")
+            shutil.copy2(source, tmp)
+            os.replace(tmp, target)
+        except OSError:
+            continue
+        made.append(target)
+    return made
+
+
 def data_path_for(base_key: str) -> Path:
     """Путь к файлу данных выбранной базы."""
     return data_dir() / BASE_FILES.get(base_key, BASE_FILES[DEFAULT_BASE])

@@ -196,6 +196,51 @@ jobs:
           }
           $summary | Add-Content $env:GITHUB_STEP_SUMMARY
 
+      - name: Build Windows installer (Inno Setup)
+        shell: pwsh
+        env:
+          APP_VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          # v0.87.0: установщик ставит программу целиком (без ZIP-распаковки,
+          # из-за которой терялся Oplata.exe), без прав администратора.
+          choco install innosetup --no-progress -y
+          $iscc = "C:\Program Files (x86)\Inno Setup 6\ISCC.exe"
+          if (-not (Test-Path $iscc)) { throw "Inno Setup not found" }
+          & $iscc "/DAppVersion=$env:APP_VERSION" "/DBuildDir=.\package-folder" ".\packaging\Oplata.iss"
+          if ($LASTEXITCODE -ne 0) { throw "Installer build failed" }
+          $setup = Get-ChildItem ".\installer\*.exe" | Select-Object -First 1
+          if (-not $setup) { throw "Installer was not produced" }
+          Write-Host "Installer: $($setup.FullName) ($([math]::Round($setup.Length/1MB,1)) MB)"
+
+      - name: Pack update ZIP (для обновления через Google Диск)
+        shell: pwsh
+        env:
+          APP_VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          # Формат файла обновления (см. src/oplata/updates.py):
+          #   Oplata-<версия>-Update.zip
+          #     oplata-update.json  — манифест: версия, имя установщика, SHA-256
+          #     Oplata-<версия>-Setup.exe
+          # Остальные компьютеры читают сначала маленький манифест и
+          # ставят обновление только по подтверждению.
+          $version = $env:APP_VERSION
+          $setup = (Get-ChildItem ".\installer\*.exe" | Select-Object -First 1).FullName
+          $sha = (Get-FileHash $setup -Algorithm SHA256).Hash.ToLowerInvariant()
+          $stamp = Get-Date -Format "yyyy-MM-dd"
+          $manifest = [ordered]@{
+            version = $version
+            setup   = (Split-Path $setup -Leaf)
+            sha256  = $sha
+            built   = $stamp
+            format  = 1
+          }
+          $manifest | ConvertTo-Json | Set-Content ".\installer\oplata-update.json" -Encoding UTF8
+          $updateZip = "Oplata-$version-Update.zip"
+          Compress-Archive -Path ".\installer\*.exe", ".\installer\oplata-update.json" `
+            -DestinationPath $updateZip -Force
+          "UPDATE_ZIP=$updateZip" >> $env:GITHUB_ENV
+          Write-Host "Update ZIP: $updateZip"
+
       - name: Prepare release ZIP files and checksums
         if: startsWith(github.ref, 'refs/tags/v')
         shell: pwsh
@@ -203,11 +248,14 @@ jobs:
           $version = "${{ steps.version.outputs.version }}"
           $folderZip = "Oplata-v$version-windows-folder.zip"
           $singleZip = "Oplata-v$version-windows-single-file.zip"
+          # v0.87.0: установщик — основной способ поставить программу.
+          $setupExe = "Oplata-$version-Setup.exe"
+          Copy-Item (Get-ChildItem ".\installer\*.exe" | Select-Object -First 1).FullName $setupExe
 
           Compress-Archive -Path ".\package-folder\*" -DestinationPath $folderZip
           Compress-Archive -Path ".\package-single\*" -DestinationPath $singleZip
 
-          $checksums = foreach ($file in @($folderZip, $singleZip)) {
+          $checksums = foreach ($file in @($folderZip, $singleZip, $setupExe, $env:UPDATE_ZIP)) {
             $hash = (Get-FileHash $file -Algorithm SHA256).Hash.ToLowerInvariant()
             "$hash  $file"
           }
@@ -241,5 +289,7 @@ jobs:
           files: |
             ${{ env.FOLDER_ZIP }}
             ${{ env.SINGLE_ZIP }}
+            ${{ env.UPDATE_ZIP }}
+            Oplata-*-Setup.exe
             SHA256SUMS.txt
           generate_release_notes: true

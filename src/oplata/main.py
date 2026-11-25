@@ -18,6 +18,48 @@ import sys
 from .access import Access, load_current_user
 
 
+def _offer_shared_base_transfer() -> None:
+    """Предложить перенести наработанную базу в общую папку (v0.87.0).
+
+    Спрашиваем один раз при запуске через Start-With-Google-Drive.bat,
+    если папка Диска пустая (или база в ней ещё не создана) и на
+    компьютере есть локальная база. Копия, не перенос: локальные файлы
+    остаются на месте.
+    """
+
+    from .storage import pending_promotion, promote_to_shared
+
+    files = pending_promotion()
+    if not files:
+        return
+    from PySide6.QtWidgets import QMessageBox
+
+    names = ", ".join(path.name for path in files)
+    answer = QMessageBox.question(
+        None,
+        "База на Google Диске",
+        "Папка Google Диска подключена первый раз, базы в ней ещё нет.\n\n"
+        f"На компьютере найдена база: {names}.\n\n"
+        "Перенести её на Диск, чтобы данные были видны на всех "
+        "компьютерах? Копия на этом компьютере останется на месте.",
+        QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+        QMessageBox.StandardButton.Yes,
+    )
+    if answer != QMessageBox.StandardButton.Yes:
+        return
+    made = promote_to_shared()
+    QMessageBox.information(
+        None,
+        "База на Google Диске",
+        (
+            f"Перенесено файлов: {len(made)}. Теперь данные читаются "
+            "с общего Диска."
+            if made
+            else "Перенести не удалось: проверьте доступ к папке Диска."
+        ),
+    )
+
+
 def main(argv: list[str] | None = None) -> int:
     argv = list(sys.argv[1:] if argv is None else argv)
 
@@ -44,6 +86,11 @@ def main(argv: list[str] | None = None) -> int:
     app.setStyleSheet(styles.APP_STYLESHEET)
 
     access = resolve_user(argv)
+    # v0.87.0: первый запуск с Google Диском. Папка на Диске пустая, а
+    # база на компьютере наработана — предлагаем перенести её, иначе
+    # программа показала бы новую пустую базу с демо-поставщиками
+    # (замечание пользователя: «оплаты на гугл драйв не появились»).
+    _offer_shared_base_transfer()
     store = DataStore()
     window = MainWindow(store, access)
     # v0.26.5: без фокуса у таблиц Qt не рисует рамку на нажатой

@@ -35,7 +35,13 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from . import __app_name__, __version__, column_widths, styles
+from . import (
+    __app_name__,
+    __version__,
+    column_widths,
+    local_settings,
+    styles,
+)
 from .access import (
     IDX_CUSTOMERS,
     IDX_DATA,
@@ -97,6 +103,13 @@ BASE_HEADER_COLORS = {
     BASE_KORELICHI: styles.BASE_MAROON,
 }
 
+
+# v0.87.0: через сколько бездействия закрывается «Конфигурация»
+# (просьба пользователя: «5 минут бездействия»).
+CONFIG_IDLE_MS = 5 * 60 * 1000
+
+# v0.87.0: как часто смотреть папку обновлений на Диске (час).
+UPDATE_CHECK_MS = 60 * 60 * 1000
 
 # v0.47.0: окно открывается в **половину экрана по горизонтали**
 # (просьба пользователя): доступная область экрана делится линией по
@@ -235,6 +248,10 @@ class MainWindow(QMainWindow):
             on_save_fields=self._save_column_widths,
             on_reset_fields=self._reset_column_widths,
             on_edit_fields=self._edit_column_widths,
+            # v0.87.0: окно обновления открывается и из «Конфигурации»
+            # (там же — кнопки раздачи, только на тестовом компьютере).
+            on_open_updates=self.open_update_dialog,
+            on_test_computer_changed=self._on_test_computer_changed,
         )
         # v0.79.0: второй каталог копий — на самом компьютере (Загрузки).
         # Копия рядом с базой уезжает в облако вместе с ней: испортится
@@ -277,8 +294,12 @@ class MainWindow(QMainWindow):
         # может быть только просмотром, поэтому изменения, внесённые
         # на компьютере администратора, подтягиваются без перезапуска.
         self.sync_interval_ms = 10_000
-        self._data_signature = self.store.signature()
+        # v0.87.0: подпись — по всем файлам папки базы, а не по одному.
+        self._data_signature = self._shared_signature()
         self.store.on_saved.append(self._remember_signature)
+        # v0.87.0: проверка обновлений на Диске — раз в час, тихо.
+        self._update_hint_shown = False
+        self._start_update_timer()
         self._sync_timer = QTimer(self)
         self._sync_timer.setInterval(self.sync_interval_ms)
         self._sync_timer.timeout.connect(self.pull_external_changes)
@@ -353,6 +374,20 @@ class MainWindow(QMainWindow):
         layout.addWidget(self.statement_button)
 
         layout.addSpacing(6)
+        # v0.87.0: «Обновить» — видна всем и без пароля: установить
+        # обновление на свой компьютер может любой сотрудник (просьба
+        # пользователя: «кнопку обновить надо на верхней плашке без
+        # пароля чтобы все могли самостоятельно обновляться»). Кнопок
+        # раздачи здесь нет — они только в «Конфигурации» за паролем.
+        self.update_button = QPushButton("Обновить")
+        self.update_button.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.update_button.setToolTip(
+            "Обновить программу файлом обновления (данные не меняются)"
+        )
+        self.update_button.clicked.connect(self.open_update_dialog)
+        layout.addWidget(self.update_button)
+
+        layout.addSpacing(6)
         # v0.75.0: меню со всеми действиями над базой. Раньше это были
         # три отдельные кнопки («Выгрузить базы», «Загрузить базы»,
         # «Очистить базу»); в меню они занимают одну строку.
@@ -425,7 +460,11 @@ class MainWindow(QMainWindow):
         )
         # v0.75.0: в правом углу шапки тот же стиль получают
         # «Загрузить выписку» и меню «База».
-        for btn in (self.statement_button, self.base_menu_button):
+        for btn in (
+            self.statement_button,
+            self.base_menu_button,
+            self.update_button,
+        ):
             btn.setStyleSheet(base_tools_style)
         self.base_button.setStyleSheet(
             f"QPushButton{{background:{styles.HEADER_CHECKED_BG};"
@@ -1057,6 +1096,58 @@ class MainWindow(QMainWindow):
         )
         self.apply_access()
 
+    # ------------------------------------------- проверка обновлений (час)
+    def _start_update_timer(self) -> None:
+        """Раз в час смотреть папку обновлений на Диске (v0.87.0).
+
+        Просьба пользователя: «обновления можно раз в час». Читается
+        только маленький манифест из папки — сама установка идёт лишь
+        по нажатию «Установить».
+        """
+
+        from PySide6.QtCore import QTimer
+
+        self._update_timer = QTimer(self)
+        self._update_timer.setInterval(UPDATE_CHECK_MS)
+        self._update_timer.timeout.connect(self.check_updates_silently)
+        self._update_timer.start()
+        QTimer.singleShot(20_000, self.check_updates_silently)
+
+    def check_updates_silently(self) -> None:
+        """Проверить «Выпуск» на Диске и подсветить кнопку «Обновить»."""
+
+        from . import updates
+
+        folder = Path(self.store.path).parent
+        try:
+            info = updates.find_update(
+                folder,
+                __version__,
+                allow_test=local_settings.is_test_computer(),
+            )
+        except OSError:
+            return
+        available = info is not None
+        if getattr(self, "update_button", None) is not None:
+            self.update_button.setToolTip(
+                f"Доступно обновление: {updates.describe(info)}"
+                if available
+                else "Обновить программу файлом обновления (данные не меняются)"
+            )
+            # Заметная рамка, когда есть что ставить. Само ничего не
+            # устанавливается: только с подтверждения человека.
+            self.update_button.setStyleSheet(
+                "QPushButton{border:2px solid #ffffff;font-weight:800;}"
+                if available
+                else ""
+            )
+            if available and not hasattr(self, "_update_hint_shown"):
+                self._update_hint_shown = True
+                self.statusBar().showMessage(
+                    f"Доступно обновление {info.version} — кнопка «Обновить»",
+                    15000,
+                )
+
     def _on_day_timer(self) -> None:
         """Наступил новый день — пересчитать всё, что считается «на сегодня».
 
@@ -1072,31 +1163,115 @@ class MainWindow(QMainWindow):
         self.refresh_all_views()
 
     def _remember_signature(self) -> None:
-        """Запомнить состояние файла после своей записи (v0.28.0)."""
+        """Запомнить состояние файлов после своей записи (v0.28.0/v0.87.0)."""
 
-        self._data_signature = self.store.signature()
+        self._data_signature = self._shared_signature()
 
     def pull_external_changes(self) -> bool:
         """Подтянуть изменения, внесённые на другом компьютере.
 
         v0.28.0: данные лежат в общей папке — файл мог обновить
         администратор. Возвращает ``True``, если данные перечитаны.
-        Пропуск, пока открыт модальный диалог или окно не активно:
-        перечитывание под руками у пользователя сбросило бы
-        незаконченный ввод.
+
+        v0.87.0: синхронизируется **всё**, что лежит в папке базы, а не
+        только активная таблица (просьба пользователя: «Синхронизация
+        данных через облако должна быть по всем параметрам ... Абсолютно
+        всё»). Раньше, кроме файла активной базы, ничего не проверялось:
+        второй компьютер продолжал показывать старый список
+        пользователей, старые ширины столбцов и не видел изменений в
+        *другой* базе (МИР, пока открыта КОРЕЛИЧИ).
         """
 
-        signature = self.store.signature()
-        if signature is None or signature == self._data_signature:
+        if not self._shared_data_dir():
+            # Локальная база: подтягивать неоткуда, не тратим время.
+            return False
+        signature = self._shared_signature()
+        if signature == self._data_signature:
             return False
         if QApplication.activeModalWidget() is not None:
             return False
         if not self.isActiveWindow():
             return False
+
         self.store.reload()
-        self._data_signature = self.store.signature()
+        # Пользователи и права — общий users.json (v0.87.0).
+        self._reload_users()
+        # Ширины столбцов — общий column-widths.json (v0.87.0).
+        self._reload_column_widths()
+        # Другая база тоже могла измениться: её подхватят при
+        # переключении, но «Сводка» и счётчики должны знать свежие
+        # данные сразу.
+        self._data_signature = self._shared_signature()
         self.refresh_all_views()
         return True
+
+    def _shared_data_dir(self) -> bool:
+        """Данные действительно лежат в общей папке (v0.87.0)."""
+
+        from .storage import data_dir, local_data_dir
+
+        try:
+            return data_dir().resolve() != local_data_dir().resolve()
+        except OSError:
+            return False
+
+    def _shared_signature(self) -> tuple:
+        """Подпись **всех** файлов папки базы (v0.87.0).
+
+        Берём размер и время каждого файла данных и настроек: по ним
+        видно любое изменение с другого компьютера — правку тарифов,
+        список пользователей, ширины столбцов, вторую базу.
+        """
+
+        from .storage import BASE_FILES, data_dir
+
+        names = list(BASE_FILES.values()) + [
+            "users.json",
+            "column-widths.json",
+            "state.json",
+        ]
+        marks: list[tuple] = []
+        folder = data_dir()
+        for name in names:
+            try:
+                stat = (folder / name).stat()
+            except OSError:
+                continue
+            marks.append((name, stat.st_mtime_ns, stat.st_size))
+        return tuple(marks)
+
+    def _reload_users(self) -> None:
+        """Перечитать общий список пользователей и права (v0.87.0)."""
+
+        from .access import Access, load_current_user
+
+        current = load_current_user()
+        # Текущего пользователя мог удалить администратор на другом
+        # компьютере — тогда прав по роли больше нет, берём первого.
+        self.access = Access(current)
+        self.setWindowTitle(
+            f"{__app_name__}  v{__version__} · {self.access.title}"
+        )
+        self.apply_access()
+
+    def _reload_column_widths(self) -> None:
+        """Применить ширины столбцов, сохранённые на другом компьютере."""
+
+        from . import column_widths
+
+        for view in self._resizable_views():
+            widths = getattr(view, "_saved_widths", None)
+            try:
+                stored = column_widths.load(
+                    view._widths_key, getattr(view, "_column_count", 0)
+                )
+            except (AttributeError, TypeError):
+                continue
+            if stored and stored != widths:
+                view._saved_widths = stored
+                apply = getattr(view, "_apply_saved_widths", None)
+                if callable(apply):
+                    apply()
 
     def refresh_all_views(self) -> None:
         """Перерисовать все экраны после смены базы (v0.17.0)."""
@@ -1133,6 +1308,12 @@ class MainWindow(QMainWindow):
         # — работаем полностью, нет (или ушли с вкладки) — по роли.
         self._apply_config_rights()
         self.stack.setCurrentIndex(index)
+        # v0.87.0: «Конфигурация» сама закроется после 5 минут
+        # бездействия — пароль не останется висеть открытым.
+        if index == IDX_DATA and self._config_unlocked:
+            self._start_config_timer()
+        elif getattr(self, "_config_timer", None) is not None:
+            self._config_timer.stop()
         self.nav_buttons[index].setChecked(True)
         # v0.23.1: на любой вкладке дата начинается с сегодняшнего дня —
         # иначе после перехода на другую неделю и обратно в окошке
@@ -1180,6 +1361,109 @@ class MainWindow(QMainWindow):
                 not self.access.can_edit,
                 can_admin=self.access.can_admin_data,
             )
+
+    # --------------------------------------------------- обновления v0.87.0
+    def open_update_dialog(self) -> None:
+        """Кнопка «Обновить» и плашка «Обновления» (v0.87.0).
+
+        Окно одно на программу и **немодальное**: пока оно открыто,
+        обновление данных с Диска приостановлено, а после установки
+        программа закрывается и запускается заново установщиком.
+        """
+
+        from .views.update_view import UpdateDialog
+
+        dialog = getattr(self, "update_dialog", None)
+        if dialog is not None and dialog.isVisible():
+            dialog.raise_()
+            dialog.activateWindow()
+            return
+        self.update_dialog = UpdateDialog(self.store, self.access, self)
+        self.update_dialog.show()
+
+    def _on_test_computer_changed(self) -> None:
+        """Галочка «Тестовый компьютер» изменилась (v0.87.0)."""
+
+        label = "да" if local_settings.is_test_computer() else "нет"
+        self.data_view.update_status_label.setText(
+            f"Тестовый компьютер: {label}. "
+            + (
+                "Кнопки раздачи появятся в окне обновления."
+                if local_settings.is_test_computer()
+                else "Раздача обновлений с этого компьютера закрыта."
+            )
+        )
+
+    def _start_config_timer(self) -> None:
+        """Таймер автоснятия пароля с «Конфигурации» (v0.87.0).
+
+        Просьба пользователя: «5 минут бездействия». Считается только
+        пока открыта «Конфигурация»: ушли на другую вкладку — пароль
+        снимается и без таймера (v0.18.0).
+        """
+
+        from PySide6.QtCore import QTimer
+
+        if getattr(self, "_config_timer", None) is not None:
+            return
+        self._config_timer = QTimer(self)
+        self._config_timer.setInterval(CONFIG_IDLE_MS)
+        self._config_timer.setSingleShot(True)
+        self._config_timer.timeout.connect(self._lock_config_by_idle)
+        # Любое действие в окне — знак, что человек здесь.
+        from PySide6.QtCore import QEvent
+        from PySide6.QtWidgets import QApplication
+
+        app = QApplication.instance()
+        if app is not None:
+            app.installEventFilter(self)
+        self._config_timer.start()
+
+    def _lock_config_by_idle(self) -> None:
+        """Время бездействия вышло: закрыть «Конфигурацию» от чужих глаз."""
+
+        if not self._config_unlocked:
+            return
+        # Окно ввода не вырываем из рук: дождёмся следующей проверки.
+        if self._dialog_is_open():
+            self._config_timer.start()
+            return
+        self._config_unlocked = False
+        self._apply_config_rights()
+        self.data_view.refresh_update_panel()
+        if self.stack.currentIndex() == IDX_DATA:
+            self.show_page(self.access.pages[0])
+        self.nav_buttons[self.access.pages[0]].setChecked(True)
+        self.statusBar().showMessage(
+            "«Конфигурация» закрыта: 5 минут бездействия.", 8000
+        ) if self.statusBar() is not None else None
+
+    def _dialog_is_open(self) -> bool:
+        """Открыт ли сейчас какой-нибудь диалог ввода (v0.87.0)."""
+
+        from PySide6.QtWidgets import QApplication, QDialog
+
+        for widget in QApplication.topLevelWidgets():
+            if isinstance(widget, QDialog) and widget.isVisible() and widget.isModal():
+                return True
+        return False
+
+    def eventFilter(self, obj, event):  # noqa: N802 - имя из Qt
+        """Любое действие пользователя продлевает открытую «Конфигурацию»."""
+
+        from PySide6.QtCore import QEvent
+
+        if getattr(self, "_config_timer", None) is not None:
+            if event.type() in (
+                QEvent.Type.MouseButtonPress,
+                QEvent.Type.MouseButtonRelease,
+                QEvent.Type.KeyPress,
+                QEvent.Type.Wheel,
+                QEvent.Type.MouseMove,
+            ):
+                if self._config_unlocked:
+                    self._config_timer.start()
+        return super().eventFilter(obj, event)
 
     def _ask_config_password(self) -> bool:
         """Пароль на вкладку «Конфигурация» (v0.18.0)."""

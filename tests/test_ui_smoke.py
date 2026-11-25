@@ -12338,3 +12338,159 @@ def test_block_titles_are_buttons_of_their_summaries(qt_app, store, monkeypatch)
     receipts.outgoing.title_button.click()
     assert opened == ["поступления", "оплаты"]
     window.close()
+
+
+# --------------------------------- Обновление программы (v0.87.0)
+def test_update_button_is_on_header_without_password(qt_app, store, monkeypatch):
+    """v0.87.0: «Обновить» — на верхней плашке и без пароля.
+
+    Просьба пользователя: «кнопку обновить надо делать не в конфигурации
+    а на верхней плашке без пароля чтобы все могли самостоятельно
+    обновляться». Пароль остаётся только на «Конфигурации», где лежат
+    кнопки раздачи.
+    """
+
+    from oplata.app import MainWindow
+
+    window = MainWindow(store)
+    window.show()
+    qt_app.processEvents()
+
+    assert window.update_button.text() == "Обновить"
+    assert not window.update_button.isHidden(), "кнопки нет на верхней плашке"
+
+    # Пароля на вход не спрашивают: окно открывается сразу.
+    monkeypatch.setattr(window, "_ask_password", lambda *a, **k: False)
+    opened: list = []
+    monkeypatch.setattr(
+        "oplata.views.update_view.UpdateDialog.show",
+        lambda self: opened.append(self),
+    )
+    window.update_button.click()
+    qt_app.processEvents()
+    assert opened, "кнопка «Обновить» не открыла окно"
+    window.autosave_on_exit = False
+    window.close()
+
+
+def _access():
+    """Права «Руководителя» — без права ввода, с доступом к вкладкам."""
+
+    from oplata import access as access_module
+
+    return access_module.Access(access_module.default_users()[1])
+
+
+def test_update_dialog_hides_publishing_on_ordinary_computer(qt_app, store, monkeypatch):
+    """v0.87.0: раздача обновлений — только с тестового компьютера."""
+
+    from oplata import local_settings
+    from oplata.views.update_view import UpdateDialog
+
+    monkeypatch.setenv("OPLATA_LOCAL_DIR", str(store.path.parent / "local"))
+    assert local_settings.is_test_computer() is False
+
+    dialog = UpdateDialog(store, _access())
+    dialog.show()
+    qt_app.processEvents()
+    # Кнопок раздачи нет вообще: нажать нечего.
+    assert not dialog.release_button.isVisible()
+    assert not dialog.test_button.isVisible()
+    assert not dialog.retract_button.isVisible()
+    # Установка доступна всем.
+    assert dialog.install_button.isVisible()
+    dialog.close()
+
+
+def test_test_computer_flag_lives_on_computer_not_in_shared_users(
+    qt_app, store, monkeypatch
+):
+    """v0.87.0: галочка «Тестовый компьютер» — настройка компьютера.
+
+    Просьба пользователя: столбец в «Пользователи и права», галочку он
+    ставит на компьютер, за которым работает. Хранится локально —
+    иначе галочка уехала бы на все компьютеры вместе с общим users.json.
+    """
+
+    import json
+
+    from PySide6.QtCore import Qt
+    from PySide6.QtWidgets import QMessageBox
+
+    from oplata import local_settings
+    from oplata.views.data_view import DataView
+
+    monkeypatch.setenv("OPLATA_LOCAL_DIR", str(store.path.parent / "local"))
+    monkeypatch.setattr(
+        QMessageBox, "question", lambda *a, **k: QMessageBox.StandardButton.Yes
+    )
+    view = DataView(store)
+    view.show()
+    qt_app.processEvents()
+
+    headers = [
+        view.users_table.horizontalHeaderItem(column).text()
+        for column in range(view.users_table.columnCount())
+    ]
+    assert "Тестовый компьютер" in headers, "нет столбца «Тестовый компьютер»"
+    assert view.users_col_test == headers.index("Тестовый компьютер")
+
+    def checked(row, column):
+        item = view.users_table.item(row, column)
+        return item is not None and item.checkState() == Qt.CheckState.Checked
+
+    # Отмечаем «Руководителя» — он же становится «Текущим».
+    row = 1
+    view.users_table.item(row, view.users_col_test).setCheckState(
+        Qt.CheckState.Checked
+    )
+    qt_app.processEvents()
+    assert checked(row, view.users_col_current), "«Текущий» не переехал"
+    # Галочка одна.
+    assert [
+        r for r in range(view.users_table.rowCount()) if checked(r, view.users_col_test)
+    ] == [row]
+
+    view._save_users()
+    qt_app.processEvents()
+    assert local_settings.is_test_computer() is True
+    assert local_settings.can_publish("manager") is True
+    assert local_settings.can_publish("user-mir") is False
+
+    # В общем файле пользователей галочки нет — она не уедет на другие
+    # компьютеры.
+    users_file = store.path.parent / "users.json"
+    if users_file.exists():
+        raw = json.loads(users_file.read_text(encoding="utf-8"))
+        assert "test_computer" not in json.dumps(raw)
+    view.close()
+
+
+def test_config_unlocks_are_dropped_after_five_idle_minutes(qt_app, store, monkeypatch):
+    """v0.87.0: «Конфигурация» сама закрывается через 5 минут бездействия.
+
+    Просьба пользователя: «лучше 5 минут бездействия». Пароль не должен
+    оставаться открытым, если человек ушёл от компьютера.
+    """
+
+    from oplata.app import CONFIG_IDLE_MS, IDX_DATA, MainWindow
+
+    assert CONFIG_IDLE_MS == 5 * 60 * 1000, "ожидались ровно 5 минут"
+
+    window = MainWindow(store)
+    window.show()
+    qt_app.processEvents()
+    window._config_unlocked = True
+    window._start_config_timer()
+    qt_app.processEvents()
+    assert window._config_timer.isActive()
+    assert window._config_timer.interval() == 5 * 60 * 1000
+
+    # Время вышло — пароль снят, программа уходит с «Конфигурации».
+    window.stack.setCurrentIndex(IDX_DATA)
+    window._lock_config_by_idle()
+    qt_app.processEvents()
+    assert window._config_unlocked is False
+    assert window.stack.currentIndex() != IDX_DATA
+    window.autosave_on_exit = False
+    window.close()
