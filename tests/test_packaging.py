@@ -216,3 +216,70 @@ def test_exit_autosave_is_wired_into_startup():
     assert 'window.autosave_on_exit = "--self-test" not in argv' in main_source, (
         "в smoke-прогоне (--self-test) выгрузка должна быть отключена"
     )
+
+
+def test_inno_setup_installer_is_shipped():
+    """v0.87.0: программа ставится установщиком, а не только ZIP-архивом.
+
+    Просьба пользователя: «сделать установку программы через setup с
+    полной её правильной распаковкой». Раньше из ZIP терялись файлы
+    (Defender вырезал Oplata.exe).
+    """
+
+    iss = (ROOT / "packaging" / "Oplata.iss").read_text(encoding="utf-8")
+
+    # Ставим без прав администратора и в профиль пользователя.
+    assert "PrivilegesRequired=lowest" in iss
+    assert "{localappdata}" in iss
+    # Обновление ставится поверх, данные не трогаются.
+    assert "UsePreviousAppDir=yes" in iss
+    assert "%APPDATA%\\OplataStroymarket" in iss  # пояснение в шапке
+    # Ярлыки: обычный запуск и запуск с общей базой на Диске.
+    assert "Start-With-Google-Drive.bat" in iss
+    assert "desktopicon" in iss
+    # Версию передаёт CI, а не вписана руками.
+    assert "AppVersion" in iss and "#ifndef AppVersion" in iss
+
+    workflow = (
+        ROOT / ".github" / "workflows" / "build-windows.yml"
+    ).read_text(encoding="utf-8")
+    # Установщик собирается в CI...
+    assert "innosetup" in workflow
+    assert "Oplata.iss" in workflow
+    # ...и в релиз попадают установщик и файл обновления.
+    assert "Oplata-*-Setup.exe" in workflow
+    assert "UPDATE_ZIP" in workflow
+    assert "oplata-update.json" in workflow
+
+
+def test_inno_setup_gets_absolute_build_dir():
+    """Inno Setup считает относительные Source от папки .iss (packaging\\).
+
+    CI раньше передавал /DBuildDir=.\\package-folder, и ISCC искал
+    "packaging\\.\\package-folder\\Oplata\\*" → «No files found»; сборка
+    Windows падала. Поэтому BuildDir обязан быть абсолютным.
+    """
+
+    workflow = (
+        ROOT / ".github" / "workflows" / "build-windows.yml"
+    ).read_text(encoding="utf-8")
+
+    # Переменная вычисляется через Resolve-Path (абсолютный путь)...
+    assert "Resolve-Path" in workflow
+    assert '"/DBuildDir=$buildDir"' in workflow
+    # ...и относительный ./package-folder в аргументе ISCC больше не передаётся.
+    assert '/DBuildDir=.\\package-folder' not in workflow
+    # Перед сборкой проверяем, что папка сборки полная (есть Oplata.exe).
+    assert "package-folder is incomplete" in workflow
+
+
+def test_start_here_explains_updates_and_base_transfer():
+    """v0.87.0: в инструкции есть обновление и перенос базы на Диск."""
+
+    text = (ROOT / "packaging" / "START_HERE_RU.txt").read_text(encoding="utf-8")
+
+    assert "ОБНОВЛЕНИЕ ПРОГРАММЫ" in text
+    assert "кнопка «Обновить»" in text or "Кнопка «Обновить»" in text
+    assert "Положить в тест" in text and "Выпустить" in text
+    assert "ПЕРВЫЙ ЗАПУСК С ДИСКОМ" in text, "нет раздела о переносе базы"
+    assert "Oplata-<версия>-Setup.exe" in text
