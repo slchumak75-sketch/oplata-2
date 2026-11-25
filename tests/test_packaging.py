@@ -390,6 +390,13 @@ def test_installer_replaces_all_files_and_cleans_stale_ones():
     assert "[Code]" in iss
     assert "CleanStaleFiles" in iss
     assert "ssPostInstall" in iss
+    # В [Code] недопустимы комментарии в фигурных скобках: {} заняты
+    # константами, и ISCC падал на компиляции (v0.88.1).
+    code = iss.split("[Code]", 1)[1].split("[UninstallDelete]", 1)[0]
+    for line in code.splitlines():
+        stripped = line.strip()
+        if stripped.startswith("{"):
+            raise AssertionError(f"комментарий в {{ }} внутри [Code]: {stripped}")
 
 
 def test_startup_qt_failure_is_explained_in_russian():

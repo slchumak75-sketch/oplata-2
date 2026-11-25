@@ -97,16 +97,15 @@ Filename: "{app}\{#AppExe}"; Description: "Запустить {#AppName}"; \
     Flags: nowait postinstall skipifsilent
 
 [Code]
-{ v0.88.1: страховка от «Не найдена указанная процедура».
-
-  Если в папке программы остались DLL от прежней версии (например,
-  файл был занят запущенной программой в момент [InstallDelete]),
-  Qt загрузит несовместимую библиотеку и упадёт с той же ошибкой
-  «Не найдена указанная процедура». Поэтому после установки убираем
-  то, чего в сборке быть не должно: папку PySide6 в корне программы
-  (осталась от распаковки ZIP старше v0.87.0) и .dll в корне — все
-  библиотеки живут в {app}\_internal. Молча: пользователю тут
-  решать нечего. }
+// v0.88.1: страховка от «Не найдена указанная процедура».
+//
+// Если в папке программы остались DLL от прежней версии (например,
+// файл был занят запущенной программой в момент [InstallDelete]),
+// Qt загрузит несовместимую библиотеку и упадёт с той же ошибкой.
+// Поэтому после установки убираем то, чего в сборке быть не должно:
+// папку PySide6 в корне программы (осталась от распаковки ZIP старше
+// v0.87.0) и .dll в корне — все библиотеки живут в {app}\_internal.
+// Молча: пользователю тут решать нечего.
 
 procedure CleanStaleFiles();
 var
@@ -114,21 +113,22 @@ var
   Count: Integer;
 begin
   Count := 0;
-  { Остатки от прежних версий Qt: папка PySide6 в корне программы
-    (до v0.87.0 программа ставилась распаковкой ZIP). }
+  // Остатки от прежних версий Qt: папка PySide6 в корне программы.
   if DirExists(ExpandConstant('{app}\PySide6')) then
   begin
     DelTree(ExpandConstant('{app}\PySide6'), True, True, True);
     Count := Count + 1;
   end;
-  { Лишние .dll/.pyd в корне программы: их в сборке быть не должно —
-    все библиотеки живут в _internal. }
+  // Лишние .dll в корне программы: их в сборке быть не должно —
+  // все библиотеки живут в _internal.
   if FindFirst(ExpandConstant('{app}\*.dll'), FindRec) then
   begin
     try
       repeat
+        // 16 ($10) — признак папки в FindRec.Attributes; константа
+        // FILE_ATTRIBUTE_DIRECTORY в Pascal Script недоступна.
         if (FindRec.Name <> '.') and (FindRec.Name <> '..') and
-           ((FindRec.Attributes and FILE_ATTRIBUTE_DIRECTORY) = 0) then
+           ((FindRec.Attributes and $10) = 0) then
         begin
           DeleteFile(ExpandConstant('{app}\' + FindRec.Name));
           Count := Count + 1;
@@ -143,8 +143,17 @@ end;
 
 procedure CurStepChanged(CurStep: TSetupStep);
 begin
+  // Очистка — вспомогательная: если что-то пойдёт не так (файл занят,
+  // нет прав), установка всё равно должна завершиться успешно.
+  // Поэтому вызываем её ПОСЛЕ основной работы и не даём уронить Setup.
   if CurStep = ssPostInstall then
-    CleanStaleFiles();
+  begin
+    try
+      CleanStaleFiles();
+    except
+      Log('v0.88.1: очистку старых файлов выполнить не удалось');
+    end;
+  end;
 end;
 
 [UninstallDelete]
