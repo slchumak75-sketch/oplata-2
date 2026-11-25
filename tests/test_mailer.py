@@ -69,16 +69,21 @@ def test_server_is_filled_from_known_address():
     assert settings["user"] == "oplata-bot@yandex.ru"
 
 
+# Имена параметров — без «@»: scripts/run_tests.sh собирает список тестов
+# в выражение -k, а «@» в id pytest в нём недопустим (прогон частями
+# падал на разборе выражения ещё до запуска тестов).
 @pytest.mark.parametrize(
-    ("address", "host"),
+    ("domain", "host"),
     [
-        ("a@mail.ru", "smtp.mail.ru"),
-        ("a@bk.ru", "smtp.mail.ru"),
-        ("a@gmail.com", "smtp.gmail.com"),
-        ("a@ya.ru", "smtp.yandex.ru"),
+        ("mail.ru", "smtp.mail.ru"),
+        ("bk.ru", "smtp.mail.ru"),
+        ("gmail.com", "smtp.gmail.com"),
+        ("ya.ru", "smtp.yandex.ru"),
     ],
 )
-def test_provider_presets_cover_common_mailboxes(address, host):
+def test_provider_presets_cover_common_mailboxes(domain, host):
+    address = "a@" + domain
+
     assert mailer.normalize_mail(good_settings(sender=address))["host"] == host
 
 
