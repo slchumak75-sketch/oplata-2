@@ -1459,6 +1459,12 @@ class MoneyBlock(QFrame):
         }
         return True
 
+    def reload_widths_from_file(self) -> None:
+        """Подхватить общие ширины или сброс, не записывая файл обратно."""
+        self._saved_widths = {}
+        self.load_saved_widths()
+        self._apply_column_widths()
+
     def current_widths(self) -> list[int] | None:
         """Текущие ширины колонок — для кнопки «Сохранить поля»."""
 

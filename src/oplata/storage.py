@@ -17,6 +17,7 @@ import os
 import re
 import shutil
 import sys
+import tempfile
 from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import date, datetime
@@ -133,8 +134,10 @@ def pending_promotion() -> list[Path]:
             return []
     except OSError:
         pass
-    # В общей папке уже есть база — ничего не перетираем.
-    if (target / DATA_FILE_NAME).exists():
+    # Не только МИР: КОРЕЛИЧИ, пользователи или настройки тоже могут
+    # уже быть в папке. В таком случае не смешиваем их с локальным
+    # набором и не предлагаем автоматическое копирование.
+    if any((target / name).exists() for name in PROMOTE_FILES):
         return []
     found: list[Path] = []
     for name in PROMOTE_FILES:
@@ -144,25 +147,79 @@ def pending_promotion() -> list[Path]:
     return found
 
 
-def promote_to_shared() -> list[Path]:
+def _publish_new_file(temporary: Path, target: Path) -> None:
+    """Опубликовать готовый файл, только если цели ещё нет на этом ПК."""
+
+    # Windows rename отказывает, если цель существует; в POSIX это
+    # свойство обеспечивает атомарный link (rename может заменить цель).
+    if os.name == "nt":
+        os.rename(temporary, target)
+    else:
+        os.link(temporary, target)
+
+
+def write_new_json(path: Path, payload: dict) -> None:
+    """Создать JSON без замены существующего файла и убрать временный."""
+
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fd, tmp_name = tempfile.mkstemp(prefix=f".{path.name}.", suffix=".part", dir=path.parent)
+    temporary = Path(tmp_name)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as handle:
+            json.dump(payload, handle, ensure_ascii=False, indent=2)
+        _publish_new_file(temporary, path)
+    finally:
+        try:
+            temporary.unlink(missing_ok=True)
+        except OSError:
+            pass
+
+
+def promote_to_shared(expected: list[Path] | None = None) -> list[Path]:
     """Скопировать локальную базу в общую папку (v0.87.0).
 
     Возвращает пути созданных файлов. Исходные файлы остаются на месте.
+    Если перечень изменился после вопроса, копирование не начинается.
     """
 
     files = pending_promotion()
+    if expected is not None and files != expected:
+        return []
     made: list[Path] = []
     for source in files:
         target = Path(shared_dir_candidate()) / source.name
+        tmp: Path | None = None
         try:
             target.parent.mkdir(parents=True, exist_ok=True)
-            # Копия, а не перенос: локальная база — запасной вариант.
-            tmp = target.with_name(target.name + ".part")
+            # Отдельное случайное имя: два процесса не делят .part-файл.
+            fd, tmp_name = tempfile.mkstemp(
+                prefix=f".{target.name}.", suffix=".part", dir=target.parent
+            )
+            os.close(fd)
+            tmp = Path(tmp_name)
             shutil.copy2(source, tmp)
-            os.replace(tmp, target)
+            # Во время копирования мог появиться и ДРУГОЙ файл набора.
+            # Не добавляем локальные данные к чужой общей базе/настройкам.
+            own_names = {path.name for path in made}
+            if any(
+                (target.parent / name).exists()
+                for name in PROMOTE_FILES if name not in own_names
+            ):
+                raise FileExistsError("в общей папке появился файл")
+            # Только создание нового файла, никогда не замена: между
+            # вопросом и копированием файл мог появиться на этом ПК.
+            _publish_new_file(tmp, target)
+            made.append(target)
         except OSError:
-            continue
-        made.append(target)
+            # Частичный набор не считаем успешным; вызывающая сторона
+            # остановит запуск и попросит проверить папку.
+            break
+        finally:
+            if tmp is not None:
+                try:
+                    tmp.unlink(missing_ok=True)
+                except OSError:
+                    pass
     return made
 
 
@@ -482,10 +539,29 @@ def save_active_base(base_key: str) -> None:
         pass
 
 
-class DataStore:
-    """Загрузка/сохранение AppData. При первом запуске — демо-данные."""
+class DataUnavailableError(OSError):
+    """Существующий файл базы отсутствует или не читается."""
 
-    def __init__(self, path: Path | None = None, base_key: str | None = None) -> None:
+
+def read_existing_data(path: Path) -> AppData | None:
+    """Прочитать файл базы без создания и без записи при ошибке."""
+
+    try:
+        raw = json.loads(path.read_text(encoding="utf-8"))
+        if not isinstance(raw, dict):
+            return None
+        return AppData.from_dict(raw)
+    except (OSError, ValueError, TypeError, AttributeError, KeyError, OverflowError):
+        return None
+
+
+class DataStore:
+    """Загрузка/сохранение AppData. При первом локальном запуске — демо."""
+
+    def __init__(
+        self, path: Path | None = None, base_key: str | None = None, *,
+        require_existing: bool = False,
+    ) -> None:
         # v0.17.0: активная база запоминается между запусками; явный path
         # (тесты) важнее remembered-выбора.
         self.base_key = base_key or load_active_base()
@@ -493,35 +569,64 @@ class DataStore:
         # Подписчики на сохранение (v0.15.0): «Сводка» должна
         # пересчитываться сразу после ввода, а не только при смене даты.
         self.on_saved: list[Callable[[], None]] = []
-        self.data: AppData = self._load()
+        if require_existing:
+            data = read_existing_data(self.path)
+            if data is None:
+                raise DataUnavailableError(f"База недоступна: {self.path}")
+            self.data: AppData = data
+        else:
+            self.data = self._load()
 
-    def switch_base(self, base_key: str) -> None:
-        """Переключить активную базу: сохранить текущую, загрузить другую.
+    def switch_base(self, base_key: str) -> bool:
+        """Переключить активную базу, не перезаписывая прежний файл.
 
-        Объект остаётся тем же, поэтому все экраны, держащие ссылку на
-        ``store``, увидят новые данные после перерисовки (v0.17.0).
+        Изменения интерфейса сохраняются при вводе. Безусловное сохранение
+        при переключении могло записать старый снимок поверх данных,
+        которые с момента открытия изменил другой компьютер.
+        Объект ``store`` остаётся тем же для всех экранов.
         """
-        if base_key not in BASE_FILES or base_key == self.base_key:
-            return
-        self.save()
-        self.base_key = base_key
-        self.path = data_path_for(base_key)
-        self.data = self._load()
+        if base_key not in BASE_FILES:
+            return False
+        if base_key == self.base_key:
+            return True
+        new_path = data_path_for(base_key)
+        if shared_dir_candidate():
+            # В общей папке отсутствие файла может быть задержкой Диска.
+            # Не создаём вместо него демо и не переключаемся на неё.
+            data = read_existing_data(new_path)
+            if data is None:
+                return False
+            self.base_key = base_key
+            self.path = new_path
+            self.data = data
+        else:
+            self.base_key = base_key
+            self.path = new_path
+            self.data = self._load()
         save_active_base(base_key)
         # «Сводка» и прочие подписчики пересчитываются по новой базе.
         for callback in list(self.on_saved):
             callback()
+        return True
 
     def _load(self) -> AppData:
         if not self.path.exists():
             data = seed_data()
-            self.data = data
-            self.save()
-            return data
+            try:
+                # Между проверкой и созданием файл мог появиться.
+                # Новая демо-база никогда не заменяет его на этом ПК.
+                write_new_json(self.path, data.to_dict())
+            except FileExistsError:
+                pass  # кто-то уже создал файл — читаем его ниже
+            else:
+                self.data = data
+                for callback in list(self.on_saved):
+                    callback()
+                return data
         try:
             raw = json.loads(self.path.read_text(encoding="utf-8"))
             return AppData.from_dict(raw)
-        except (OSError, ValueError, TypeError):
+        except (OSError, ValueError, TypeError, AttributeError, KeyError, OverflowError):
             # Битый файл не должен ронять оболочку: начинаем с демо-данных,
             # старый файл не трогаем до первого save() из UI.
             # TODO(этап данных): показать пользователю предупреждение и бэкап.
@@ -542,17 +647,21 @@ class DataStore:
             return None
         return (stat.st_mtime_ns, stat.st_size)
 
-    def reload(self) -> None:
-        """Перечитать файл с диска, не трогая выбранную базу (v0.28.0).
+    def reload(self) -> bool:
+        """Перечитать существующий файл, не создавая демо при сбое Диска.
 
-        Экраны держат ссылку на ``store``, поэтому после перечитывания
-        им достаточно перерисоваться — подписчики ``on_saved``
-        уведомляются так же, как при обычном сохранении.
+        Если файл временно пропал или не читается, прежний снимок остаётся
+        в памяти, файл не записывается; вызывающая сторона сможет повторить
+        попытку. ``True`` означает, что чтение удалось.
         """
 
-        self.data = self._load()
+        data = read_existing_data(self.path)
+        if data is None:
+            return False
+        self.data = data
         for callback in list(self.on_saved):
             callback()
+        return True
 
     def save(self) -> None:
         self.path.parent.mkdir(parents=True, exist_ok=True)

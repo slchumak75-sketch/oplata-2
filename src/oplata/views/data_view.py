@@ -1296,7 +1296,9 @@ class DataView(QWidget):
                     pages=pages,
                     base=base,
                     can_edit=can_edit,
-                    can_switch_base=base is None and can_edit,
+                    # «Обе базы» разрешает переключение независимо от
+                    # того, разрешён ли ввод данных этому пользователю.
+                    can_switch_base=base is None,
                 )
             )
         return users

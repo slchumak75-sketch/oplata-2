@@ -160,14 +160,20 @@ class User:
         raw_pages = raw.get("pages")
         pages = pages_from_keys(raw_pages) if raw_pages else []
         pages = [p for p in pages if p in ALL_PAGES] or [IDX_CUSTOMERS]
-        base = raw.get("base")
+        raw_base = raw.get("base")
+        base = raw_base if raw_base in (BASE_MIR, BASE_KORELICHI) else None
         return User(
             id=str(raw.get("id") or secrets.token_hex(4)),
             name=str(raw.get("name") or "Пользователь"),
             pages=pages or [IDX_CUSTOMERS],
-            base=base if base in (BASE_MIR, BASE_KORELICHI) else None,
+            base=base,
             can_edit=bool(raw.get("can_edit")),
-            can_switch_base=bool(raw.get("can_switch_base")),
+            # В таблице прав «Обе базы» — единственная настройка доступа
+            # к переключателю; право ввода с ней не связано. v0.88.1
+            # мог ошибочно сохранить False для руководителя без ввода.
+            # Восстанавливаем это право при чтении, не переписывая файл.
+            # Если поле отсутствует или повреждено, не расширяем доступ.
+            can_switch_base="base" in raw and raw_base is None,
         )
 
 
@@ -238,13 +244,43 @@ def _write_users_file(payload: dict) -> None:
         pass
 
 
-def load_users() -> list[User]:
-    """Список пользователей; при первом обращении — четыре договорных."""
+def users_from_payload(raw: object) -> list[User] | None:
+    """Прочитать список прав без записи файла; ``None`` — файл неверен."""
 
-    raw = _read_users_file()
-    users = [User.from_dict(item) for item in raw.get("users") or []]
-    if not users:
-        users = default_users()
+    if not isinstance(raw, dict) or not isinstance(raw.get("users"), list):
+        return None
+    items = raw["users"]
+    if not items or not all(isinstance(item, dict) for item in items):
+        return None
+    try:
+        return [User.from_dict(item) for item in items]
+    except (ValueError, TypeError, AttributeError, KeyError, OverflowError):
+        return None
+
+
+def read_users_safely() -> list[User] | None:
+    """Снимок пользователей из существующего файла, без значений по умолчанию."""
+
+    try:
+        raw = json.loads(users_path().read_text(encoding="utf-8"))
+    except (OSError, ValueError, TypeError):
+        return None
+    return users_from_payload(raw)
+
+
+def load_users() -> list[User]:
+    """Список пользователей; при первом локальном запуске — стандартный."""
+
+    users = read_users_safely()
+    if users is not None:
+        return users
+    users = default_users()
+    # Повреждённый файл нельзя заменять настройками по умолчанию. В
+    # общей папке он может временно отсутствовать из-за синхронизации;
+    # его первоначальное создание подтверждается при запуске отдельно.
+    from .storage import shared_dir_candidate
+
+    if not users_path().exists() and not shared_dir_candidate():
         save_users(users)
     return users
 
@@ -302,8 +338,12 @@ def check_password(raw: str) -> bool:
 # ------------------------------------------ кто работает на этом компьютере
 
 
-def load_current_user() -> User | None:
-    """Пользователь, выбранный на этом компьютере (None — не выбран)."""
+def load_current_user(users: list[User] | None = None) -> User | None:
+    """Пользователь, выбранный на этом компьютере (None — не выбран).
+
+    При обновлении с Диска можно передать проверенный снимок пользователей,
+    чтобы повторное чтение не застало файл в момент синхронизации.
+    """
 
     # v0.28.0: выбор читается из локального каталога; если его там ещё
     # нет — из прежнего файла рядом с данными, чтобы первый запуск
@@ -314,7 +354,10 @@ def load_current_user() -> User | None:
         except (OSError, ValueError, TypeError):
             continue
         user_id = raw.get("user_id") if isinstance(raw, dict) else None
-        user = find_user(str(user_id)) if user_id else None
+        if user_id and users is not None:
+            user = next((item for item in users if item.id == str(user_id)), None)
+        else:
+            user = find_user(str(user_id)) if user_id else None
         if user is not None:
             return user
     return None

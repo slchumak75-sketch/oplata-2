@@ -82,10 +82,13 @@ class OrganizationReportDialog(QDialog):
         store: DataStore,
         on_date: date,
         parent: QDialog | None = None,
+        *,
+        read_only: bool = False,
     ) -> None:
         super().__init__(parent)
         self.store = store
         self.on_date = on_date
+        self.read_only = read_only
         # Базу показываем в заголовке: цифры считаются по активной базе.
         self.base_title = BASE_TITLES.get(store.base_key, "")
         self.setWindowTitle(
@@ -139,11 +142,8 @@ class OrganizationReportDialog(QDialog):
         self._setup_columns()
         root.addWidget(self.table, stretch=1)
 
-        hint = QLabel(
-            "Строки «НДС Реализация (Накладные)», «Товары реализация без "
-            "НДС», «Входящий НДС» и «Себестоимость реализация без НДС» "
-            "заполняются из бухгалтерии — двойной клик по клетке."
-        )
+        hint = QLabel(self._access_hint())
+        self.hint_label = hint
         hint.setWordWrap(True)
         hint.setStyleSheet(f"color:{styles.MUTED};font-size:{styles.fs(10)}px")
         root.addWidget(hint)
@@ -221,6 +221,11 @@ class OrganizationReportDialog(QDialog):
 
         return "org_report"
 
+    def reload_widths_from_file(self) -> None:
+        """Подхватить общие ширины или сброс, не записывая файл обратно."""
+        self._saved_widths = column_widths.load(self._widths_key, len(self.headers))
+        self._apply_default_widths()
+
     def current_widths(self) -> list[int] | None:
         """Текущие ширины столбцов (для «Сохранить поля»)."""
 
@@ -264,6 +269,22 @@ class OrganizationReportDialog(QDialog):
 
     def go_this_year(self) -> None:
         self.set_year(date.today().year)
+
+    def _access_hint(self) -> str:
+        if self.read_only:
+            return "Режим просмотра: изменение значений в отчёте недоступно."
+        return (
+            "Строки «НДС Реализация (Накладные)», «Товары реализация без "
+            "НДС», «Входящий НДС» и «Себестоимость реализация без НДС» "
+            "заполняются из бухгалтерии — двойной клик по клетке."
+        )
+
+    def set_read_only(self, read_only: bool) -> None:
+        """Сразу применить права, в том числе к уже открытому отчёту."""
+        if self.read_only != read_only:
+            self.read_only = read_only
+            self.hint_label.setText(self._access_hint())
+            self.refresh()
 
     # ------------------------------------------------------------- расчёты
     def report(self) -> report_calc.OrganizationReportData:
@@ -347,7 +368,7 @@ class OrganizationReportDialog(QDialog):
         entered = ""
         if is_quarter:
             entered = self.store.data.org_report.quarter(year, line.key, index)
-        editable = is_quarter and (line.manual or line.expense)
+        editable = not self.read_only and is_quarter and (line.manual or line.expense)
 
         if line.manual:
             # Ручную строку показываем так, как её ввели (пусто = пусто).
@@ -396,6 +417,8 @@ class OrganizationReportDialog(QDialog):
                 "Введено вручную в «Отчете».\n"
                 f"В «Оплате» за этот квартал: {from_payments or '0,00'} руб."
             )
+        elif self.read_only:
+            item.setToolTip("Сумма из блока «Оплата». Доступен только просмотр.")
         else:
             item.setToolTip(
                 "Сумма из блока «Оплата». Можно ввести своё значение — "
@@ -413,6 +436,11 @@ class OrganizationReportDialog(QDialog):
 
         self._updating = getattr(self, "_updating", False)
         if self._updating:
+            return
+        if self.read_only:
+            # На случай программного изменения ячейки или смены роли,
+            # пока открыт редактор: никаких записей без права ввода.
+            self.refresh()
             return
         column = item.column()
         if not COL_FIRST_QUARTER <= column < COL_TOTAL:

@@ -1903,6 +1903,15 @@ class WeekView(QWidget):
         self._widths_locked = True
         return True
 
+    def reload_widths_from_file(self) -> None:
+        """Подхватить общие ширины или сброс, не записывая файл обратно."""
+        self._saved_widths = None
+        self._saved_viewport = 0
+        self._widths_locked = False
+        self.load_saved_widths()
+        self._fit_lead_widths()
+        self._fit_columns_to_width()
+
     def current_widths(self) -> list[int] | None:
         """Текущие ширины колонок — для кнопки «Сохранить поля»."""
 
