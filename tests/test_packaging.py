@@ -414,8 +414,9 @@ def test_startup_qt_failure_is_explained_in_russian():
     assert "не смогла загрузить Qt" in text
     # Главный совет — переустановить установщиком.
     assert "Setup.exe" in text
-    # И успокоить насчёт данных.
-    assert "данные при этом не пропадут" in text.lower()
+    # Не обещать безусловную сохранность данных: сначала отдельная копия.
+    assert "независимые копии ОБЕИХ баз" in text
+    assert "данные при этом не пропадут" not in text.lower()
     # Qt грузится в try: иначе ошибка вылетает трейсбеком.
     assert "except ImportError as error:" in text
 

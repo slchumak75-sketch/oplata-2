@@ -77,6 +77,7 @@ class SummaryView(QWidget):
     ) -> None:
         super().__init__(parent)
         self.store = store
+        self.read_only = False
         self.on_open_supplier = on_open_supplier
         # v0.22.1: дата сводки и даты блоков «Поступление»/«Оплата»
         # идут вместе — смена даты здесь переставляет и их.
@@ -335,6 +336,13 @@ class SummaryView(QWidget):
     def caption_text(self, key: str) -> str:
         return self._captions[key].text()
 
+    def set_read_only(self, read_only: bool) -> None:
+        """Роль управляет вводом и в немодальном окне «Отчет»."""
+        self.read_only = read_only
+        dialog = getattr(self, "report_dialog", None)
+        if dialog is not None:
+            dialog.set_read_only(read_only)
+
     # --------------------------------------------------------------- журнал
     def _open_report(self) -> None:
         """Открыть «Отчет по организации» за год из «Сводки» (v0.85.0).
@@ -354,7 +362,7 @@ class SummaryView(QWidget):
             dialog.activateWindow()
             return
         self.report_dialog = OrganizationReportDialog(
-            self.store, self.current_date(), self
+            self.store, self.current_date(), self, read_only=self.read_only
         )
         # Данные могли измениться, пока окно было закрыто.
         self.report_dialog.refresh()

@@ -21,6 +21,7 @@ from PySide6.QtCore import QRect, QTimer, Qt
 from PySide6.QtGui import QCloseEvent, QGuiApplication
 from PySide6.QtWidgets import (
     QApplication,
+    QAbstractItemView,
     QButtonGroup,
     QDialog,
     QFileDialog,
@@ -251,7 +252,7 @@ class MainWindow(QMainWindow):
             on_edit_fields=self._edit_column_widths,
             # v0.87.0: окно обновления открывается и из «Конфигурации»
             # (там же — кнопки раздачи, только на тестовом компьютере).
-            on_open_updates=self.open_update_dialog,
+            on_open_updates=lambda: self.open_update_dialog(from_config=True),
             on_test_computer_changed=self._on_test_computer_changed,
         )
         # v0.79.0: второй каталог копий — на самом компьютере (Загрузки).
@@ -385,7 +386,9 @@ class MainWindow(QMainWindow):
         self.update_button.setToolTip(
             "Обновить программу файлом обновления (данные не меняются)"
         )
-        self.update_button.clicked.connect(self.open_update_dialog)
+        self.update_button.clicked.connect(
+            lambda: self.open_update_dialog(from_config=False)
+        )
         layout.addWidget(self.update_button)
 
         layout.addSpacing(6)
@@ -477,14 +480,46 @@ class MainWindow(QMainWindow):
             f"QPushButton:hover{{background:{styles.HEADER_HOVER}}}"
         )
 
-    def toggle_base(self) -> None:
-        """Переключить базу: МИР <-> КОРЕЛИЧИ (v0.17.0)."""
-        # Журналы операций показывают данные конкретной базы — закрываем,
-        # чтобы в окне не остались строки из другой базы.
+    def _close_base_windows(self) -> None:
+        """Убрать немодальные окна со строками прежней базы."""
         for dialog in list(self._journal_dialogs):
             dialog.close()
         self._journal_dialogs.clear()
-        self.store.switch_base(OTHER_BASE[self.store.base_key])
+        report = getattr(self.summary_view, "report_dialog", None)
+        if report is not None and report.isVisible():
+            report.close()
+
+    def toggle_base(self) -> None:
+        """Переключить базу: МИР <-> КОРЕЛИЧИ (v0.17.0)."""
+        calendar_draft = self.data_view.has_unsaved_changes
+        if calendar_draft:
+            answer = QMessageBox.question(
+                self,
+                "Несохранённый календарь",
+                "В календаре текущей базы есть несохранённые отметки. "
+                "При переключении они пропадут.\n\n"
+                "Переключить базу без сохранения отметок? "
+                "Чтобы их сохранить, выберите «Нет», вернитесь в "
+                "«Конфигурацию» и нажмите «Сохранить».",
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+                QMessageBox.StandardButton.No,
+            )
+            if answer != QMessageBox.StandardButton.Yes:
+                return
+        # Иначе старый «Отчет» останется видимым и будет записывать
+        # изменения в уже другую базу.
+        self._close_base_windows()
+        target = OTHER_BASE[self.store.base_key]
+        if not self.store.switch_base(target):
+            QMessageBox.warning(
+                self, "База недоступна",
+                f"Не удалось прочитать базу {BASE_TITLES[target]}. "
+                "Переключение отменено, новая база не создавалась. "
+                "Проверьте подключение и синхронизацию Диска.",
+            )
+            return
+        if calendar_draft:
+            self.data_view.discard_changes()
         self.base_button.setText(BASE_TITLES[self.store.base_key])
         self._apply_base_style()
         self.refresh_all_views()
@@ -879,19 +914,26 @@ class MainWindow(QMainWindow):
         )
 
     def _read_base(self, base_key: str) -> AppData:
-        """Прочитать базу с диска (без переключения активной базы)."""
+        """Прочитать сохранённый файл для выгрузки, не меняя данные в UI."""
 
-        path = data_path_for(base_key)
-        if not path.exists():
-            return AppData()
+        from .storage import shared_dir_candidate
+
+        active = base_key == self.store.base_key
+        path = self.store.path if active else data_path_for(base_key)
         try:
             raw = json.loads(path.read_text(encoding="utf-8"))
-        except (OSError, ValueError):
-            return AppData()
-        try:
+            if not isinstance(raw, dict):
+                raise ValueError("файл не содержит объект базы")
             return AppData.from_dict(raw)
-        except (TypeError, ValueError):
-            return AppData()
+        except FileNotFoundError as exc:
+            # Локальная новая установка могла ещё не открыть вторую базу.
+            # В общей папке отсутствие файла может означать незавершённую
+            # синхронизацию: пустой лист не должен перезаписать выгрузку.
+            if not active and not shared_dir_candidate():
+                return AppData()
+            raise ExcelError(f"Файл базы не найден: {path}") from exc
+        except (OSError, ValueError, TypeError, AttributeError, KeyError, OverflowError) as exc:
+            raise ExcelError(f"Не удалось прочитать базу {path}: {exc}") from exc
 
     def _write_base(self, base_key: str, data: AppData) -> None:
         """Записать базу на диск атомарно (как сохраняет DataStore)."""
@@ -901,12 +943,12 @@ class MainWindow(QMainWindow):
         holder.save()
 
     def _collect_bases(self) -> dict[str, AppData]:
-        """Обе базы (МИР и КОРЕЛИЧИ) для выгрузки (v0.30.0)."""
+        """Обе сохранённые базы с диска, а не устаревший снимок в памяти."""
 
-        bases = {self.store.base_key: self.store.data}
-        other = OTHER_BASE[self.store.base_key]
-        bases[other] = self._read_base(other)
-        return bases
+        return {
+            base_key: self._read_base(base_key)
+            for base_key in (BASE_MIR, BASE_KORELICHI)
+        }
 
     def export_bases_to_excel(self) -> None:
         """Кнопка «Выгрузить базы»: обе базы в один файл Excel (v0.20.0).
@@ -916,7 +958,6 @@ class MainWindow(QMainWindow):
         """
 
         self._last_export_path = None
-        bases = self._collect_bases()
 
         # Папку создаём заранее: если её не было, диалог всё равно
         # откроется в нужном месте. Не создалась (например, программа в
@@ -938,6 +979,8 @@ class MainWindow(QMainWindow):
         if not path.lower().endswith(".xlsx"):
             path += ".xlsx"
         try:
+            # Пока открыт диалог выбора файла, база могла обновиться.
+            bases = self._collect_bases()
             export_bases(bases, Path(path))
         except ExcelError as exc:
             QMessageBox.warning(self, "Выгрузка баз", str(exc))
@@ -967,9 +1010,9 @@ class MainWindow(QMainWindow):
             return None
         self._exit_export_done = True
 
-        bases = self._collect_bases()
         path = local_base_file()
         try:
+            bases = self._collect_bases()
             path.parent.mkdir(parents=True, exist_ok=True)
             export_bases(bases, path)
         except (ExcelError, OSError) as exc:
@@ -1042,11 +1085,8 @@ class MainWindow(QMainWindow):
         if answer != QMessageBox.StandardButton.Yes:
             return
 
-        # Журналы операций показывают данные конкретной базы — закрываем,
-        # чтобы в них не остались строки из прежней загрузки.
-        for dialog in list(self._journal_dialogs):
-            dialog.close()
-        self._journal_dialogs.clear()
+        # Немодальные окна показывают данные до загрузки.
+        self._close_base_windows()
 
         # v0.79.0: загрузка затирает базу целиком — сначала копия.
         # Она и есть настоящая страховка: вернуть примечания и правила
@@ -1164,9 +1204,26 @@ class MainWindow(QMainWindow):
         self.refresh_all_views()
 
     def _remember_signature(self) -> None:
-        """Запомнить состояние файлов после своей записи (v0.28.0/v0.87.0)."""
+        """Отметить только файл, который прочитало/сохранило хранилище.
 
-        self._data_signature = self._shared_signature()
+        Другие общие файлы могли измениться на другом компьютере между
+        проверками. Если отметить их все, таймер пропустит изменения
+        пользователей, ширин или другой базы после собственного ввода
+        или переключения базы.
+        """
+        from .storage import BASE_FILES
+
+        marks = {mark[0]: mark for mark in self._data_signature}
+        name = self.store.path.name
+        marks.pop(name, None)
+        for mark in self._shared_signature():
+            if mark[0] == name:
+                marks[name] = mark
+                break
+        order = list(BASE_FILES.values()) + [
+            "users.json", "column-widths.json", "state.json"
+        ]
+        self._data_signature = tuple(marks[key] for key in order if key in marks)
 
     def pull_external_changes(self) -> bool:
         """Подтянуть изменения, внесённые на другом компьютере.
@@ -1191,19 +1248,75 @@ class MainWindow(QMainWindow):
             return False
         if QApplication.activeModalWidget() is not None:
             return False
-        if not self.isActiveWindow():
+        report = getattr(self.summary_view, "report_dialog", None)
+        active_child = (
+            report is not None and report.isActiveWindow()
+        ) or any(dialog.isActiveWindow() for dialog in self._journal_dialogs)
+        if not self.isActiveWindow() and not active_child:
+            return False
+        # Не заменять черновик календаря/прав в открытой конфигурации и
+        # не перерисовывать таблицу поверх незавершённого ввода. После
+        # закрытия конфигурации или редактора проверка повторится.
+        if self._config_unlocked and self.stack.currentIndex() == IDX_DATA:
+            return False
+        if self.data_view.has_unsaved_changes:
+            self.statusBar().showMessage(
+                "Обновление данных ожидает: сохраните или отмените "
+                "изменения календаря в «Конфигурации».",
+                10_000,
+            )
+            return False
+        if any(
+            view.isVisible() and view.state() == QAbstractItemView.State.EditingState
+            for view in self.findChildren(QAbstractItemView)
+        ):
             return False
 
-        self.store.reload()
+        def mark_for(marks, name):
+            return next((mark for mark in marks if mark[0] == name), None)
+
+        widths_changed = mark_for(signature, "column-widths.json") != mark_for(
+            self._data_signature, "column-widths.json"
+        )
+        # users.json может на миг исчезнуть или оказаться недочитанным
+        # во время синхронизации. Не подменять права настройками по
+        # умолчанию и не переписывать файл из такого состояния.
+        from .access import read_users_safely
+
+        users = read_users_safely()
+        if users is None:
+            self.statusBar().showMessage(
+                "Не удалось прочитать пользователей. Не изменяйте данные; "
+                "проверьте подключение и синхронизацию Диска.",
+                30_000,
+            )
+            return False
+        if not self.store.reload():
+            self.statusBar().showMessage(
+                "Не удалось прочитать общую базу. Не изменяйте данные; "
+                "проверьте подключение и синхронизацию Диска.",
+                30_000,
+            )
+            return False
         # Пользователи и права — общий users.json (v0.87.0).
-        self._reload_users()
-        # Ширины столбцов — общий column-widths.json (v0.87.0).
-        self._reload_column_widths()
+        self._reload_users(users)
+        # Не стирать несохранённую настройку ширин из-за изменения базы:
+        # перечитывать ширины только если изменился именно их файл.
+        if widths_changed:
+            self._reload_column_widths()
         # Другая база тоже могла измениться: её подхватят при
         # переключении, но «Сводка» и счётчики должны знать свежие
         # данные сразу.
-        self._data_signature = self._shared_signature()
+        # Запоминаем снимок ДО чтения. Если файлы изменились во время
+        # перечитывания, следующая проверка увидит это, а не пропустит.
+        self._data_signature = signature
         self.refresh_all_views()
+        report = getattr(self.summary_view, "report_dialog", None)
+        if report is not None and report.isVisible():
+            report.refresh()
+        for dialog in list(self._journal_dialogs):
+            if dialog.isVisible():
+                dialog.refresh()
         return True
 
     def _shared_data_dir(self) -> bool:
@@ -1241,12 +1354,12 @@ class MainWindow(QMainWindow):
             marks.append((name, stat.st_mtime_ns, stat.st_size))
         return tuple(marks)
 
-    def _reload_users(self) -> None:
-        """Перечитать общий список пользователей и права (v0.87.0)."""
+    def _reload_users(self, users) -> None:
+        """Применить проверенный снимок общих пользователей и прав."""
 
         from .access import Access, load_current_user
 
-        current = load_current_user()
+        current = load_current_user(users)
         # Текущего пользователя мог удалить администратор на другом
         # компьютере — тогда прав по роли больше нет, берём первого.
         self.access = Access(current)
@@ -1256,23 +1369,9 @@ class MainWindow(QMainWindow):
         self.apply_access()
 
     def _reload_column_widths(self) -> None:
-        """Применить ширины столбцов, сохранённые на другом компьютере."""
-
-        from . import column_widths
-
+        """Применить ширины и сброс, сохранённые на другом компьютере."""
         for view in self._resizable_views():
-            widths = getattr(view, "_saved_widths", None)
-            try:
-                stored = column_widths.load(
-                    view._widths_key, getattr(view, "_column_count", 0)
-                )
-            except (AttributeError, TypeError):
-                continue
-            if stored and stored != widths:
-                view._saved_widths = stored
-                apply = getattr(view, "_apply_saved_widths", None)
-                if callable(apply):
-                    apply()
+            view.reload_widths_from_file()
 
     def refresh_all_views(self) -> None:
         """Перерисовать все экраны после смены базы (v0.17.0)."""
@@ -1309,6 +1408,7 @@ class MainWindow(QMainWindow):
         # — работаем полностью, нет (или ушли с вкладки) — по роли.
         self._apply_config_rights()
         self.stack.setCurrentIndex(index)
+        self._refresh_update_dialog_access()
         # v0.87.0: «Конфигурация» сама закроется после 5 минут
         # бездействия — пароль не останется висеть открытым.
         if index == IDX_DATA and self._config_unlocked:
@@ -1362,24 +1462,40 @@ class MainWindow(QMainWindow):
                 not self.access.can_edit,
                 can_admin=self.access.can_admin_data,
             )
+        self._refresh_update_dialog_access()
 
     # --------------------------------------------------- обновления v0.87.0
-    def open_update_dialog(self) -> None:
-        """Кнопка «Обновить» и плашка «Обновления» (v0.87.0).
+    def _refresh_update_dialog_access(self) -> None:
+        """Скрыть раздачу при выходе из конфигурации или смене роли."""
+        dialog = getattr(self, "update_dialog", None)
+        if dialog is not None:
+            dialog.access = self.access
+            dialog._apply_publish_visibility()
 
-        Окно одно на программу и **немодальное**: пока оно открыто,
-        обновление данных с Диска приостановлено, а после установки
-        программа закрывается и запускается заново установщиком.
-        """
-
+    def open_update_dialog(self, *, from_config: bool = False) -> None:
+        """Установка доступна всем; раздача — только через конфигурацию."""
         from .views.update_view import UpdateDialog
+
+        def publication_allowed() -> bool:
+            return bool(
+                from_config
+                and self._config_unlocked
+                and self.stack.currentIndex() == IDX_DATA
+            )
 
         dialog = getattr(self, "update_dialog", None)
         if dialog is not None and dialog.isVisible():
+            dialog.access = self.access
+            dialog.set_publication_context(publication_allowed)
             dialog.raise_()
             dialog.activateWindow()
             return
-        self.update_dialog = UpdateDialog(self.store, self.access, self)
+        self.update_dialog = UpdateDialog(
+            self.store,
+            self.access,
+            self,
+            publication_allowed=publication_allowed,
+        )
         self.update_dialog.show()
 
     def _on_test_computer_changed(self) -> None:
@@ -1394,6 +1510,7 @@ class MainWindow(QMainWindow):
                 else "Раздача обновлений с этого компьютера закрыта."
             )
         )
+        self._refresh_update_dialog_access()
 
     def _start_config_timer(self) -> None:
         """Таймер автоснятия пароля с «Конфигурации» (v0.87.0).
@@ -1406,6 +1523,7 @@ class MainWindow(QMainWindow):
         from PySide6.QtCore import QTimer
 
         if getattr(self, "_config_timer", None) is not None:
+            self._config_timer.start()
             return
         self._config_timer = QTimer(self)
         self._config_timer.setInterval(CONFIG_IDLE_MS)
@@ -1425,11 +1543,31 @@ class MainWindow(QMainWindow):
 
         if not self._config_unlocked:
             return
-        # Окно ввода не вырываем из рук: дождёмся следующей проверки.
-        if self._dialog_is_open():
-            self._config_timer.start()
-            return
         self._config_unlocked = False
+        # Незавершённые модальные окна конфигурации не должны бесконечно
+        # продлевать доступ. Закрываем вложенные окна от глубоких к
+        # родителям без сохранения; остальные окна приложения не трогаем.
+        def depth(widget):
+            result = 0
+            while widget is not None:
+                if widget is self:
+                    return result
+                widget = widget.parentWidget()
+                result += 1
+            return -1
+
+        # isAncestorOf не включает отдельные окна Qt, даже если они
+        # принадлежат этому окну, поэтому проверяем цепочку родителей.
+        dialogs = [
+            widget for widget in QApplication.topLevelWidgets()
+            if isinstance(widget, QDialog)
+            and widget.isVisible()
+            and widget.isModal()
+            and depth(widget) >= 0
+        ]
+        for dialog in sorted(dialogs, key=depth, reverse=True):
+            if dialog.isVisible():
+                dialog.reject()
         self._apply_config_rights()
         self.data_view.refresh_update_panel()
         if self.stack.currentIndex() == IDX_DATA:
@@ -1438,16 +1576,6 @@ class MainWindow(QMainWindow):
         self.statusBar().showMessage(
             "«Конфигурация» закрыта: 5 минут бездействия.", 8000
         ) if self.statusBar() is not None else None
-
-    def _dialog_is_open(self) -> bool:
-        """Открыт ли сейчас какой-нибудь диалог ввода (v0.87.0)."""
-
-        from PySide6.QtWidgets import QApplication, QDialog
-
-        for widget in QApplication.topLevelWidgets():
-            if isinstance(widget, QDialog) and widget.isVisible() and widget.isModal():
-                return True
-        return False
 
     def eventFilter(self, obj, event):  # noqa: N802 - имя из Qt
         """Любое действие пользователя продлевает открытую «Конфигурацию»."""
@@ -1581,7 +1709,20 @@ class MainWindow(QMainWindow):
         # Пользователь «посажен» на свою базу: МИР или КОРЕЛИЧИ.
         fixed = self.access.fixed_base
         if fixed and self.store.base_key != fixed:
-            self.store.switch_base(fixed)
+            self._close_base_windows()
+            if not self.store.switch_base(fixed):
+                # Нельзя оставить пользователя с доступом к прежней базе,
+                # если его новая роль закреплена за недоступной базой.
+                self.autosave_on_exit = False
+                self.setEnabled(False)
+                QMessageBox.warning(
+                    self, "База недоступна",
+                    f"Не удалось открыть базу {BASE_TITLES[fixed]} для "
+                    "выбранного пользователя. Программа закроется без "
+                    "создания новой базы. Проверьте синхронизацию Диска.",
+                )
+                QTimer.singleShot(0, self.close)
+                return
             self.base_button.setText(BASE_TITLES[self.store.base_key])
             self._apply_base_style()
             self.refresh_all_views()
@@ -1592,6 +1733,7 @@ class MainWindow(QMainWindow):
             self.kkm_view,
             self.suppliers_view,
             self.customers_view,
+            self.summary_view,
         ):
             view.set_read_only(read_only)
         # v0.51.0: внутри «Конфигурации» права даёт пароль на раздел,

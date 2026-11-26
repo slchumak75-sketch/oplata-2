@@ -22,6 +22,8 @@
 from __future__ import annotations
 
 import json
+import os
+import tempfile
 from datetime import date
 from decimal import Decimal, InvalidOperation
 from pathlib import Path
@@ -378,10 +380,23 @@ def export_bases(bases: dict[str, AppData], path: Path | str) -> Path:
         for suffix, (header, rows) in _base_rows(data).items():
             _write_sheet(book, _sheet_title(base_key, suffix), header, rows)
 
+    temporary: Path | None = None
     try:
-        book.save(path)
+        # Сначала полная книга рядом с целью. Если запись прервалась,
+        # прежняя выгрузка за этот день не останется полупустой.
+        fd, name = tempfile.mkstemp(prefix=f".{path.name}.", suffix=".tmp", dir=path.parent)
+        os.close(fd)
+        temporary = Path(name)
+        book.save(temporary)
+        os.replace(temporary, path)
     except OSError as exc:
         raise ExcelError(f"Не удалось сохранить файл: {exc}") from exc
+    finally:
+        if temporary is not None:
+            try:
+                temporary.unlink(missing_ok=True)
+            except OSError:
+                pass
     return path
 
 

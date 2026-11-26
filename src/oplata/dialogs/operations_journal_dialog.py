@@ -73,6 +73,7 @@ class OperationsJournalDialog(QDialog):
         # пользователя): несколько журналов легко перепутать, а имя в
         # заголовке системного окна видно хуже. Остальное по-прежнему
         # без заголовка: ни фильтров, ни кнопок (v0.23.1).
+        self.title_label = None
         if person is not None:
             # v0.68.0: после имени — примечание из карточки. В журнале
             # покупателя колонок всего три и имени среди них нет,
@@ -87,6 +88,7 @@ class OperationsJournalDialog(QDialog):
                 f"font-size:{styles.fs(15)}pt;font-weight:600;"
                 f"color:{styles.TEXT};padding:0 0 2px 2px;"
             )
+            self.title_label = title_label
             root.addWidget(title_label)
         self.view = OperationsView(
             store,
@@ -111,3 +113,23 @@ class OperationsJournalDialog(QDialog):
             self.view.set_counterparty_filter(counterparty_id)
         else:
             self.view.refresh()
+
+    def refresh(self) -> None:
+        """Перечитать открытый журнал и название после внешнего изменения."""
+        if self.title_label is not None:
+            people = (
+                self.store.data.suppliers
+                if self.kind == "supplier"
+                else self.store.data.customers
+            )
+            person = next(
+                (item for item in people if item.id == self.view.counterparty_id),
+                None,
+            )
+            if person is None:
+                title = "Контрагент удалён"
+            else:
+                note = str(getattr(person, "note", "") or "").strip()
+                title = f"{person.name} · {note}" if note else person.name
+            self.title_label.setText(title)
+        self.view.refresh()

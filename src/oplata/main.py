@@ -18,61 +18,179 @@ import sys
 from .access import Access, load_current_user
 
 
-def _offer_shared_base_transfer() -> None:
-    """Предложить перенести наработанную базу в общую папку (v0.87.0).
+def _offer_shared_base_transfer() -> bool:
+    """Предложить копирование в пустую папку, не заменяя её файлы.
 
-    Спрашиваем один раз при запуске через Start-With-Google-Drive.bat,
-    если папка Диска пустая (или база в ней ещё не создана) и на
-    компьютере есть локальная база. Копия, не перенос: локальные файлы
-    остаются на месте.
+    ``False`` — копирование оказалось неполным: запуск надо остановить,
+    чтобы не работать случайно со смешанным набором баз и настроек.
     """
 
-    from .storage import pending_promotion, promote_to_shared
+    from .storage import (
+        local_data_dir,
+        pending_promotion,
+        promote_to_shared,
+        shared_dir_candidate,
+    )
 
     files = pending_promotion()
     if not files:
-        return
+        return True
     from PySide6.QtWidgets import QMessageBox
 
     names = ", ".join(path.name for path in files)
     answer = QMessageBox.question(
         None,
         "База на Google Диске",
-        "Папка Google Диска подключена первый раз, базы в ней ещё нет.\n\n"
-        f"На компьютере найдена база: {names}.\n\n"
-        "Перенести её на Диск, чтобы данные были видны на всех "
-        "компьютерах? Копия на этом компьютере останется на месте.",
+        "В папке на Диске пока не обнаружены файлы базы или настроек.\n\n"
+        f"На компьютере найдены файлы: {names}.\n"
+        f"Откуда: {local_data_dir()}\nКуда: {shared_dir_candidate()}\n\n"
+        "Скопировать эти файлы на Диск? Выберите «Да» только после "
+        "проверки, что это актуальные файлы и нужная общая папка. "
+        "Другие компьютеры на время копирования должны быть закрыты. "
+        "Локальные файлы останутся на месте. Если выбрать «Нет», "
+        "программа закроется, ничего не копируя.",
         QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
-        QMessageBox.StandardButton.Yes,
+        QMessageBox.StandardButton.No,
     )
     if answer != QMessageBox.StandardButton.Yes:
-        return
-    made = promote_to_shared()
+        return False
+    made = promote_to_shared(files)
+    if len(made) != len(files):
+        QMessageBox.warning(
+            None,
+            "База на Google Диске",
+            f"Скопировано файлов: {len(made)} из {len(files)}. "
+            "Копирование не завершено: в папке мог появиться файл "
+            "или отсутствует доступ.\n\n"
+            "Программа сейчас закроется. Не загружайте и не очищайте "
+            "базы наугад: сначала проверьте обе папки и сохраните "
+            "независимые копии файлов.",
+        )
+        return False
     QMessageBox.information(
         None,
         "База на Google Диске",
-        (
-            f"Перенесено файлов: {len(made)}. Теперь данные читаются "
-            "с общего Диска."
-            if made
-            else "Перенести не удалось: проверьте доступ к папке Диска."
-        ),
+        f"Скопировано файлов: {len(made)}. Локальные оригиналы сохранены.\n\n"
+        "Проверьте обе базы и дождитесь окончания синхронизации Диска "
+        "перед подключением других компьютеров.",
     )
+    return True
+
+
+def _prepare_shared_files() -> bool:
+    """Не создавать незаметно демо-базу или пользователей в общей папке.
+
+    Диск может ещё не синхронизировать файлы. Если чего-то не хватает,
+    создание новых файлов допустимо только по явному согласию; если
+    файл не читается, запуск прекращается без попытки его заменить.
+    """
+
+    import json
+    from pathlib import Path
+
+    from .access import default_users, users_from_payload
+    from .models import AppData, seed_data
+    from .storage import BASE_FILES, data_dir, shared_dir_candidate, write_new_json
+
+    shared = shared_dir_candidate()
+    if not shared:
+        return True
+    from PySide6.QtWidgets import QMessageBox
+
+    target = Path(shared)
+    try:
+        same_folder = target.resolve() == data_dir().resolve()
+    except OSError:
+        same_folder = False
+    if not same_folder:
+        QMessageBox.warning(
+            None, "База на Google Диске",
+            "Путь общей папки не совпадает с путём данных программы. "
+            "Программа закроется. Проверьте настройки запуска и папку Диска.",
+        )
+        return False
+
+    missing: list[str] = []
+    names = list(BASE_FILES.values()) + ["users.json"]
+    for name in names:
+        path = target / name
+        try:
+            raw = json.loads(path.read_text(encoding="utf-8"))
+            if not isinstance(raw, dict):
+                raise ValueError("ожидается объект JSON")
+            if name == "users.json":
+                if users_from_payload(raw) is None:
+                    raise ValueError("не найден корректный список пользователей")
+            else:
+                AppData.from_dict(raw)
+        except FileNotFoundError:
+            missing.append(name)
+        except (OSError, ValueError, TypeError, AttributeError, KeyError, OverflowError):
+            QMessageBox.warning(
+                None, "База на Google Диске",
+                f"Не удалось прочитать файл:\n{path}\n\n"
+                "Программа закроется и не будет его заменять. "
+                "Проверьте подключение и синхронизацию Диска, сохраните "
+                "независимые копии и проверьте файл; не загружайте и "
+                "не очищайте базы наугад.",
+            )
+            return False
+
+    if not missing:
+        return True
+    explanation = []
+    if any(name in missing for name in BASE_FILES.values()):
+        explanation.append("отсутствующие базы будут созданы с демо-данными")
+    if "users.json" in missing:
+        explanation.append("будут созданы стандартные пользователи без пароля конфигурации")
+    answer = QMessageBox.question(
+        None, "Не найдены файлы общей базы",
+        f"В общей папке {target} не найдены файлы:\n"
+        + "\n".join(missing)
+        + "\n\nЕсли продолжить, " + "; ".join(explanation) + ". "
+        "Это НЕ восстановление прежних данных. Если ожидали рабочие "
+        "файлы или Диск ещё синхронизируется, выберите «Нет» и "
+        "проверьте папку и независимые копии. Другие компьютеры "
+        "должны быть закрыты.\n\nСоздать недостающие новые файлы? "
+        "При отказе программа закроется.",
+        QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+        QMessageBox.StandardButton.No,
+    )
+    if answer != QMessageBox.StandardButton.Yes:
+        return False
+    try:
+        for name in missing:
+            payload = (
+                {"users": [user.to_dict() for user in default_users()]}
+                if name == "users.json"
+                else seed_data().to_dict()
+            )
+            write_new_json(target / name, payload)
+    except OSError:
+        QMessageBox.warning(
+            None, "База на Google Диске",
+            "Не удалось создать все недостающие файлы: файл мог "
+            "появиться во время запуска или папка недоступна. "
+            "Программа закроется, существующие файлы не заменены. "
+            "Проверьте папку и сохраните независимые копии.",
+        )
+        return False
+    return True
 
 
 QT_LOAD_HELP = (
     "Программа не смогла загрузить Qt (библиотеки окна).\n\n"
-    "Обычная причина: в папке программы остались файлы от прежней\n"
-    "версии — например, папку распаковали из архива ZIP поверх старой,\n"
-    "и рядом оказались несовместимые DLL.\n\n"
+    "Возможная причина: в папке программы остались несовместимые\n"
+    "файлы от прежней версии, например после распаковки ZIP поверх неё.\n\n"
     "Что сделать:\n"
-    "1. Поставьте программу заново установщиком\n"
-    "   Oplata-<версия>-Setup.exe — он заменяет файлы полностью.\n"
-    "2. Если установщик уже применяли: удалите программу\n"
+    "1. Сначала сохраните независимые копии ОБЕИХ баз и настроек.\n"
+    "   Обычно они в %APPDATA%\\OplataStroymarket или на Google Диске;\n"
+    "   проверьте, где лежат именно ваши актуальные файлы.\n"
+    "2. Поставьте программу заново установщиком\n"
+    "   Oplata-<версия>-Setup.exe — он заменяет файлы программы.\n"
+    "3. Если установщик уже применяли: удалите программу\n"
     "   («Оплаты — Строймаркет» в списке программ Windows)\n"
-    "   и поставьте заново тем же установщиком.\n"
-    "3. Данные при этом не пропадут: они лежат отдельно, в\n"
-    "   %APPDATA%\\OplataStroymarket или на Google Диске.\n\n"
+    "   и поставьте заново тем же установщиком.\n\n"
     "Технические подробности: {error}"
 )
 
@@ -172,7 +290,9 @@ def main(argv: list[str] | None = None) -> int:
     from . import __app_name__, __version__, styles
     from .app import MainWindow
     from .resources import icon_path
-    from .storage import DataStore
+    from .storage import (
+        DataStore, DataUnavailableError, load_active_base, shared_dir_candidate,
+    )
     from .widgets import disable_item_focus, disable_selection_color
 
     app = QApplication(sys.argv[:1] + [a for a in argv if a != "--self-test"])
@@ -187,13 +307,41 @@ def main(argv: list[str] | None = None) -> int:
     app.setStyle(styles.NoFocusFrameStyle())
     app.setStyleSheet(styles.APP_STYLESHEET)
 
-    access = resolve_user(argv)
-    # v0.87.0: первый запуск с Google Диском. Папка на Диске пустая, а
-    # база на компьютере наработана — предлагаем перенести её, иначе
-    # программа показала бы новую пустую базу с демо-поставщиками
-    # (замечание пользователя: «оплаты на гугл драйв не появились»).
-    _offer_shared_base_transfer()
-    store = DataStore()
+    # Сначала копирование, затем чтение роли. Иначе чтение пользователей
+    # могло создать users.json с настройками по умолчанию в пустой общей
+    # папке ещё до предложения перенести настоящий файл пользователей.
+    if not _offer_shared_base_transfer() or not _prepare_shared_files():
+        return 1
+    shared = bool(shared_dir_candidate())
+    if shared:
+        from PySide6.QtWidgets import QMessageBox
+        from .access import read_users_safely
+
+        users = read_users_safely()
+        if users is None:
+            QMessageBox.warning(
+                None, "Пользователи недоступны",
+                "Не удалось прочитать пользователей общей базы. Программа "
+                "закроется; проверьте синхронизацию Диска и копии файлов.",
+            )
+            return 1
+        access = Access(load_current_user(users))
+    else:
+        access = resolve_user(argv)
+    try:
+        store = DataStore(
+            base_key=(access.fixed_base or load_active_base()) if shared else None,
+            require_existing=shared,
+        )
+    except DataUnavailableError as error:
+        from PySide6.QtWidgets import QMessageBox
+
+        QMessageBox.warning(
+            None, "База недоступна",
+            f"{error}\n\nПрограмма закроется, новую базу не создаём. "
+            "Проверьте синхронизацию Диска и независимые копии файлов.",
+        )
+        return 1
     window = MainWindow(store, access)
     # v0.26.5: без фокуса у таблиц Qt не рисует рамку на нажатой
     # ячейке (артефакт после клика). Ввод по клику при этом работает.

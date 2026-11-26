@@ -20,6 +20,7 @@ from __future__ import annotations
 import os
 import subprocess
 import sys
+from collections.abc import Callable
 from pathlib import Path
 
 from PySide6.QtWidgets import (
@@ -58,10 +59,20 @@ class UpdateDialog(QDialog):
 
     TITLE = "Обновление программы"
 
-    def __init__(self, store: DataStore, access, parent: QDialog | None = None) -> None:
+    def __init__(
+        self,
+        store: DataStore,
+        access,
+        parent: QDialog | None = None,
+        *,
+        publication_allowed: Callable[[], bool] | None = None,
+    ) -> None:
         super().__init__(parent)
         self.store = store
         self.access = access
+        # Без разрешения из открытой по паролю «Конфигурации» окно
+        # работает только для установки обновлений.
+        self._publication_allowed = publication_allowed or (lambda: False)
         self.version = _current_version()
         self.info: updates.UpdateInfo | None = None
         self.setWindowTitle(self.TITLE)
@@ -151,9 +162,21 @@ class UpdateDialog(QDialog):
         bottom.addWidget(close_button)
         root.addLayout(bottom)
 
-        self.publish_visible = local_settings.can_publish(access.user.id)
         self._apply_publish_visibility()
         self.check_for_update(silent=True)
+
+    @property
+    def publish_visible(self) -> bool:
+        """Раздача только из конфигурации и только с тестового ПК."""
+        return bool(
+            self._publication_allowed()
+            and local_settings.can_publish(self.access.user.id)
+        )
+
+    def set_publication_context(self, allowed: Callable[[], bool]) -> None:
+        """Изменить доступ, если уже открытое окно вызвали из конфигурации."""
+        self._publication_allowed = allowed
+        self._apply_publish_visibility()
 
     # ------------------------------------------------------------- состояние
     def _folder_text(self) -> str:
@@ -164,7 +187,7 @@ class UpdateDialog(QDialog):
         )
 
     def _apply_publish_visibility(self) -> None:
-        """Кнопки раздачи — только на тестовом компьютере."""
+        """Кнопки раздачи — только в разблокированной конфигурации тестового ПК."""
 
         for index in range(self.publish_row.count()):
             item = self.publish_row.itemAt(index)
@@ -174,9 +197,10 @@ class UpdateDialog(QDialog):
         if self.publish_visible:
             self.publish_hint.setText(
                 "Это тестовый компьютер: с него можно готовить и раздавать "
-                "обновления. Сначала «Положить в тест» — файл никто, кроме "
-                "тестовых компьютеров, не увидит; когда убедитесь, что "
-                "всё работает, нажмите «Выпустить»."
+                "обновления. Сначала «Положить в тест»: программа предлагает "
+                "его только тестовым компьютерам. Файл в папке Диска могут "
+                "открыть все, у кого есть доступ к папке. Когда убедитесь, "
+                "что всё работает, нажмите «Выпустить»."
             )
         else:
             self.publish_hint.setText("")
@@ -194,7 +218,11 @@ class UpdateDialog(QDialog):
         folder = base_data_dir(self.store)
         try:
             info = updates.find_update(
-                folder, self.version, allow_test=self.publish_visible
+                folder,
+                self.version,
+                # Установка тестового обновления на тестовом ПК доступна
+                # и с верхней кнопки; пароль нужен именно для раздачи.
+                allow_test=local_settings.can_publish(self.access.user.id),
             )
         except OSError as error:
             if not silent:
@@ -284,9 +312,11 @@ class UpdateDialog(QDialog):
             "Установить обновление",
             (
                 f"Установить версию {self.info.version}?\n\n"
-                "Данные (оплаты, поставщики, покупатели) не изменятся — "
-                "обновляется только программа. Перед установкой создаётся "
-                "резервная копия базы.\n\n"
+                "Установщик рассчитан на замену файлов программы, а не "
+                "данных. До обновления сохраните независимые копии обеих "
+                "баз и настроек вне синхронизируемой папки. Попытка "
+                "автоматической копии относится только к текущей базе, "
+                "не включает настройки и может не удаться.\n\n"
                 "Если Windows покажет предупреждение — нажмите «Подробнее → "
                 "Выполнить в любом случае»."
             ),
@@ -358,8 +388,9 @@ class UpdateDialog(QDialog):
             user=self.access.title,
         )
         self._set_status(
-            f"Файл в «Тест»: {target.name}. Другие компьютеры его пока не "
-            "видят — проверьте доработку у себя, затем нажмите «Выпустить».",
+            f"Файл в «Тест»: {target.name}. Обычным компьютерам программа "
+            "его не предлагает; доступ к самому файлу зависит от прав "
+            "общей папки. Проверьте доработку перед выпуском.",
             ok=True,
         )
 
@@ -396,7 +427,9 @@ class UpdateDialog(QDialog):
             QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.Cancel,
             QMessageBox.StandardButton.Cancel,
         )
-        if answer != QMessageBox.StandardButton.Yes:
+        # Пока открыто подтверждение, мог истечь срок конфигурации или
+        # измениться право раздачи. Проверяем его повторно перед записью.
+        if answer != QMessageBox.StandardButton.Yes or not self.publish_visible:
             return
         try:
             target = updates.publish(source, base)
@@ -409,8 +442,9 @@ class UpdateDialog(QDialog):
             user=self.access.title,
         )
         self._set_status(
-            f"Выпущено: {target.name}. Остальные компьютеры увидят "
-            "обновление в течение часа.",
+            f"Выпущено: {target.name}. После синхронизации Диска "
+            "остальные компьютеры обнаружат его при следующей проверке "
+            "(обычно раз в час).",
             ok=True,
         )
 
@@ -431,7 +465,7 @@ class UpdateDialog(QDialog):
             QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.Cancel,
             QMessageBox.StandardButton.Cancel,
         )
-        if answer != QMessageBox.StandardButton.Yes:
+        if answer != QMessageBox.StandardButton.Yes or not self.publish_visible:
             return
         moved = updates.retract(base)
         updates.log_event(

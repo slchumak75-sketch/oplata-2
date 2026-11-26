@@ -27,6 +27,11 @@ def isolated_data_dir(tmp_path, monkeypatch):
 
     monkeypatch.setattr(storage, "data_dir", lambda: tmp_path)
     monkeypatch.setattr(access_module, "data_dir", lambda: tmp_path)
+    # Выбор роли и отметка тестового ПК — тоже локальные файлы: без
+    # изоляции один UI-тест влиял на права в последующих тестах и мог
+    # писать в домашний каталог разработчика.
+    monkeypatch.setattr(access_module, "local_dir", lambda: tmp_path / "local")
+    monkeypatch.setenv("OPLATA_LOCAL_DIR", str(tmp_path / "local"))
     # v0.30.0: выгрузки при закрытии окна (автовыгрузка) не должны
     # попадать в настоящий каталог программы — им тоже нужен tmp.
     monkeypatch.setenv("OPLATA_PROGRAM_DIR", str(tmp_path / "program"))
