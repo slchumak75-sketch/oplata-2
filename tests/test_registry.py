@@ -75,6 +75,31 @@ def prepare(store, path):
     return registry, snapshot, plan
 
 
+@pytest.mark.parametrize("value, expected", [
+    ("19.11.26", date(2026, 11, 19)),
+    ("19.11.26 12:34:56", date(2026, 11, 19)),
+    ("01.01.69", date(2069, 1, 1)),
+    ("10.11.2026", date(2026, 11, 10)),
+    ("2026-11-10", date(2026, 11, 10)),
+], ids=["short", "short_with_time", "short_late_century", "four_digit", "iso"])
+def test_registry_recognizes_text_dates(tmp_path, value, expected):
+    path = workbook(tmp_path / "registry.xlsx", [document("Отчет ККМ", 1, "10", day=value)])
+    registry = parse_registry(path)
+    assert registry.rows[0].day == expected
+    assert not registry.rows[0].issues
+
+
+@pytest.mark.parametrize("value", ["31.02.26", "19.11.26 неверно", "19.11.202"],
+                         ids=["impossible", "extra_text", "three_digit_year"])
+def test_invalid_text_dates_still_block_import(tmp_path, value):
+    store = store_with_partners(tmp_path)
+    path = workbook(tmp_path / "registry.xlsx", [document("Отчет ККМ", 1, "10", day=value)])
+    registry, _, plan = prepare(store, path)
+    assert registry.rows[0].day is None
+    assert "неверная или пустая дата" in registry.rows[0].issues
+    assert plan.issues and plan.candidate is None
+
+
 def test_full_import_replaces_days_aggregates_and_is_idempotent(tmp_path):
     store = store_with_partners(tmp_path)
     day = "2026-11-10"

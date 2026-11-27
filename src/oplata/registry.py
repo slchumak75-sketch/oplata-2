@@ -175,6 +175,12 @@ def _date(value: object) -> date:
     if isinstance(value, date):
         return value
     text = str(value or "").strip()
+    # В выгрузке реестра встречается текстовая дата «19.11.26».
+    # Двузначный год трактуем как 2000–2099, без системного порога %y
+    # (который неожиданно относит 69–99 к предыдущему веку).
+    short_year = re.fullmatch(r"(\d{1,2}\.\d{1,2}\.)(\d{2})(?=\s|$)(.*)", text)
+    if short_year:
+        text = f"{short_year.group(1)}20{short_year.group(2)}{short_year.group(3)}"
     for fmt in ("%d.%m.%Y", "%d.%m.%Y %H:%M:%S", "%Y-%m-%d"):
         try:
             return datetime.strptime(text, fmt).date()
