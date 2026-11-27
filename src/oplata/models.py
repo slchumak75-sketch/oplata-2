@@ -526,6 +526,10 @@ class AppData:
     # По нему «Переразнос» снимает ровно свои прежние записи. Поле
     # добавлено в v0.59.0; в старых файлах его нет — пустой список.
     imported_statement_writes: list[dict] = field(default_factory=list)
+    # Источники импортированных документов реестра и их строки назначения.
+    # Нужны, чтобы при повторной загрузке заметить перенос документа на
+    # другую дату/в другую строку, а не оставить старую сумму второй раз.
+    imported_registry_rows: list[dict] = field(default_factory=list)
     # Правила разноса: куда отправлять суммы с задвоенным УНП
     # (панель «Свойства контрагента» в «Конфигурации»). Поле добавлено
     # в v0.69.0; в старых файлах его нет — пустой список.
@@ -559,6 +563,9 @@ class AppData:
             "imported_statement_writes": [
                 dict(item) for item in self.imported_statement_writes
             ],
+            "imported_registry_rows": [
+                dict(item) for item in self.imported_registry_rows
+            ],
             "routing_rules": [asdict(rule) for rule in self.routing_rules],
             "org_report": self.org_report.to_dict(),
         }
@@ -588,6 +595,10 @@ class AppData:
             ],
             imported_statement_writes=[
                 dict(x) for x in data.get("imported_statement_writes", [])
+            ],
+            imported_registry_rows=[
+                dict(x) for x in data.get("imported_registry_rows", [])
+                if isinstance(x, dict)
             ],
             routing_rules=[
                 RoutingRule(

@@ -39,7 +39,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from ..models import Counterparty
+from ..models import Counterparty, alphabetical_key
 from ..storage import DataStore
 from ..widgets import blue_button, danger_button, green_button
 from .. import styles
@@ -227,7 +227,9 @@ class CounterpartyCardDialog(QDialog):
         self.combo.blockSignals(True)
         self.combo.clear()
         self.combo.addItem(NEW_ITEM_LABEL, "")
-        for item in self._items():
+        # Сортируем только выпадающий список, не порядок записей в базе.
+        # Правило совпадает с недельными таблицами: без регистра, «ё» = «е».
+        for item in sorted(self._items(), key=alphabetical_key):
             self.combo.addItem(item.name, item.id)
         index = self.combo.findData(select_id or "")
         self.combo.setCurrentIndex(max(index, 0))

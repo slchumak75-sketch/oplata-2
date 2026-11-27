@@ -12,6 +12,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 from pathlib import Path
 
@@ -22,6 +23,7 @@ from PySide6.QtGui import QCloseEvent, QGuiApplication
 from PySide6.QtWidgets import (
     QApplication,
     QAbstractItemView,
+    QBoxLayout,
     QButtonGroup,
     QDialog,
     QFileDialog,
@@ -32,6 +34,7 @@ from PySide6.QtWidgets import (
     QMenu,
     QMessageBox,
     QPushButton,
+    QSizePolicy,
     QStackedWidget,
     QVBoxLayout,
     QWidget,
@@ -57,6 +60,7 @@ from .dialogs.delivery_dialog import DeliveryDialog
 from .dialogs.operations_journal_dialog import OperationsJournalDialog
 from .dialogs.period_dialog import PeriodDialog
 from .dialogs.realization_dialog import RealizationDialog
+from .dialogs.registry_dialog import RegistryDialog
 from .dialogs.statement_dialog import StatementDialog
 from .excelio import (
     ExcelError,
@@ -65,6 +69,15 @@ from .excelio import (
     import_bases,
 )
 from .models import AppData, keep_payment_kinds, set_year_start_funds
+from .registry import (
+    REPORT as REGISTRY_REPORT,
+    RETURN as REGISTRY_RETURN,
+    SALE as REGISTRY_SALE,
+    SUPPLY as REGISTRY_SUPPLY,
+    RegistryError,
+    capture_registry_snapshot,
+    parse_registry,
+)
 from .statement import StatementError, parse_statement
 from .statement_match import account_base_key
 from .storage import (
@@ -311,10 +324,29 @@ class MainWindow(QMainWindow):
     def _build_header(self) -> QFrame:
         header = QFrame()
         self.header = header
-        header.setFixedHeight(70)  # v0.17.0: место под крупную кнопку базы
-        layout = QHBoxLayout(header)
-        layout.setContentsMargins(14, 6, 14, 6)
-        layout.setSpacing(10)
+        header.setFixedHeight(70)  # широкий экран: вся навигация в один ряд
+        self._header_layout = QBoxLayout(QBoxLayout.Direction.LeftToRight, header)
+        self._header_layout.setContentsMargins(14, 4, 14, 4)
+        self._header_layout.setSpacing(6)
+        self._header_navigation = QWidget(header)
+        self._header_navigation.setSizePolicy(
+            QSizePolicy.Policy.Minimum, QSizePolicy.Policy.Preferred
+        )
+        layout = QHBoxLayout(self._header_navigation)
+        layout.setContentsMargins(0, 0, 0, 0)
+        # Меньше пустых полей — месяц ККМ по-прежнему помещается в
+        # обычном окне 1600×900, не уменьшая шрифт кнопок.
+        layout.setSpacing(4)
+        self._header_actions = QWidget(header)
+        self._header_actions.setSizePolicy(
+            QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred
+        )
+        actions = QHBoxLayout(self._header_actions)
+        actions.setContentsMargins(0, 0, 0, 0)
+        actions.setSpacing(4)
+        self._header_layout.addWidget(self._header_navigation)
+        self._header_layout.addWidget(self._header_actions)
+        self._header_compact = False
 
         logo = QVBoxLayout()
         logo.setSpacing(0)
@@ -350,18 +382,15 @@ class MainWindow(QMainWindow):
             else:
                 layout.addWidget(btn)
 
-        # v0.40.0: в шапке три кнопки базы вместо двух — отступы справа
-        # от вкладок теснее, иначе длинные подписи обрезались бы.
-        layout.addSpacing(14)
         # v0.17.0: переключатель базы — на свободном поле справа от
         # вкладок. Шрифт вдвое крупнее, чем у вкладок («Конфигурация»);
         # нажатие меняет базу МИР <-> КОРЕЛИЧИ вместе с цветом шапки.
         self.base_button = QPushButton(BASE_TITLES[self.store.base_key])
         self.base_button.setCursor(Qt.CursorShape.PointingHandCursor)
         self.base_button.clicked.connect(self.toggle_base)
-        layout.addWidget(self.base_button)
+        actions.addWidget(self.base_button)
 
-        layout.addStretch(1)
+        actions.addStretch(1)
         # v0.75.0: кнопки действий уходят в правый угол шапки, а не
         # стоят сразу за вкладками: так они не спорят с длинными
         # подписями вкладок за место.
@@ -373,9 +402,17 @@ class MainWindow(QMainWindow):
             "Прочитать выписку банка из PDF и показать операции таблицей"
         )
         self.statement_button.clicked.connect(self._on_load_statement_clicked)
-        layout.addWidget(self.statement_button)
+        actions.addWidget(self.statement_button)
 
-        layout.addSpacing(6)
+        self.registry_button = QPushButton("Загрузить реестр")
+        self.registry_button.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.registry_button.setToolTip(
+            "Проверить и разнести реестр документов из Excel в текущую базу"
+        )
+        self.registry_button.clicked.connect(self._on_load_registry_clicked)
+        actions.addWidget(self.registry_button)
+
+        actions.addSpacing(6)
         # v0.87.0: «Обновить» — видна всем и без пароля: установить
         # обновление на свой компьютер может любой сотрудник (просьба
         # пользователя: «кнопку обновить надо на верхней плашке без
@@ -389,9 +426,9 @@ class MainWindow(QMainWindow):
         self.update_button.clicked.connect(
             lambda: self.open_update_dialog(from_config=False)
         )
-        layout.addWidget(self.update_button)
+        actions.addWidget(self.update_button)
 
-        layout.addSpacing(6)
+        actions.addSpacing(6)
         # v0.75.0: меню со всеми действиями над базой. Раньше это были
         # три отдельные кнопки («Выгрузить базы», «Загрузить базы»,
         # «Очистить базу»); в меню они занимают одну строку.
@@ -424,7 +461,7 @@ class MainWindow(QMainWindow):
         base_menu.addSeparator()
         base_menu.addAction("Конфигурация", lambda: self.show_page(IDX_DATA))
         self.base_menu_button.setMenu(base_menu)
-        layout.addWidget(self.base_menu_button)
+        actions.addWidget(self.base_menu_button)
 
         self._apply_base_style()
         # Кнопки «Карточка поставщика»/«Карточка покупателя» с v0.11.0
@@ -442,7 +479,7 @@ class MainWindow(QMainWindow):
         nav_style = (
             "QPushButton{background:transparent;"
             f"color:{styles.HEADER_TEXT};border:none;"
-            "border-radius:8px;padding:7px 10px;font-weight:700;"
+            "border-radius:8px;padding:7px 6px;font-weight:700;"
             f"font-size:{nav_font}px}}"
             f"QPushButton:hover{{background:{styles.HEADER_HOVER}}}"
             f"QPushButton:checked{{background:{styles.HEADER_CHECKED_BG};"
@@ -459,13 +496,14 @@ class MainWindow(QMainWindow):
             f"color:{styles.HEADER_TEXT};"
             f"border:1px solid {styles.HEADER_TOOL_BORDER};"
             "border-radius:8px;"
-            f"padding:6px 6px;font-weight:700;font-size:{nav_font}px}}"
+            f"padding:6px 4px;font-weight:700;font-size:{nav_font}px}}"
             f"QPushButton:hover{{background:{styles.HEADER_TOOL_HOVER}}}"
         )
         # v0.75.0: в правом углу шапки тот же стиль получают
         # «Загрузить выписку» и меню «База».
         for btn in (
             self.statement_button,
+            self.registry_button,
             self.base_menu_button,
             self.update_button,
         ):
@@ -479,6 +517,30 @@ class MainWindow(QMainWindow):
             f"font-size:{nav_font * 2}px}}"  # вдвое крупнее вкладок
             f"QPushButton:hover{{background:{styles.HEADER_HOVER}}}"
         )
+        self._fit_header()
+
+    def _fit_header(self) -> None:
+        """На узком экране переносим действия на второй ряд, не обрезая подписи."""
+        if not hasattr(self, "_header_actions"):
+            return
+        margins = self._header_layout.contentsMargins()
+        need = (
+            self._header_navigation.sizeHint().width()
+            + self._header_actions.sizeHint().width()
+            + margins.left() + margins.right() + self._header_layout.spacing()
+        )
+        compact = self.width() < need
+        if compact == self._header_compact:
+            return
+        self._header_compact = compact
+        self._header_layout.setDirection(
+            QBoxLayout.Direction.TopToBottom if compact else QBoxLayout.Direction.LeftToRight
+        )
+        self.header.setFixedHeight(118 if compact else 70)
+
+    def resizeEvent(self, event) -> None:  # Qt API
+        super().resizeEvent(event)
+        self._fit_header()
 
     def _close_base_windows(self) -> None:
         """Убрать немодальные окна со строками прежней базы."""
@@ -565,9 +627,156 @@ class MainWindow(QMainWindow):
             "bank",
             "imported_statement_rows",
             "imported_statement_writes",
+            "imported_registry_rows",
             "routing_rules",
         ):
             setattr(current, name, getattr(loaded, name))
+
+    def _registry_access_problem(self, pages: set[int]) -> str | None:
+        if not self.access.can_edit:
+            return "Для загрузки реестра необходимо право ввода данных."
+        if self.access.fixed_base not in (None, self.store.base_key):
+            return "Эта база недоступна текущему пользователю."
+        if not pages.issubset(set(self.access.pages)):
+            return (
+                "В реестре есть документы для вкладок, к которым у текущего "
+                "пользователя нет доступа. Данные не загружены."
+            )
+        return None
+
+    def _registry_users_digest(self) -> str | None:
+        """Проверить, что открытые права совпадают со снимком файла."""
+        from .access import users_from_payload, users_path
+
+        try:
+            content = users_path().read_bytes()
+        except FileNotFoundError as exc:
+            # Локальный первый запуск может ещё не иметь users.json, но в
+            # общей папке отсутствие файла — не разрешение писать от admin.
+            known = any(mark[0] == "users.json" for mark in self._data_signature)
+            if self._shared_data_dir() or known:
+                raise RegistryError("Файл пользователей и прав недоступен.") from exc
+            return None
+        except OSError as exc:
+            raise RegistryError("Не удалось проверить файл пользователей и прав.") from exc
+        try:
+            users = users_from_payload(json.loads(content.decode("utf-8")))
+        except (UnicodeError, ValueError, TypeError, RecursionError) as exc:
+            raise RegistryError("Файл пользователей и прав повреждён.") from exc
+        if users is None:
+            raise RegistryError("Файл пользователей и прав повреждён.")
+        matches = [user for user in users if user.id == self.access.user.id]
+        if len(matches) != 1:
+            raise RegistryError("Текущий пользователь не найден однозначно в файле прав.")
+        disk_access = Access(matches[0])
+        if (disk_access.can_edit != self.access.can_edit
+                or disk_access.fixed_base != self.access.fixed_base
+                or set(disk_access.pages) != set(self.access.pages)):
+            raise RegistryError(
+                "Права в файле отличаются от открытых. Дождитесь синхронизации "
+                "и откройте реестр заново."
+            )
+        return hashlib.sha256(content).hexdigest()
+
+    def _registry_ready(self) -> bool:
+        """Не разносить поверх черновика или незафиксированного снимка Диска."""
+        if self.data_view.has_unsaved_changes or (
+            self._config_unlocked and self.stack.currentIndex() == IDX_DATA
+        ):
+            QMessageBox.warning(
+                self, "Загрузка реестра",
+                "Сначала сохраните или отмените изменения в конфигурации и закройте её.",
+            )
+            return False
+        if any(
+            view.isVisible() and view.state() == QAbstractItemView.State.EditingState
+            for view in self.findChildren(QAbstractItemView)
+        ):
+            QMessageBox.warning(
+                self, "Загрузка реестра", "Сначала завершите ввод в открытой таблице."
+            )
+            return False
+        if self._shared_data_dir() and self._shared_signature() != self._data_signature:
+            self.pull_external_changes()
+            if self._shared_signature() != self._data_signature:
+                QMessageBox.warning(
+                    self, "Загрузка реестра",
+                    "Общие файлы изменились или недоступны. Закройте другие окна, "
+                    "дождитесь синхронизации Диска и повторите загрузку.",
+                )
+                return False
+        return True
+
+    def _on_load_registry_clicked(self) -> None:
+        """Реестр Excel: предварительная проверка, выбор и подтверждение."""
+        problem = self._registry_access_problem(set())
+        if problem:
+            QMessageBox.warning(self, "Загрузка реестра", problem)
+            return
+        if not self._registry_ready():
+            return
+        path, _selected = QFileDialog.getOpenFileName(
+            self, "Выберите реестр документов", "", "Реестр Excel (*.xlsx)"
+        )
+        if not path:
+            return
+        # Файл базы и права могли измениться, пока был открыт выбор файла.
+        if not self._registry_ready():
+            return
+        try:
+            registry = parse_registry(Path(path))
+            pages: set[int] = set()
+            for row in registry.rows:
+                if row.kind == REGISTRY_SUPPLY:
+                    pages.add(IDX_SUPPLIERS)
+                elif row.kind == REGISTRY_SALE:
+                    pages.add(IDX_CUSTOMERS)
+                elif row.kind in (REGISTRY_REPORT, REGISTRY_RETURN):
+                    pages.add(IDX_KKM)
+            problem = self._registry_access_problem(pages)
+            if problem:
+                raise RegistryError(problem)
+            snapshot = capture_registry_snapshot(self.store)
+            users_digest = self._registry_users_digest()
+        except RegistryError as exc:
+            QMessageBox.warning(self, "Загрузка реестра", str(exc))
+            return
+        user_id = self.access.user.id
+
+        def guard() -> str | None:
+            problem = self._registry_access_problem(pages)
+            if problem:
+                return problem
+            if self.access.user.id != user_id:
+                return "Пользователь изменился. Откройте реестр заново."
+            try:
+                if self._registry_users_digest() != users_digest:
+                    return "Права изменились. Дождитесь синхронизации и откройте реестр заново."
+            except RegistryError as exc:
+                return str(exc)
+            if self.data_view.has_unsaved_changes:
+                return "Есть несохранённый черновик конфигурации. Откройте реестр заново."
+            return None
+
+        dialog = RegistryDialog(
+            self.store, registry, snapshot, Path(path).name, self,
+            guard=guard, on_imported=self._after_registry_import,
+        )
+        dialog.exec()
+
+    def _after_registry_import(self) -> None:
+        """Обновить зависимые таблицы и открытые журналы без сброса черновика."""
+        self.receipts_view.refresh()
+        self.kkm_view.refresh()
+        self.suppliers_view.refresh()
+        self.customers_view.refresh()
+        self.summary_view.refresh()
+        report = getattr(self.summary_view, "report_dialog", None)
+        if report is not None and report.isVisible():
+            report.refresh()
+        for dialog in list(self._journal_dialogs):
+            if dialog.isVisible():
+                dialog.refresh()
 
     def _on_load_statement_clicked(self) -> None:
         """«Загрузить выписку»: PDF-файл -> таблица и разнесение (v0.56.0).
@@ -1726,6 +1935,12 @@ class MainWindow(QMainWindow):
             self.base_button.setText(BASE_TITLES[self.store.base_key])
             self._apply_base_style()
             self.refresh_all_views()
+        # Реестр меняет только разрешённые вкладки и только при праве ввода.
+        self.registry_button.setVisible(
+            self.access.can_edit
+            and bool({IDX_SUPPLIERS, IDX_CUSTOMERS, IDX_KKM} & set(self.access.pages))
+        )
+        self._fit_header()
         # Ввод данных — только тем, у кого есть право ввода.
         read_only = not self.access.can_edit
         for view in (

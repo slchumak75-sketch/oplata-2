@@ -71,6 +71,7 @@ SHEET_ROUTING = "Правила разноса"
 SHEET_BANK = "Свой банк"
 SHEET_IMPORTED = "Разнесённые строки"
 SHEET_IMPORTED_WRITES = "Разнесённые записи"
+SHEET_REGISTRY = "Импорт реестра"
 SHEET_KKM = "Отчеты ККМ"
 
 # Обязательные листы базы: по ним понимаем, что база в файле есть.
@@ -344,6 +345,10 @@ def _base_rows(data: AppData) -> dict[str, tuple[list[str], list[list[object]]]]
                 for item in data.imported_statement_writes
             ],
         ),
+        SHEET_REGISTRY: (
+            ["Документ реестра (JSON)"],
+            [[json.dumps(item, ensure_ascii=False)] for item in data.imported_registry_rows],
+        ),
         SHEET_KKM: (
             ["Дата", "Вид", "Номер строки", "Сумма", "Идентификатор"],
             [
@@ -544,6 +549,7 @@ def _collect_bases(book, result: dict[str, AppData]) -> None:
                 SHEET_BANK,
                 SHEET_IMPORTED,
                 SHEET_IMPORTED_WRITES,
+                SHEET_REGISTRY,
                 SHEET_KKM,
             )
         }
@@ -629,6 +635,7 @@ def _collect_bases(book, result: dict[str, AppData]) -> None:
             bank=_read_bank(sheets),
             imported_statement_rows=_read_imported(sheets),
             imported_statement_writes=_read_imported_writes(sheets),
+            imported_registry_rows=_read_registry_rows(sheets),
             kkm_reports=_read_kkm(sheets),
         )
 
@@ -690,6 +697,24 @@ def _read_imported_writes(sheets) -> list[dict]:
         if isinstance(item, dict):
             item.setdefault("key", _text(get(0)))
             result.append(item)
+    return result
+
+
+def _read_registry_rows(sheets) -> list[dict]:
+    """Источники импорта реестра; в прежних выгрузках листа нет."""
+
+    result = []
+    for values in sheets.get(SHEET_REGISTRY) or []:
+        raw = _text(_row(values, 0)(0))
+        if not raw:
+            continue
+        try:
+            item = json.loads(raw)
+        except ValueError as exc:
+            raise ExcelError("Повреждён лист «Импорт реестра».") from exc
+        if not isinstance(item, dict):
+            raise ExcelError("Повреждён лист «Импорт реестра».")
+        result.append(item)
     return result
 
 
