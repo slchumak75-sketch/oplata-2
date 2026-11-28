@@ -93,11 +93,20 @@ class RegistryRow:
 
 
 @dataclass(frozen=True)
+class RegistryPreviewRow:
+    """Исходная строка для просмотра, включая пропускаемые документы."""
+    row_number: int
+    day: date | None
+    values: tuple[str, ...]
+
+
+@dataclass(frozen=True)
 class Registry:
     rows: tuple[RegistryRow, ...]
     ignored_revaluation: int = 0
     ignored_other: int = 0
     issues: tuple[str, ...] = ()
+    preview_rows: tuple[RegistryPreviewRow, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -326,11 +335,40 @@ def parse_registry(path: Path | str) -> Registry:
         sheet, header_row, columns = candidates[0]
         max_column = max(sheet.max_column or 0, columns["унп"] + 1)
         rows: list[RegistryRow] = []
+        preview: list[RegistryPreviewRow] = []
         issues: list[str] = []
         revaluation = other = 0
+        header_cells = next(sheet.iter_rows(min_row=header_row, max_row=header_row,
+                                            max_col=max_column))
+        header_positions = {_normal(cell.value): index for index, cell in enumerate(header_cells)
+                            if cell.value not in (None, "")}
+        serial_col = header_positions.get("№ п/п")
+        author_col = header_positions.get("автор")
+
+        def display(cell) -> str:
+            value = cell.value
+            if isinstance(value, (date, datetime)):
+                return value.strftime("%d.%m.%Y")
+            return "" if value is None else str(value).strip()
+
         for row_number, cells in enumerate(
             sheet.iter_rows(min_row=header_row + 1, max_col=max_column), header_row + 1
         ):
+            if any(cell.value not in (None, "") for cell in cells):
+                try:
+                    preview_day = _date(cells[columns["дата"]].value)
+                except ValueError:
+                    preview_day = None
+                preview_values = (
+                    display(cells[serial_col]) if serial_col is not None else "",
+                    display(cells[columns["дата"]]), display(cells[columns["документ"]]),
+                    display(cells[columns["номер"]]),
+                    display(cells[author_col]) if author_col is not None else "",
+                    display(cells[columns["статус"]]), display(cells[columns["сумма"]]),
+                    display(cells[columns["валюта"]]), display(cells[columns["информация"]]),
+                    display(cells[columns["унп"]]),
+                )
+                preview.append(RegistryPreviewRow(row_number, preview_day, preview_values))
             document_cell = cells[columns["документ"]]
             if document_cell.data_type == "f":
                 issues.append(f"Строка {row_number}: вид документа задан формулой.")
@@ -395,7 +433,7 @@ def parse_registry(path: Path | str) -> Registry:
                     issues=tuple(row_issues),
                 )
             )
-        return Registry(tuple(rows), revaluation, other, tuple(issues))
+        return Registry(tuple(rows), revaluation, other, tuple(issues), tuple(preview))
     except RegistryError:
         raise
     except Exception as exc:

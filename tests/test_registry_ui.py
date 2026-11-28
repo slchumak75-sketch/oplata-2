@@ -2,7 +2,7 @@
 
 import os
 import sys
-from datetime import date
+from datetime import date, timedelta
 
 import pytest
 from openpyxl import Workbook
@@ -10,7 +10,7 @@ from openpyxl import Workbook
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 pytest.importorskip("PySide6")
 
-from PySide6.QtWidgets import QApplication, QFileDialog, QMessageBox  # noqa: E402
+from PySide6.QtWidgets import QApplication, QFileDialog, QMessageBox, QTableWidget  # noqa: E402
 
 from oplata.access import (  # noqa: E402
     ALL_PAGES, IDX_CUSTOMERS, IDX_KKM, IDX_SUPPLIERS, Access, User, save_users,
@@ -75,8 +75,12 @@ def test_preview_requires_selection_base_confirmation_and_final_approval(qt_app,
     assert dialog.targets[8].currentData() == "sup"
     assert dialog.targets[9].currentData() == ""
     assert dialog.targets[10].currentData() == ""
-    assert dialog.source_table.item(2, 4).text() == "Не проведен (пусто)"
-    assert dialog.source_table.item(3, 4).text() == "Проведен"
+    assert dialog.source_table.item(2, 5).text() == ""
+    assert dialog.source_table.item(3, 5).text() == "Проведен"
+    assert dialog.source_table.rowCount() == 5
+    assert dialog.source_table.item(4, 2).text() == "Переоценка"
+    assert dialog.source_table.item(4, 13).text() == "Не загружается"
+    assert dialog.source_table.item(1, 0).background().color().name() == "#ffe0e0"
     assert not dialog.import_button.isEnabled()
     for number in (9, 10):
         combo = dialog.targets[number]
@@ -85,8 +89,8 @@ def test_preview_requires_selection_base_confirmation_and_final_approval(qt_app,
     assert not dialog.import_button.isEnabled()
     dialog.confirm_base.setChecked(True)
     assert dialog.import_button.isEnabled()
-    assert any("смешанные статусы" in dialog.plan_table.item(i, 6).text()
-               for i in range(dialog.plan_table.rowCount()))
+    assert "смешанные статусы" in dialog.source_table.item(1, 12).toolTip()
+    assert dialog.source_table.item(1, 0).background().color().name() != "#ffe0e0"
     monkeypatch.setattr(QMessageBox, "question", lambda *_args, **_kwargs: QMessageBox.StandardButton.No)
     dialog._import()
     assert store.path.read_bytes() == before
@@ -101,6 +105,81 @@ def test_preview_requires_selection_base_confirmation_and_final_approval(qt_app,
     sale = next(op for op in store.data.operations if op.kind == KIND_SALE)
     assert (sale.amount, sale.invoiced) == ("23.00", False)
     assert dialog.result() == dialog.DialogCode.Accepted
+    dialog.close()
+
+
+@pytest.mark.parametrize("descending", [False, True], ids=["ascending", "descending"])
+def test_preview_keeps_file_order_and_opens_at_latest_dates(qt_app, tmp_path, descending):
+    store = make_store(tmp_path)
+    path = tmp_path / "long.xlsx"
+    book = Workbook()
+    sheet = book.active
+    sheet.append([None, "№ п/п", "Дата", "Документ", "Номер", "Автор", "Статус",
+                  "Сумма", "Вал.", "Информация", None])
+    dates = [date(2026, 1, 1) + timedelta(days=i) for i in range(50)]
+    if descending:
+        dates.reverse()
+    for i, day in enumerate(dates):
+        kind = "Переоценка" if i == 20 else "Отчет ККМ (тест)"
+        sheet.append([None, i + 1, day.strftime("%d.%m.%y"), kind, i + 1,
+                      "Автор", "Проведен", 10, "BYN", "Тест", None])
+    book.save(path)
+    book.close()
+    registry = parse_registry(path)
+    dialog = RegistryDialog(store, registry, capture_registry_snapshot(store))
+    dialog.resize(1000, 600)
+    dialog.show()
+    qt_app.processEvents()
+    qt_app.processEvents()
+    assert len(dialog.findChildren(QTableWidget)) == 1
+    assert dialog.source_table.rowCount() == 50
+    assert [row.day for row in registry.preview_rows] == dates
+    assert dialog.source_table.item(20, 2).text() == "Переоценка"
+    scrollbar = dialog.source_table.verticalScrollBar()
+    assert scrollbar.maximum() > 0
+    assert scrollbar.value() == (0 if descending else scrollbar.maximum())
+    dialog.close()
+
+
+def test_preview_marks_row_errors_and_clears_after_selection(qt_app, tmp_path):
+    store = make_store(tmp_path, ambiguous=True)
+    path = fake_book(tmp_path / "registry.xlsx")
+    book = __import__("openpyxl").load_workbook(path)
+    book.active.cell(8, 3).value = "неверная дата"
+    book.save(path)
+    book.close()
+    dialog = RegistryDialog(store, parse_registry(path), capture_registry_snapshot(store))
+    dialog.show()
+    qt_app.processEvents()
+    table = dialog.source_table
+    assert table.item(0, 1).text() == "неверная дата"
+    assert table.item(0, 0).background().color().name() == "#ffe0e0"
+    assert "неверная или пустая дата" in table.item(0, 14).text()
+    assert table.item(1, 0).background().color().name() == "#ffe0e0"
+    for number in (9, 10):
+        combo = dialog.targets[number]
+        combo.setCurrentIndex(combo.findData("cust"))
+    assert table.item(1, 0).background().color().name() != "#ffe0e0"
+    assert table.item(0, 0).background().color().name() == "#ffe0e0"
+    assert dialog.plan.issues
+    dialog.close()
+
+
+def test_preview_marks_duplicate_documents_in_both_rows(qt_app, tmp_path):
+    from openpyxl import load_workbook
+
+    store = make_store(tmp_path)
+    path = fake_book(tmp_path / "duplicates.xlsx")
+    book = load_workbook(path)
+    book.active.cell(10, 5).value = 2
+    book.save(path)
+    book.close()
+    dialog = RegistryDialog(store, parse_registry(path), capture_registry_snapshot(store))
+    assert "повторяется" in dialog.source_table.item(1, 14).text()
+    assert "повторяется" in dialog.source_table.item(2, 14).text()
+    assert dialog.source_table.item(1, 0).background().color().name() == "#ffe0e0"
+    assert dialog.source_table.item(2, 0).background().color().name() == "#ffe0e0"
+    assert not dialog.import_button.isEnabled()
     dialog.close()
 
 
