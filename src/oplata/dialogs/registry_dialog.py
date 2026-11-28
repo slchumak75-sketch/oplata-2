@@ -14,6 +14,7 @@ from PySide6.QtWidgets import (
     QDialog,
     QHBoxLayout,
     QHeaderView,
+    QInputDialog,
     QLabel,
     QMessageBox,
     QPlainTextEdit,
@@ -36,18 +37,17 @@ from ..registry import (
     RegistryError,
     RegistrySnapshot,
     auto_assignments,
+    _is_revaluation,
     commit_registry_plan,
     plan_registry,
 )
 from ..storage import BASE_TITLES, DataStore
 from ..widgets import blue_button
 
-SOURCE_HEADERS = (
-    "№ п/п", "Дата", "Документ", "Номер", "Автор", "Статус", "Сумма", "Вал.",
-    "Информация", "УНП", "Карточка в базе", "Сейчас", "Станет", "Действие", "Проверка",
-)
-TARGET_COLUMN = 10
-CHECK_COLUMN = 14
+SOURCE_HEADERS = ("Дата", "Документ", "Статус", "Сумма", "Контрагент", "УНП", "Примечание")
+CHECK_COLUMN = 6
+# Индексы столбцов исходной книги, сохранённых в RegistryPreviewRow.
+SOURCE_COLUMNS = (1, 2, 5, 6, 8, 9)
 
 
 
@@ -84,36 +84,13 @@ class RegistryDialog(QDialog):
         title.setTextFormat(Qt.TextFormat.PlainText)
         title.setStyleSheet("font-weight:800;font-size:17px")
         root.addWidget(title)
-        hint = QLabel(
-            "Файл должен содержать все документы каждого загружаемого дня: "
-            "совпадающие суммы заменяются, а не прибавляются. Переоценка и "
-            "прочие виды документов показаны, но не загружаются. Проверьте таблицу ниже."
-        )
-        hint.setWordWrap(True)
-        root.addWidget(hint)
-        self.ignored_label = QLabel(
-            f"Документов к проверке: {len(registry.rows)}; "
-            f"пропущено: переоценка — {registry.ignored_revaluation}, "
-            f"остальные виды — {registry.ignored_other}."
-        )
-        self.ignored_label.setWordWrap(True)
-        root.addWidget(self.ignored_label)
-        choice_hint = QLabel(
-            "Если УНП отсутствует, совпадает с несколькими карточками или карточка в "
-            "архиве — выберите её вручную. Нет карточки? Закройте окно, создайте "
-            "её и откройте реестр снова. Красным выделены строки с ошибками или предупреждениями. "
-            "Таблицу можно прокручивать вправо; "
-            "для полного текста наведите указатель на ячейку."
-        )
-        choice_hint.setWordWrap(True)
-        root.addWidget(choice_hint)
-
-        root.addWidget(QLabel("Документы реестра и проверка загрузки"))
+        self.preview_rows = tuple(row for row in registry.preview_rows
+                                  if not _is_revaluation(row.values[2]))
         self.source_table = QTableWidget(0, len(SOURCE_HEADERS))
         self._configure_table(self.source_table, SOURCE_HEADERS)
-        for column, width in enumerate((70, 115, 220, 105, 120, 115, 120, 75,
-                                        200, 115, 260, 145, 145, 165, 260)):
+        for column, width in enumerate((105, 205, 105, 105, 235, 105, 280)):
             self.source_table.setColumnWidth(column, width)
+        self.source_table.cellDoubleClicked.connect(self._choose_counterparty)
         root.addWidget(self.source_table, stretch=1)
         self._initial_scroll_done = False
 
@@ -164,22 +141,22 @@ class RegistryDialog(QDialog):
         automatic = auto_assignments(self.registry, self.store.data)
         relevant = {row.row_number: row for row in self.registry.rows}
         self._preview_indexes = {}
-        self.source_table.setRowCount(len(self.registry.preview_rows))
-        for index, source in enumerate(self.registry.preview_rows):
+        self.source_table.setRowCount(len(self.preview_rows))
+        for index, source in enumerate(self.preview_rows):
             self._preview_indexes[source.row_number] = index
             row = relevant.get(source.row_number)
-            for column, value in enumerate(source.values):
+            for column, source_column in enumerate(SOURCE_COLUMNS):
+                value = source.values[source_column]
                 self._cell(self.source_table, index, column, value, value)
-            self.source_table.item(index, 0).setToolTip(f"Строка Excel: {source.row_number}")
             if row is None:
-                self._cell(self.source_table, index, 13, "Не загружается")
                 continue
             if row.kind not in (SUPPLY, SALE):
-                self._cell(self.source_table, index, TARGET_COLUMN, "Отчеты ККМ")
                 continue
             items = self.store.data.suppliers if row.kind == SUPPLY else self.store.data.customers
-            combo = QComboBox()
-            combo.view().setMinimumWidth(550)
+            # Скрытый выбор хранит назначение; в таблице лишь семь запрошенных
+            # столбцов. Карточку можно выбрать двойным щелчком по строке.
+            combo = QComboBox(self)
+            combo.hide()
             combo.addItem("— выберите карточку —", "")
             for item in sorted(items, key=alphabetical_key):
                 text = item.name
@@ -194,7 +171,22 @@ class RegistryDialog(QDialog):
             combo.setCurrentIndex(max(match, 0))
             combo.currentIndexChanged.connect(lambda *_: self._rebuild_plan())
             self.targets[row.row_number] = combo
-            self.source_table.setCellWidget(index, TARGET_COLUMN, combo)
+
+    def _choose_counterparty(self, row_index: int, _column: int) -> None:
+        if not 0 <= row_index < len(self.preview_rows):
+            return
+        combo = self.targets.get(self.preview_rows[row_index].row_number)
+        if combo is None or combo.count() <= 1:
+            return
+        # Дополнительный номер различает одинаковые подписи карточек.
+        choices = [f"{i}. {combo.itemText(i)}" for i in range(1, combo.count())]
+        current = max(0, combo.currentIndex() - 1)
+        choice, accepted = QInputDialog.getItem(
+            self, "Выбор карточки", "Выберите карточку контрагента:",
+            choices, current, False,
+        )
+        if accepted and choice in choices:
+            combo.setCurrentIndex(choices.index(choice) + 1)
 
     def showEvent(self, event) -> None:
         super().showEvent(event)
@@ -203,7 +195,7 @@ class RegistryDialog(QDialog):
             QTimer.singleShot(0, self._scroll_to_latest)
 
     def _scroll_to_latest(self) -> None:
-        dated = [(index, row.day) for index, row in enumerate(self.registry.preview_rows)
+        dated = [(index, row.day) for index, row in enumerate(self.preview_rows)
                  if row.day is not None]
         if not dated:
             return
@@ -240,6 +232,7 @@ class RegistryDialog(QDialog):
         self.plan = plan_registry(self.registry, self.store.data,
                                   self.snapshot.base_key, assignments)
         row_messages: dict[int, list[str]] = {number: [] for number in self._preview_indexes}
+        global_issues = []
         relevant = {row.row_number: row for row in self.registry.rows}
         for issue in self.plan.issues:
             numbers = []
@@ -255,55 +248,53 @@ class RegistryDialog(QDialog):
                     numbers = [row.row_number for row in relevant.values()
                                if row.day and row.day.strftime("%d.%m.%Y") == day.group(1)
                                and ("отчётов ККМ больше" not in issue or row.kind == REPORT)]
+            if not any(number in row_messages for number in numbers):
+                global_issues.append(issue)
             for number in numbers:
                 if number in row_messages:
                     row_messages[number].append(issue)
 
-        for source in self.registry.preview_rows:
+        change_by_row = {row.row_number: change for change in self.plan.changes
+                         for row in change.rows}
+        for source in self.preview_rows:
             index = self._preview_indexes[source.row_number]
-            if source.row_number in relevant:
-                if source.row_number not in self.targets:
-                    self._cell(self.source_table, index, TARGET_COLUMN, "Отчеты ККМ")
-                for col in (11, 12, 13):
-                    self._cell(self.source_table, index, col, "")
-        for change in self.plan.changes:
-            old = "—" if change.existing_amount is None else (
-                f"{fmt_money_plain(change.existing_amount)} ({change.existing_count} зап.)"
-            )
-            action = {"new": "Новая запись", "replace": "Заменить прежнее",
-                      "same": "Уже совпадает"}[change.action]
-            details = self._explanation(change)
-            if len(change.rows) > 1:
-                details = "Суммы назначения общие для объединённых документов. " + details
-            for row in change.rows:
-                index = self._preview_indexes[row.row_number]
-                if change.kind == REPORT:
-                    self._cell(self.source_table, index, TARGET_COLUMN,
-                               f"Отчет ККМ · строка {change.slot + 1}")
-                elif change.kind == RETURN:
-                    self._cell(self.source_table, index, TARGET_COLUMN, "Возврат покупателя")
-                for column, value in ((11, old), (12, fmt_money_plain(change.amount)), (13, action)):
-                    self._cell(self.source_table, index, column, value, details or value)
+            messages = row_messages[source.row_number]
+            change = change_by_row.get(source.row_number)
+            detail = ""
+            if change is not None:
+                detail = self._explanation(change)
+                if change.action == "replace":
+                    old = fmt_money_plain(change.existing_amount)
+                    detail = f"Замена: было {old}, станет {fmt_money_plain(change.amount)}. " + detail
                 if change.archived or change.missing_previous:
-                    row_messages[row.row_number].append(details)
-        for source in self.registry.preview_rows:
-            index = self._preview_indexes[source.row_number]
-            message = "\n".join(row_messages[source.row_number])
-            self._cell(self.source_table, index, CHECK_COLUMN, message, message)
+                    messages.append(detail)
+            combo = self.targets.get(source.row_number)
+            if combo is not None and not combo.currentData():
+                messages.append("Дважды нажмите на строку и выберите карточку контрагента."
+                                if combo.count() > 1 else
+                                "Нет карточки: создайте её и откройте реестр заново.")
+            message = "\n".join(dict.fromkeys(messages))
+            replacement = ""
+            if change is not None and change.action == "replace":
+                replacement = (f"Замена: было {fmt_money_plain(change.existing_amount)}, "
+                               f"станет {fmt_money_plain(change.amount)}"
+                               + (" (сумма документов)" if len(change.rows) > 1 else ""))
+            note = "\n".join(part for part in (message, replacement) if part)
+            if not note and source.row_number not in relevant:
+                note = "Не загружается"
+            if combo is not None and combo.currentData():
+                detail = f"Карточка: {combo.currentText()}. " + detail
+            self._cell(self.source_table, index, CHECK_COLUMN, note, message or detail)
             for column in range(self.source_table.columnCount()):
                 item = self.source_table.item(index, column)
                 if item is not None:
                     item.setBackground(QColor("#ffe0e0") if message else QColor(Qt.GlobalColor.transparent))
                     item.setForeground(QColor("#a22525") if message else QColor("#202020"))
-                    original = (source.values[column] if column < len(source.values)
-                                else "" if column == CHECK_COLUMN else item.toolTip())
-                    item.setToolTip("\n".join(part for part in (original, message) if part))
-            combo = self.targets.get(source.row_number)
-            if combo is not None:
-                combo.setStyleSheet("QComboBox { background: #ffe0e0; color: #a22525; }" if message else "")
-                combo.setToolTip(message)
-        self.errors.setPlainText("\n".join(self.plan.issues))
-        self.errors.setVisible(bool(self.plan.issues))
+                    original = (source.values[SOURCE_COLUMNS[column]] if column < len(SOURCE_COLUMNS)
+                                else "")
+                    item.setToolTip("\n".join(part for part in (original, message or detail) if part))
+        self.errors.setPlainText("\n".join(global_issues))
+        self.errors.setVisible(bool(global_issues))
         self._refresh_enabled()
 
     def _refresh_enabled(self, *_args) -> None:

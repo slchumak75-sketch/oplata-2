@@ -232,10 +232,13 @@ class UpdateDialog(QDialog):
             self.info = None
             self.install_button.setEnabled(False)
             if not silent:
+                release_folder = updates.release_dir(folder)
                 self._set_status(
-                    "Обновлений нет: в «Выпуске» лежит не новее "
-                    f"{self.version}.",
-                    ok=True,
+                    f"Обновление новее {self.version} не найдено в папке «{release_folder}». "
+                    "Программа не скачивает релизы с GitHub автоматически: администратор "
+                    "должен скачать архив Update.zip, проверить его и выпустить в общую "
+                    "папку. Проверьте путь, доступ и синхронизацию Google Диска.",
+                    ok=False,
                 )
             return
         self.info = info

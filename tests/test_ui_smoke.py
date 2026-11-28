@@ -6175,6 +6175,7 @@ def test_clear_base_keeps_partners_and_removes_money(
     data.operations.append(
         Operation(kind="Приход", counterparty_id=supplier.id, amount="100.00")
     )
+    store.save()  # Обычный ввод сохраняется до следующего подтверждения.
     _base_menu_action(window, "Очистить базу").trigger()
     qt_app.processEvents()
     assert data.operations == []
