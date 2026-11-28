@@ -859,7 +859,7 @@ class MainWindow(QMainWindow):
         if not self._ask_password("Очистка таблиц", "Пароль администратора:"):
             return
         data = self.store.data
-        if not (data.operations or data.cash_receipts or data.other_payments):
+        if not (data.operations or data.cash_receipts or data.other_payments or data.kkm_reports):
             QMessageBox.information(
                 self,
                 "Очистка таблиц",
@@ -891,20 +891,25 @@ class MainWindow(QMainWindow):
             )
             return
 
+        snapshot = self._capture_clear_snapshot()
+        if snapshot is None:
+            return
         if not self._confirm_yes_no(
             "Очистка таблиц",
             f"Удалить суммы с {day_from:%d.%m.%Y} по {day_to:%d.%m.%Y}?",
             "Будет удалено: операций — "
             f"{counts['operations']}, поступлений кассы — "
             f"{counts['cash']}, сумм прочих видов оплат — "
-            f"{counts['other']}.\n\n"
+            f"{counts['other']}, строк отчётов ККМ и возвратов — {counts['kkm']}.\n\n"
             "Виды оплат остаются: у них обнуляются только суммы "
             "— примечание, ставка НДС и УНП вида не пропадут. "
             "Отменить удаление будет нельзя, но перед очисткой "
             "программа сама снимет копию файла базы.",
         ):
             return
-        backups = make_backup(self.store.base_key, "перед очисткой")
+        backups = self._checked_clear_backup(snapshot)
+        if backups is None:
+            return
         self._clear_period(day_from, day_to)
         QMessageBox.information(
             self,
@@ -912,9 +917,40 @@ class MainWindow(QMainWindow):
             f"Удалено за период с {day_from:%d.%m.%Y} по "
             f"{day_to:%d.%m.%Y}: операций — {counts['operations']}, "
             f"поступлений кассы — {counts['cash']}, сумм прочих видов "
-            f"оплат — {counts['other']}. Виды оплат остались."
+            f"оплат — {counts['other']}, строк отчётов ККМ и возвратов — "
+            f"{counts['kkm']}. Виды оплат остались."
             + backup_text(backups),
         )
+
+    def _capture_clear_snapshot(self):
+        try:
+            return capture_registry_snapshot(self.store)
+        except RegistryError as exc:
+            QMessageBox.warning(self, "Очистка отменена", str(exc))
+            return None
+
+    def _checked_clear_backup(self, expected) -> list[Path] | None:
+        """Не очищать устаревшую базу или без читаемой копии исходного файла."""
+        try:
+            snapshot = capture_registry_snapshot(self.store)
+            if snapshot.content != expected.content or snapshot.base_key != expected.base_key:
+                raise RegistryError("База изменилась после подтверждения. Откройте очистку заново.")
+            backups = make_backup(self.store.base_key, "перед очисткой")
+            verified = []
+            for backup in backups:
+                try:
+                    if backup.read_bytes() == snapshot.content:
+                        verified.append(backup)
+                except OSError:
+                    continue
+            if not verified:
+                raise RegistryError("Не удалось создать проверенную копию базы.")
+            if self.store.path.read_bytes() != snapshot.content:
+                raise RegistryError("База изменилась во время создания копии.")
+            return verified
+        except (RegistryError, OSError) as exc:
+            QMessageBox.warning(self, "Очистка отменена", str(exc))
+            return None
 
     def _confirm_yes_no(self, title: str, question: str, details: str) -> bool:
         """Подтверждение «Да / Нет» (v0.75.0) для необратимых действий."""
@@ -946,6 +982,10 @@ class MainWindow(QMainWindow):
                 1 for item in data.other_payments
                 if self._in_period(item.date, day_from, day_to)
             ),
+            "kkm": sum(
+                1 for item in data.kkm_reports
+                if self._in_period(item.date, day_from, day_to)
+            ),
         }
 
     @staticmethod
@@ -960,6 +1000,14 @@ class MainWindow(QMainWindow):
         """Удалить суммы за период (v0.75.0)."""
 
         data = self.store.data
+        removed_ids = {item.id for item in data.operations
+                       if self._in_period(item.date, day_from, day_to)}
+        removed_ids.update(item.id for item in data.kkm_reports
+                           if self._in_period(item.date, day_from, day_to))
+        data.kkm_reports = [item for item in data.kkm_reports
+                            if not self._in_period(item.date, day_from, day_to)]
+        data.imported_registry_rows = [link for link in data.imported_registry_rows
+                                       if link.get("record_id") not in removed_ids]
         data.operations = [
             item for item in data.operations
             if not self._in_period(item.date, day_from, day_to)
@@ -978,6 +1026,7 @@ class MainWindow(QMainWindow):
                 item.amount = "0"
         self.store.save()
         self.refresh_all_views()
+        self._after_registry_import()  # открытые немодальные отчёт и журналы
 
     # -------------------------------------------------- ширины колонок v0.75.0
     def _resizable_views(self) -> list:
@@ -1054,7 +1103,8 @@ class MainWindow(QMainWindow):
         debts = len(data.year_start.supplier_debts) + len(
             data.year_start.customer_debts
         )
-        if operations + cash + others + debts == 0:
+        kkm = len(data.kkm_reports)
+        if operations + cash + others + debts + kkm == 0:
             QMessageBox.information(
                 self,
                 "Очистка базы",
@@ -1066,6 +1116,9 @@ class MainWindow(QMainWindow):
         # v0.75.0: подтверждение «Да / Нет», как у остальных пунктов
         # меню «База». Прежний вариант с тремя кнопками ушёл: выгрузка
         # теперь отдельным пунктом меню, а не частью этого вопроса.
+        snapshot = self._capture_clear_snapshot()
+        if snapshot is None:
+            return
         if not self._confirm_yes_no(
             "Очистка базы",
             f"Удалить операции и суммы базы "
@@ -1073,7 +1126,7 @@ class MainWindow(QMainWindow):
             f"Будет удалено: операций — {operations}, "
             f"поступлений кассы — {cash}, "
             f"сумм прочих видов оплат — {others}, "
-            f"долгов переноса — {debts}.\n\n"
+            f"долгов переноса — {debts}, строк отчётов ККМ и возвратов — {kkm}.\n\n"
             "Поставщики, покупатели, виды оплат, рабочий календарь, "
             "пользователи и права остаются; у видов оплат обнуляются "
             "только суммы. Отменить очистку будет нельзя, но перед "
@@ -1084,7 +1137,9 @@ class MainWindow(QMainWindow):
         # даже если отмена нужна через неделю. Выгрузка в Excel такой
         # страховкой не служит: она не несёт примечания и правила
         # разноса (см. excelio).
-        backups = make_backup(self.store.base_key, "перед очисткой")
+        backups = self._checked_clear_backup(snapshot)
+        if backups is None:
+            return
         self._clear_current_base(backups)
 
     def _clear_current_base(self, backups: list[Path] | None = None) -> None:
@@ -1096,7 +1151,12 @@ class MainWindow(QMainWindow):
         """
 
         data = self.store.data
+        removed_ids = {item.id for item in data.operations}
+        removed_ids.update(item.id for item in data.kkm_reports)
+        data.imported_registry_rows = [link for link in data.imported_registry_rows
+                                       if link.get("record_id") not in removed_ids]
         data.operations.clear()
+        data.kkm_reports.clear()
         data.cash_receipts.clear()
         # v0.78.0: виды оплат не удаляем — это справочник, как
         # поставщики и покупатели. У вида есть карточка (ставка НДС,
@@ -1111,11 +1171,12 @@ class MainWindow(QMainWindow):
         set_year_start_funds(data, None)
         self.store.save()
         self.refresh_all_views()
+        self._after_registry_import()  # открытые немодальные отчёт и журналы
         QMessageBox.information(
             self,
             "Очистка базы",
             f"База «{BASE_TITLES[self.store.base_key]}» очищена: "
-            "операции, поступления кассы и долги переноса удалены, "
+            "операции, отчёты ККМ и возвраты, поступления кассы и долги переноса удалены, "
             "суммы прочих видов оплат обнулены. Поставщики, "
             "покупатели и сами виды оплат (ставка НДС, УНП, "
             "примечание) остались."
